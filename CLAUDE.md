@@ -72,6 +72,9 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
 
 ## Hard-won facts (don't relearn these)
 
+- **`.env` values must stay literal.** dotenvy expands `$name` inside values, which broke a real
+  password. `config::parse_env` does no substitution, escapes or inline comments; keep it that way.
+
 - **Scryfall rate limits**: `/cards/named` and `/cards/search` allow about 2 req/s. The rest of
   the API allows 10/s. Exceeding them gives HTTP 429. Throttling is per endpoint class in `scryfall.rs`.
 - **The vision LLM invents set codes and collector numbers.** It also reads P/T "4/5" as a
@@ -108,7 +111,7 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
 
 Track every iteration here. When a feature lands, move it to the changelog with the date.
 
-### Iteration 2: PostgreSQL storage (in progress)
+### Iteration 2: PostgreSQL storage (done)
 - [x] Schema `migrations/0001_init.sql`: `collection`, `price_history`, `collection_value` view.
 - [x] `store/postgres.rs` implementing `CollectionStore`, with auto-migration on connect.
 - [x] Config `[storage] backend`, `database_url_env` (default `MTG_SCAN_DATABASE_URL`), `schema`; `--storage` flag.
@@ -116,8 +119,8 @@ Track every iteration here. When a feature lands, move it to the changelog with 
 - [x] Verified against a local Postgres 18 container (integration test + CLI end to end).
 - [x] `.env` support for the connection and secrets; the user's server (PostgreSQL on a LAN host,
       port 5433, no SSL offered) is reachable.
-- [ ] Password into `.env`, then `db status` and `db import collection.md` against the real database.
-- [ ] Switch `[storage] backend = "postgres"` as the default in the user's `mtg-scan.toml`.
+- [x] Connected to the user's database (`cardcollection`, schema `mtg_scan`) and imported `collection.md`.
+- [x] `[storage] backend = "postgres"` is the default in the user's `mtg-scan.toml`.
 
 ### Backlog
 - [ ] On-screen text labels in the live window (bitmap font) instead of console-only names.
@@ -136,7 +139,10 @@ Track every iteration here. When a feature lands, move it to the changelog with 
 - `collection_value` view with latest prices and values.
 - CLI: `--storage`, `db migrate/status/import/export`, `history`.
 - Scryfall batch lookup (`cards_by_id`); the Scryfall client is shared via `Rc` between App and store.
-- `.env` file support (dotenvy) for DB connection fields and API keys; `.env.example` template.
+- `.env` file support for DB connection fields and API keys; `.env.example` template.
+- Own literal `.env` parser (`config::parse_env`) replaced dotenvy, whose `$VAR` substitution
+  silently corrupted a password containing `$`.
+- Live on the user's PostgreSQL server; the 10 Hobbit cards were imported.
 
 ### Iteration 1 (2026-10-20)
 - Rust CLI `mtg-scan` with live webcam window (Insta360 Link 2 Pro, 4K MJPEG).

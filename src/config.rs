@@ -118,23 +118,54 @@ impl StorageConfig {
 }
 
 /// Load `.env` files so settings and secrets can live with the app instead
-/// of in Windows environment variables. Real environment variables win.
+/// of in Windows environment variables. Real environment variables win, and
+/// the first file to set a key wins. Must run before any threads start.
 /// Returns the files that were loaded.
 pub fn load_env_files() -> Vec<PathBuf> {
     let candidates = [
         Some(PathBuf::from(".env")),
         dirs::config_dir().map(|d| d.join("mtg-scan").join(".env")),
     ];
-    candidates
-        .into_iter()
-        .flatten()
-        .filter(|p| p.is_file())
-        .filter(|p| match dotenvy::from_path(p) {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!("  ! could not read {}: {e}", p.display());
-                false
+    let mut loaded = Vec::new();
+    for path in candidates.into_iter().flatten().filter(|p| p.is_file()) {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                for (key, value) in parse_env(&text) {
+                    if std::env::var_os(&key).is_none() {
+                        // SAFETY: called at the top of `main`, before any
+                        // other thread exists.
+                        unsafe { std::env::set_var(&key, value) };
+                    }
+                }
+                loaded.push(path);
             }
+            Err(e) => eprintln!("  ! could not read {}: {e}", path.display()),
+        }
+    }
+    loaded
+}
+
+/// Minimal `.env` parser. Values are literal: everything after the first `=`
+/// (trimmed), with one pair of matching surrounding quotes removed. No `$`
+/// substitution, escapes or inline comments, so passwords containing `$`,
+/// `#` or `\` work as typed. Lines starting with `#` are comments.
+fn parse_env(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(|l| l.trim_start_matches('\u{feff}').trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let l = l.strip_prefix("export ").unwrap_or(l);
+            let (key, value) = l.split_once('=')?;
+            let key = key.trim();
+            if key.is_empty() {
+                return None;
+            }
+            let value = value.trim();
+            let unquoted = ['\'', '"']
+                .iter()
+                .find_map(|q| value.strip_prefix(*q)?.strip_suffix(*q))
+                .unwrap_or(value);
+            Some((key.to_string(), unquoted.to_string()))
         })
         .collect()
 }
@@ -378,6 +409,33 @@ mod tests {
             "database defaults to the user name"
         );
         assert_eq!(conn.get_ssl_mode(), postgres::config::SslMode::Disable);
+    }
+
+    #[test]
+    fn env_values_are_literal() {
+        let parsed = parse_env(
+            "# comment\n\
+             MTG_SCAN_DB_PASSWORD=ab$cd#ef\\g\r\n\
+             QUOTED='with spaces $x'\n\
+             DOUBLE=\"d$q\"\n\
+             export EXPORTED = v \n\
+             EMPTY=\n\
+             EQUALS=a=b\n\
+             not a pair\n",
+        );
+        let get = |k: &str| {
+            parsed
+                .iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("MTG_SCAN_DB_PASSWORD"), Some("ab$cd#ef\\g"));
+        assert_eq!(get("QUOTED"), Some("with spaces $x"));
+        assert_eq!(get("DOUBLE"), Some("d$q"));
+        assert_eq!(get("EXPORTED"), Some("v"));
+        assert_eq!(get("EMPTY"), Some(""));
+        assert_eq!(get("EQUALS"), Some("a=b"));
+        assert_eq!(parsed.len(), 6);
     }
 
     #[test]
