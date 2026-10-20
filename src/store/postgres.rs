@@ -49,11 +49,8 @@ struct StoredRow {
 
 impl PostgresStore {
     /// Connect, select the schema and apply any pending migrations.
-    pub fn connect(url: &str, schema: &str, scryfall: Rc<Scryfall>) -> Result<Self> {
+    pub fn connect(config: postgres::Config, schema: &str, scryfall: Rc<Scryfall>) -> Result<Self> {
         validate_identifier(schema)?;
-        let config: postgres::Config = url
-            .parse()
-            .context("invalid PostgreSQL connection string")?;
         let location = describe(&config, schema);
         let tls =
             MakeTlsConnector::new(native_tls::TlsConnector::new().context("TLS setup failed")?);
@@ -494,7 +491,7 @@ mod tests {
             std::env::var("MTG_SCAN_TEST_DATABASE_URL").expect("set MTG_SCAN_TEST_DATABASE_URL");
         let scryfall = Rc::new(Scryfall::new(crate::app::http_client().unwrap()));
         let schema = format!("mtg_scan_test_{}", std::process::id());
-        let mut store = PostgresStore::connect(&url, &schema, scryfall).unwrap();
+        let mut store = PostgresStore::connect(url.parse().unwrap(), &schema, scryfall).unwrap();
         // Applying again is a no-op.
         assert!(store.migrate().unwrap().is_empty());
 

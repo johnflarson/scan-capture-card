@@ -8,13 +8,11 @@ collection = "collection.md"
 [storage]
 # markdown = collection.md (default) | postgres = PostgreSQL with price history
 backend = "markdown"
-# The connection string is read from this environment variable, e.g.
-#   setx MTG_SCAN_DATABASE_URL "postgres://user:pass@host:5432/dbname?sslmode=require"
-# Use a direct / session-mode connection (port 5432), not a transaction-mode
-# pooler (e.g. Supabase port 6543): the driver uses prepared statements.
-database_url_env = "MTG_SCAN_DATABASE_URL"
-# Or put it here (keeps the password in this file; not recommended):
-# database_url = "postgres://user:pass@localhost:5432/mtg"
+# Connection details and the password go in the `.env` file next to this one
+# (copy .env.example): MTG_SCAN_DB_HOST / _PORT / _USER / _PASSWORD / _NAME /
+# _SSLMODE, or a single MTG_SCAN_DATABASE_URL connection string.
+# Use a direct / session-mode connection, not a transaction-mode pooler
+# (e.g. Supabase port 6543): the driver uses prepared statements.
 # Schema the tables live in; created automatically.
 schema = "mtg_scan"
 

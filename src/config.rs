@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,19 +66,77 @@ impl Default for StorageConfig {
 }
 
 impl StorageConfig {
-    pub fn resolved_database_url(&self) -> Result<String> {
-        std::env::var(&self.database_url_env)
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            .or_else(|| self.database_url.clone())
-            .with_context(|| {
-                format!(
-                    "no PostgreSQL connection string: set the {} environment variable \
-                     (or [storage] database_url in mtg-scan.toml)",
-                    self.database_url_env
-                )
-            })
+    /// Connection settings from (in order) the connection-string variable,
+    /// `[storage] database_url`, or the separate `MTG_SCAN_DB_*` variables —
+    /// normally kept in the app's `.env` file (see `.env.example`).
+    pub fn resolved_connection(&self) -> Result<postgres::Config> {
+        self.connection_from(|key| std::env::var(key).ok())
     }
+
+    fn connection_from(&self, get: impl Fn(&str) -> Option<String>) -> Result<postgres::Config> {
+        let get = |key: &str| {
+            get(key)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        if let Some(url) = get(&self.database_url_env).or_else(|| self.database_url.clone()) {
+            return url.parse().context("invalid PostgreSQL connection string");
+        }
+        let Some(host) = get("MTG_SCAN_DB_HOST") else {
+            bail!(
+                "no PostgreSQL connection configured: set MTG_SCAN_DB_HOST, MTG_SCAN_DB_USER, \
+                 MTG_SCAN_DB_PASSWORD (and optionally MTG_SCAN_DB_PORT, MTG_SCAN_DB_NAME, \
+                 MTG_SCAN_DB_SSLMODE) in the .env file next to mtg-scan.toml — see .env.example"
+            );
+        };
+        let user = get("MTG_SCAN_DB_USER").context("MTG_SCAN_DB_USER is not set")?;
+        let mut config = postgres::Config::new();
+        config.host(&host).user(&user).application_name("mtg-scan");
+        if let Some(port) = get("MTG_SCAN_DB_PORT") {
+            config.port(
+                port.parse()
+                    .with_context(|| format!("invalid MTG_SCAN_DB_PORT '{port}'"))?,
+            );
+        }
+        if let Some(password) = get("MTG_SCAN_DB_PASSWORD") {
+            config.password(password);
+        }
+        // Postgres defaults the database name to the user name.
+        config.dbname(get("MTG_SCAN_DB_NAME").as_deref().unwrap_or(&user));
+        if let Some(mode) = get("MTG_SCAN_DB_SSLMODE") {
+            config.ssl_mode(match mode.to_lowercase().as_str() {
+                "disable" => postgres::config::SslMode::Disable,
+                "prefer" => postgres::config::SslMode::Prefer,
+                "require" => postgres::config::SslMode::Require,
+                other => {
+                    bail!("invalid MTG_SCAN_DB_SSLMODE '{other}' (use disable, prefer or require)")
+                }
+            });
+        }
+        Ok(config)
+    }
+}
+
+/// Load `.env` files so settings and secrets can live with the app instead
+/// of in Windows environment variables. Real environment variables win.
+/// Returns the files that were loaded.
+pub fn load_env_files() -> Vec<PathBuf> {
+    let candidates = [
+        Some(PathBuf::from(".env")),
+        dirs::config_dir().map(|d| d.join("mtg-scan").join(".env")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .filter(|p| p.is_file())
+        .filter(|p| match dotenvy::from_path(p) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("  ! could not read {}: {e}", p.display());
+                false
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -291,9 +349,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.storage.backend, StorageBackend::Postgres);
+        let conn = cfg.storage.connection_from(|_| None).unwrap();
+        assert_eq!(conn.get_user(), Some("u"));
+        assert_eq!(conn.get_dbname(), Some("db"));
+    }
+
+    #[test]
+    fn builds_connection_from_separate_variables() {
+        let env = |key: &str| {
+            match key {
+                "MTG_SCAN_DB_HOST" => Some("10.0.0.5"),
+                "MTG_SCAN_DB_PORT" => Some("5433"),
+                "MTG_SCAN_DB_USER" => Some("svc"),
+                // Characters that would need URL-encoding are fine here.
+                "MTG_SCAN_DB_PASSWORD" => Some("p@ss:w/rd#1"),
+                "MTG_SCAN_DB_SSLMODE" => Some("disable"),
+                _ => None,
+            }
+            .map(String::from)
+        };
+        let conn = StorageConfig::default().connection_from(env).unwrap();
+        assert_eq!(conn.get_ports(), &[5433]);
+        assert_eq!(conn.get_user(), Some("svc"));
+        assert_eq!(conn.get_password(), Some(&b"p@ss:w/rd#1"[..]));
         assert_eq!(
-            cfg.storage.resolved_database_url().unwrap(),
-            "postgres://u:p@localhost/db"
+            conn.get_dbname(),
+            Some("svc"),
+            "database defaults to the user name"
         );
+        assert_eq!(conn.get_ssl_mode(), postgres::config::SslMode::Disable);
+    }
+
+    #[test]
+    fn missing_connection_settings_explain_the_env_file() {
+        let err = StorageConfig::default()
+            .connection_from(|_| None)
+            .unwrap_err();
+        assert!(err.to_string().contains(".env"));
     }
 }

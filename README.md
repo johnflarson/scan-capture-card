@@ -45,7 +45,8 @@ Build:
 
 ```powershell
 cargo build --release
-copy mtg-scan.example.toml mtg-scan.toml   # then edit as needed
+copy mtg-scan.example.toml mtg-scan.toml   # settings; edit as needed
+copy .env.example .env                     # secrets: DB password, API keys
 ```
 
 ## Usage
@@ -103,8 +104,8 @@ See [`mtg-scan.example.toml`](mtg-scan.example.toml). CLI flags `--mode`,
 |---|---|
 | `ollama` (default in the example) | `ollama pull qwen3-vl:8b-instruct` |
 | `lmstudio` | Load a vision model and start the local server |
-| `openrouter` | `setx OPENROUTER_API_KEY sk-or-...` (default model `google/gemini-2.5-flash`) |
-| `openai` | `setx OPENAI_API_KEY ...` or any compatible `base_url` |
+| `openrouter` | `OPENROUTER_API_KEY=sk-or-...` in `.env` (default model `google/gemini-2.5-flash`) |
+| `openai` | `OPENAI_API_KEY=...` in `.env`, or any compatible `base_url` |
 
 Caches (Card Kingdom price list, Scryfall names/sets, card images) live in
 `%LOCALAPPDATA%\mtg-scan`.
@@ -119,8 +120,11 @@ It is git-ignored by default.
 
 ### PostgreSQL (price history)
 
+Connection settings and the password live in a `.env` file next to
+`mtg-scan.toml`. It is git-ignored, and real environment variables override it:
+
 ```powershell
-setx MTG_SCAN_DATABASE_URL "postgres://user:pass@host:5432/dbname?sslmode=require"
+copy .env.example .env   # fill in MTG_SCAN_DB_HOST, _PORT, _USER, _PASSWORD, _NAME, _SSLMODE
 # then set [storage] backend = "postgres" in mtg-scan.toml, or pass --storage postgres
 mtg-scan db status                    # connect; creates/upgrades the schema
 mtg-scan db import collection.md      # move an existing Markdown collection over

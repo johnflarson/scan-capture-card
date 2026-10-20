@@ -214,6 +214,7 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    config::load_env_files();
     let mut cfg = Config::load(cli.config.as_deref())?;
     if let Some(c) = cli.collection {
         cfg.collection = c;

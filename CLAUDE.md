@@ -53,6 +53,10 @@ the camera and `Windows.Media.Ocr` for OCR.
 - `price_history`: unique `(scryfall_id, finish, price_date)`, so one point per day (same-day
   observations upsert). No FK to `collection`, so history survives removing a card.
 - `collection_value` view: latest price per row via `LATERAL`; use it for reporting.
+- **Secrets live in `.env`** (git-ignored, loaded by `config::load_env_files` from `./.env`, then
+  `%APPDATA%\mtg-scan\.env`; real env vars win). The user doesn't want Windows environment
+  variables. DB connection: `MTG_SCAN_DB_HOST/_PORT/_USER/_PASSWORD/_NAME/_SSLMODE` (no
+  URL-encoding needed), or `MTG_SCAN_DATABASE_URL`. API keys (`OPENROUTER_API_KEY`) go there too.
 - Tables live in a configurable schema (default `mtg_scan`). Migrations run automatically on
   connect, inside a transaction holding a lock on `schema_migrations`.
 - Driver: sync `postgres` crate with native-tls. It uses prepared statements, so connect
@@ -110,7 +114,9 @@ Track every iteration here. When a feature lands, move it to the changelog with 
 - [x] Config `[storage] backend`, `database_url_env` (default `MTG_SCAN_DATABASE_URL`), `schema`; `--storage` flag.
 - [x] `db migrate | status | import | export`, `history <card>`.
 - [x] Verified against a local Postgres 18 container (integration test + CLI end to end).
-- [ ] Connect to the user's real database (connection info pending) and run `db import collection.md`.
+- [x] `.env` support for the connection and secrets; the user's server (PostgreSQL on a LAN host,
+      port 5433, no SSL offered) is reachable.
+- [ ] Password into `.env`, then `db status` and `db import collection.md` against the real database.
 - [ ] Switch `[storage] backend = "postgres"` as the default in the user's `mtg-scan.toml`.
 
 ### Backlog
@@ -130,6 +136,7 @@ Track every iteration here. When a feature lands, move it to the changelog with 
 - `collection_value` view with latest prices and values.
 - CLI: `--storage`, `db migrate/status/import/export`, `history`.
 - Scryfall batch lookup (`cards_by_id`); the Scryfall client is shared via `Rc` between App and store.
+- `.env` file support (dotenvy) for DB connection fields and API keys; `.env.example` template.
 
 ### Iteration 1 (2026-10-20)
 - Rust CLI `mtg-scan` with live webcam window (Insta360 Link 2 Pro, 4K MJPEG).

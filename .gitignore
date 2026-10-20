@@ -2,6 +2,7 @@
 
 # Local settings and personal collection data
 mtg-scan.toml
+.env
 collection.md
 scans/
 *.md.tmp

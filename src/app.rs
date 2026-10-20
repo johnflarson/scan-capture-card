@@ -68,8 +68,8 @@ impl App {
 }
 
 pub fn connect_postgres(cfg: &Config, scryfall: Rc<Scryfall>) -> Result<PostgresStore> {
-    let url = cfg.storage.resolved_database_url()?;
-    PostgresStore::connect(&url, &cfg.storage.schema, scryfall)
+    let connection = cfg.storage.resolved_connection()?;
+    PostgresStore::connect(connection, &cfg.storage.schema, scryfall)
 }
 
 pub fn describe_card(card: &Card, finish: Finish) -> String {
