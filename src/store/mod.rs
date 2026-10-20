@@ -1,11 +1,12 @@
-//! Collection persistence. Iteration 1 stores everything in a Markdown file;
-//! iteration 2 will add a PostgreSQL implementation of [`CollectionStore`].
+//! Collection persistence behind [`CollectionStore`]: a Markdown file
+//! (iteration 1) or PostgreSQL with price history (iteration 2).
 
 pub mod markdown;
+pub mod postgres;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
-use crate::model::{CollectionEntry, Finish, Prices};
+use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
 
 pub trait CollectionStore {
     fn entries(&self) -> Result<Vec<CollectionEntry>>;
@@ -23,7 +24,15 @@ pub trait CollectionStore {
         quantity: u32,
     ) -> Result<Option<CollectionEntry>>;
 
+    /// Record current prices for a printing + finish.
     fn update_prices(&mut self, scryfall_id: &str, finish: Finish, prices: Prices) -> Result<()>;
+
+    /// Price points over time, oldest first.
+    fn price_history(&self, _scryfall_id: &str, _finish: Finish) -> Result<Vec<PricePoint>> {
+        bail!(
+            "price history is only kept by the postgres storage backend ([storage] backend = \"postgres\")"
+        )
+    }
 
     /// Human-readable location, e.g. a file path.
     fn location(&self) -> String;

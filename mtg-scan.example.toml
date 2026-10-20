@@ -1,8 +1,22 @@
 # mtg-scan configuration. Copy to `mtg-scan.toml` (in the directory you run
 # mtg-scan from) or to %APPDATA%\mtg-scan\config.toml. Every setting is optional.
 
-# Markdown file the collection is stored in.
+# Markdown file the collection is stored in (markdown backend), and the
+# default file for `db import` / `db export`.
 collection = "collection.md"
+
+[storage]
+# markdown = collection.md (default) | postgres = PostgreSQL with price history
+backend = "markdown"
+# The connection string is read from this environment variable, e.g.
+#   setx MTG_SCAN_DATABASE_URL "postgres://user:pass@host:5432/dbname?sslmode=require"
+# Use a direct / session-mode connection (port 5432), not a transaction-mode
+# pooler (e.g. Supabase port 6543): the driver uses prepared statements.
+database_url_env = "MTG_SCAN_DATABASE_URL"
+# Or put it here (keeps the password in this file; not recommended):
+# database_url = "postgres://user:pass@localhost:5432/mtg"
+# Schema the tables live in; created automatically.
+schema = "mtg_scan"
 
 [camera]
 # Index from `mtg-scan cameras`. Leave unset to auto-pick the Insta360.

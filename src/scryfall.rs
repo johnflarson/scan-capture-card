@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use reqwest::StatusCode;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, RequestBuilder};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde_json::json;
 
 use crate::cache;
 use crate::model::{Card, Finish};
@@ -28,6 +29,8 @@ const STRICT_ENDPOINTS: [&str; 4] = [
 const SETS_CACHE: &str = "scryfall_sets.json";
 const SETS_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 const NAMES_CACHE: &str = "scryfall_card_names.json";
+/// Max identifiers per `/cards/collection` request.
+const COLLECTION_BATCH: usize = 75;
 
 #[derive(Deserialize)]
 struct Catalog {
@@ -155,13 +158,19 @@ impl Scryfall {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<Option<T>> {
+        self.api_request(path, || self.http.get(format!("{API}{path}")).query(query))
+    }
+
+    /// Send a request built by `build`, retrying on 429. `Ok(None)` on 404.
+    fn api_request<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        build: impl Fn() -> RequestBuilder,
+    ) -> Result<Option<T>> {
         let mut backoff = Duration::from_secs(1);
         for attempt in 0..4 {
             self.throttle(path);
-            let resp = self
-                .http
-                .get(format!("{API}{path}"))
-                .query(query)
+            let resp = build()
                 .header("Accept", "application/json")
                 .send()
                 .with_context(|| format!("Scryfall request failed: {path}"))?;
@@ -193,6 +202,27 @@ impl Scryfall {
 
     fn get_card(&self, path: &str, query: &[(&str, &str)]) -> Result<Option<Card>> {
         Ok(self.api_get::<ApiCard>(path, query)?.map(Card::from))
+    }
+
+    /// Look up many printings by Scryfall ID (75 per request). IDs Scryfall
+    /// doesn't know are simply absent from the result.
+    pub fn cards_by_id(&self, ids: &[String]) -> Result<HashMap<String, Card>> {
+        let mut out = HashMap::new();
+        for chunk in ids.chunks(COLLECTION_BATCH) {
+            let body = json!({
+                "identifiers": chunk.iter().map(|id| json!({"id": id})).collect::<Vec<_>>()
+            });
+            let page: Option<SearchPage> = self.api_request("/cards/collection", || {
+                self.http
+                    .post(format!("{API}/cards/collection"))
+                    .json(&body)
+            })?;
+            for card in page.map(|p| p.data).unwrap_or_default() {
+                let card = Card::from(card);
+                out.insert(card.scryfall_id.clone(), card);
+            }
+        }
+        Ok(out)
     }
 
     pub fn by_set_number(&self, set: &str, number: &str) -> Result<Option<Card>> {

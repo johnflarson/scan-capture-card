@@ -10,8 +10,10 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Markdown file the collection is stored in.
+    /// Markdown file the collection is stored in (markdown backend), and the
+    /// default target of `db import` / `db export`.
     pub collection: PathBuf,
+    pub storage: StorageConfig,
     pub camera: CameraConfig,
     pub recognition: RecognitionConfig,
     pub llm: LlmConfig,
@@ -21,10 +23,61 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             collection: PathBuf::from("collection.md"),
+            storage: StorageConfig::default(),
             camera: CameraConfig::default(),
             recognition: RecognitionConfig::default(),
             llm: LlmConfig::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackend {
+    /// `collection.md` (iteration 1).
+    Markdown,
+    /// PostgreSQL with price history (iteration 2).
+    Postgres,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    pub backend: StorageBackend,
+    /// Environment variable holding the connection string, e.g.
+    /// `postgres://user:pass@host:5432/dbname?sslmode=require`.
+    pub database_url_env: String,
+    /// Connection string in the config file itself (prefer the env var so
+    /// the password stays out of files).
+    pub database_url: Option<String>,
+    /// Postgres schema the tables live in (created if missing).
+    pub schema: String,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            backend: StorageBackend::Markdown,
+            database_url_env: "MTG_SCAN_DATABASE_URL".into(),
+            database_url: None,
+            schema: "mtg_scan".into(),
+        }
+    }
+}
+
+impl StorageConfig {
+    pub fn resolved_database_url(&self) -> Result<String> {
+        std::env::var(&self.database_url_env)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| self.database_url.clone())
+            .with_context(|| {
+                format!(
+                    "no PostgreSQL connection string: set the {} environment variable \
+                     (or [storage] database_url in mtg-scan.toml)",
+                    self.database_url_env
+                )
+            })
     }
 }
 
@@ -222,5 +275,25 @@ mod tests {
         );
         assert_eq!(cfg.recognition.mode, RecognitionMode::Auto);
         assert_eq!(cfg.camera.width, 1920);
+        assert_eq!(cfg.storage.backend, StorageBackend::Markdown);
+        assert_eq!(cfg.storage.schema, "mtg_scan");
+    }
+
+    #[test]
+    fn parses_postgres_storage() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [storage]
+            backend = "postgres"
+            database_url = "postgres://u:p@localhost/db"
+            database_url_env = "MTG_SCAN_TEST_UNSET_VAR"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.storage.backend, StorageBackend::Postgres);
+        assert_eq!(
+            cfg.storage.resolved_database_url().unwrap(),
+            "postgres://u:p@localhost/db"
+        );
     }
 }

@@ -14,6 +14,10 @@ cargo fmt
 $env:MTG_SCAN_DEBUG=1            # print raw OCR/LLM reads during recognition
 mtg-scan ocr-dump <image>        # hidden: raw Windows OCR lines with positions
 mtg-scan scan-all --image <photo> --dry-run   # test the table pipeline offline from the camera
+
+# PostgreSQL integration test (ignored by default; creates and drops its own schema)
+docker run -d --name mtg-scan-test-pg -e POSTGRES_USER=mtg -e POSTGRES_PASSWORD=mtgtest -e POSTGRES_DB=mtg -p 55432:5432 postgres:18
+$env:MTG_SCAN_TEST_DATABASE_URL="postgres://mtg:mtgtest@localhost:55432/mtg"; cargo test -- --ignored
 ```
 
 Toolchain: Rust stable (edition 2024) with the MSVC target. Building needs VS
@@ -24,8 +28,8 @@ the camera and `Windows.Media.Ocr` for OCR.
 
 | Module | Role |
 |---|---|
-| `main.rs` | clap CLI; config overrides; small commands (add/remove/price/list/reprice) |
-| `config.rs` | `mtg-scan.toml` (`Config`, `RecognitionMode`, `LlmProvider`), provider defaults |
+| `main.rs` | clap CLI; config overrides; small commands (add/remove/price/list/reprice/history/db) |
+| `config.rs` | `mtg-scan.toml` (`Config`, `StorageConfig`, `RecognitionMode`, `LlmProvider`), provider defaults |
 | `camera.rs` | nokhwa/Media Foundation capture; picks the camera mode itself; MJPEG/NV12/YUYV decode |
 | `live.rs` | Live window (minifb) + worker thread; `Watcher` motion/change detector for auto-scan; `scan_table_once` |
 | `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo |
@@ -35,9 +39,26 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
 | `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs |
 | `pricing/` | `tcgplayer.rs` (mpapi pricepoints, Scryfall fallback), `cardkingdom.rs` (daily price list, then a compact index), `PriceService` |
-| `store/` | `CollectionStore` trait; `markdown.rs` implementation (parse, render, atomic write) |
+| `store/` | `CollectionStore` trait; `markdown.rs` (parse, render, atomic write); `postgres.rs` (migrations, upserts, Scryfall hydration, price history) |
 | `cache.rs` | JSON cache in `%LOCALAPPDATA%\mtg-scan` |
-| `model.rs` | `Card`, `Finish`, `Prices`, `CollectionEntry` |
+| `model.rs` | `Card`, `Finish`, `Prices`, `CollectionEntry`, `PricePoint` |
+| `migrations/` | Numbered SQL files embedded via `include_str!` and listed in `store::postgres::MIGRATIONS` |
+
+### PostgreSQL design (iteration 2)
+- **Store only what isn't online.** No names, sets or images; card details are fetched from
+  Scryfall `/cards/collection` (75 IDs per request) whenever rows are listed. When adding a
+  column, ask first whether Scryfall already has it.
+- `collection`: unique `(scryfall_id, finish)`. A Scryfall ID is one printing, so every printing
+  and every finish is its own row. Quantity is always > 0; a row is deleted when it reaches 0.
+- `price_history`: unique `(scryfall_id, finish, price_date)`, so one point per day (same-day
+  observations upsert). No FK to `collection`, so history survives removing a card.
+- `collection_value` view: latest price per row via `LATERAL`; use it for reporting.
+- Tables live in a configurable schema (default `mtg_scan`). Migrations run automatically on
+  connect, inside a transaction holding a lock on `schema_migrations`.
+- Driver: sync `postgres` crate with native-tls. It uses prepared statements, so connect
+  directly or through a *session*-mode pooler, not a transaction-mode one (Supabase port 6543).
+- Money is `numeric(10,2)`. The app reads and writes it as `float8` through SQL casts, and UUIDs
+  as `text::uuid`, to avoid extra crate type features.
 
 Identification flow: hints `{name, set, number}`, then `resolve()`:
 1. set + number lookup, accepted when the read name agrees (`Exact`);
@@ -83,14 +104,14 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
 
 Track every iteration here. When a feature lands, move it to the changelog with the date.
 
-### Iteration 2: PostgreSQL storage (next)
-- [ ] `store/postgres.rs` implementing `CollectionStore` (`postgres` crate, sync).
-- [ ] Schema: `cards` (scryfall_id PK, name, set, number, rarity, …),
-      `collection` (scryfall_id, finish, quantity, added),
-      `price_history` (scryfall_id, finish, source, price, captured_at) so value is tracked over time.
-- [ ] Config `[storage] backend = "markdown" | "postgres"`, `database_url` (env var name).
-- [ ] `mtg-scan migrate` to import an existing `collection.md` into Postgres.
-- [ ] Keep markdown export: `mtg-scan export collection.md`.
+### Iteration 2: PostgreSQL storage (in progress)
+- [x] Schema `migrations/0001_init.sql`: `collection`, `price_history`, `collection_value` view.
+- [x] `store/postgres.rs` implementing `CollectionStore`, with auto-migration on connect.
+- [x] Config `[storage] backend`, `database_url_env` (default `MTG_SCAN_DATABASE_URL`), `schema`; `--storage` flag.
+- [x] `db migrate | status | import | export`, `history <card>`.
+- [x] Verified against a local Postgres 18 container (integration test + CLI end to end).
+- [ ] Connect to the user's real database (connection info pending) and run `db import collection.md`.
+- [ ] Switch `[storage] backend = "postgres"` as the default in the user's `mtg-scan.toml`.
 
 ### Backlog
 - [ ] On-screen text labels in the live window (bitmap font) instead of console-only names.
@@ -102,6 +123,13 @@ Track every iteration here. When a feature lands, move it to the changelog with 
 - [ ] Linux/macOS: v4l/AVFoundation via nokhwa, Tesseract OCR fallback.
 
 ## Changelog
+
+### Iteration 2, part 1 (2026-10-20)
+- PostgreSQL backend: `collection` (one row per Scryfall printing + finish) and daily
+  `price_history` (`price_tcg`, `price_ck`, `price_ck_buylist`); card data stays on Scryfall.
+- `collection_value` view with latest prices and values.
+- CLI: `--storage`, `db migrate/status/import/export`, `history`.
+- Scryfall batch lookup (`cards_by_id`); the Scryfall client is shared via `Rc` between App and store.
 
 ### Iteration 1 (2026-10-20)
 - Rust CLI `mtg-scan` with live webcam window (Insta360 Link 2 Pro, 4K MJPEG).

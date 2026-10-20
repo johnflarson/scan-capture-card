@@ -145,6 +145,15 @@ impl CollectionEntry {
     }
 }
 
+/// Prices observed on one day (postgres backend only).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PricePoint {
+    pub date: NaiveDate,
+    pub tcgplayer: Option<f64>,
+    pub cardkingdom: Option<f64>,
+    pub cardkingdom_buylist: Option<f64>,
+}
+
 pub fn format_usd(v: Option<f64>) -> String {
     v.map(|p| format!("${p:.2}")).unwrap_or_else(|| "—".into())
 }

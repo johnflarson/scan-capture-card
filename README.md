@@ -109,12 +109,40 @@ See [`mtg-scan.example.toml`](mtg-scan.example.toml). CLI flags `--mode`,
 Caches (Card Kingdom price list, Scryfall names/sets, card images) live in
 `%LOCALAPPDATA%\mtg-scan`.
 
-## Collection file
+## Storage
+
+### Markdown (default)
 
 `collection.md` is a readable Markdown table with a summary of totals. It is
 also the app's source of truth. You can edit quantities or delete rows by hand.
 It is git-ignored by default.
 
+### PostgreSQL (price history)
+
+```powershell
+setx MTG_SCAN_DATABASE_URL "postgres://user:pass@host:5432/dbname?sslmode=require"
+# then set [storage] backend = "postgres" in mtg-scan.toml, or pass --storage postgres
+mtg-scan db status                    # connect; creates/upgrades the schema
+mtg-scan db import collection.md      # move an existing Markdown collection over
+mtg-scan history "Lightning Bolt" --set m11
+mtg-scan db export backup.md          # Markdown snapshot of the database
+```
+
+The database stores only what isn't available online. Card details come from
+Scryfall by ID.
+
+| Table / view | Columns |
+|---|---|
+| `collection` | `scryfall_id`, `finish`, `quantity`, `added_at`, `updated_at`. One row per **printing + finish**. |
+| `price_history` | `scryfall_id`, `finish`, `price_date`, `price_tcg`, `price_ck`, `price_ck_buylist`, `captured_at`. One row per day. |
+| `collection_value` (view) | Collection with its latest prices, `value_*` totals and a `scryfall_url` |
+
+Each Scryfall ID is one printing, so different printings of the same card
+(say, Lightning Bolt from M11 and from A25) are separate rows, and so are
+foil and nonfoil copies. Scans, `add` and `reprice` record that day's prices.
+Price history is kept even after you remove a card. The schema is in
+[`migrations/`](migrations/).
+
 ## Roadmap
 
-See [CLAUDE.md](CLAUDE.md#roadmap). Next up is **iteration 2: PostgreSQL storage**.
+See [CLAUDE.md](CLAUDE.md#roadmap).

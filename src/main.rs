@@ -19,18 +19,18 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 use app::{App, describe_card, describe_prices};
-use config::{Config, LlmProvider, RecognitionMode};
+use config::{Config, LlmProvider, RecognitionMode, StorageBackend};
 use live::{LiveMode, LiveOptions};
 use llm::VisionLlm;
 use model::{CollectionEntry, Finish, format_usd};
 use recognize::{CardHints, Method, Recognizer};
-use store::totals;
+use store::{CollectionStore, totals};
 
 #[derive(Parser)]
 #[command(
     name = "mtg-scan",
     version,
-    about = "Scan Magic: The Gathering cards with a webcam, track them in Markdown, and price them via TCGplayer and Card Kingdom"
+    about = "Scan Magic: The Gathering cards with a webcam, track them in Markdown or PostgreSQL, and price them via TCGplayer and Card Kingdom"
 )]
 struct Cli {
     /// Config file (default: ./mtg-scan.toml, then %APPDATA%\mtg-scan\config.toml)
@@ -39,6 +39,9 @@ struct Cli {
     /// Collection Markdown file (overrides config)
     #[arg(long, global = true)]
     collection: Option<PathBuf>,
+    /// Where the collection is stored (overrides [storage] backend)
+    #[arg(long, global = true, value_enum)]
+    storage: Option<StorageBackend>,
     /// How cards are recognised (overrides config)
     #[arg(long, global = true, value_enum)]
     mode: Option<RecognitionMode>,
@@ -125,6 +128,22 @@ enum Command {
     },
     /// Refresh prices for every card in the collection
     Reprice,
+    /// Show a card's price history (postgres backend)
+    History {
+        /// Name (or part of it) as it appears in the collection
+        name: String,
+        #[arg(long)]
+        set: Option<String>,
+        #[arg(long)]
+        number: Option<String>,
+        #[arg(long, value_enum)]
+        finish: Option<Finish>,
+    },
+    /// PostgreSQL database management
+    Db {
+        #[command(subcommand)]
+        command: DbCommand,
+    },
     /// Show the collection and its total value
     List,
     /// List available cameras
@@ -138,6 +157,24 @@ enum Command {
         output: PathBuf,
         #[command(flatten)]
         camera: CameraArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum DbCommand {
+    /// Create or upgrade the schema (also done automatically on connect)
+    Migrate,
+    /// Test the connection and show row counts
+    Status,
+    /// Copy a Markdown collection into the database (sets quantities)
+    Import {
+        /// Markdown file (default: the configured collection file)
+        file: Option<PathBuf>,
+    },
+    /// Write the database collection out as Markdown
+    Export {
+        /// Output file (default: the configured collection file)
+        file: Option<PathBuf>,
     },
 }
 
@@ -180,6 +217,9 @@ fn run() -> Result<()> {
     let mut cfg = Config::load(cli.config.as_deref())?;
     if let Some(c) = cli.collection {
         cfg.collection = c;
+    }
+    if let Some(s) = cli.storage {
+        cfg.storage.backend = s;
     }
     if let Some(m) = cli.mode {
         cfg.recognition.mode = m;
@@ -277,6 +317,13 @@ fn run() -> Result<()> {
             Ok(())
         }
         Command::Reprice => reprice(&cfg),
+        Command::History {
+            name,
+            set,
+            number,
+            finish,
+        } => history(&cfg, &name, set, number, finish),
+        Command::Db { command } => db(&cfg, command),
         Command::List => list(&cfg),
         Command::Cameras => {
             for c in camera::list_cameras()? {
@@ -388,6 +435,32 @@ fn remove(
     qty: u32,
 ) -> Result<()> {
     let mut app = App::new(cfg)?;
+    let e = find_one(&app, name, set, number, finish)?;
+    let left = app
+        .store
+        .remove(&e.scryfall_id, e.finish, qty)?
+        .map(|e| e.quantity)
+        .unwrap_or(0);
+    println!(
+        "Removed {} x {} ({} #{}, {}); {left} left",
+        qty.min(e.quantity),
+        e.name,
+        e.set_code,
+        e.collector_number,
+        e.finish
+    );
+    Ok(())
+}
+
+/// The single collection row matching a name (+ optional set / number /
+/// finish). Lists the candidates when it's ambiguous.
+fn find_one(
+    app: &App,
+    name: &str,
+    set: Option<String>,
+    number: Option<String>,
+    finish: Option<Finish>,
+) -> Result<CollectionEntry> {
     let needle = name.to_lowercase();
     let matches: Vec<CollectionEntry> = app
         .store
@@ -407,22 +480,7 @@ fn remove(
         .collect();
     match matches.as_slice() {
         [] => bail!("no card in the collection matches '{name}'"),
-        [e] => {
-            let left = app
-                .store
-                .remove(&e.scryfall_id, e.finish, qty)?
-                .map(|e| e.quantity)
-                .unwrap_or(0);
-            println!(
-                "Removed {} x {} ({} #{}, {}); {left} left",
-                qty.min(e.quantity),
-                e.name,
-                e.set_code,
-                e.collector_number,
-                e.finish
-            );
-            Ok(())
-        }
+        [e] => Ok(e.clone()),
         many => {
             println!("'{name}' matches several rows; narrow it with --set / --number / --finish:");
             for e in many {
@@ -434,6 +492,92 @@ fn remove(
             bail!("ambiguous card")
         }
     }
+}
+
+fn history(
+    cfg: &Config,
+    name: &str,
+    set: Option<String>,
+    number: Option<String>,
+    finish: Option<Finish>,
+) -> Result<()> {
+    let app = App::new(cfg)?;
+    let e = find_one(&app, name, set, number, finish)?;
+    let points = app.store.price_history(&e.scryfall_id, e.finish)?;
+    println!(
+        "{} ({} #{}, {}) x{}",
+        e.name, e.set_code, e.collector_number, e.finish, e.quantity
+    );
+    println!("{:<10}  {:>9}  {:>9}  {:>9}", "Date", "TCG", "CK", "CK buy");
+    for p in &points {
+        println!(
+            "{:<10}  {:>9}  {:>9}  {:>9}",
+            p.date.to_string(),
+            format_usd(p.tcgplayer),
+            format_usd(p.cardkingdom),
+            format_usd(p.cardkingdom_buylist)
+        );
+    }
+    if let (Some(first), Some(last)) = (points.first(), points.last())
+        && let (Some(a), Some(b)) = (first.tcgplayer, last.tcgplayer)
+        && points.len() > 1
+    {
+        let pct = if a > 0.0 { (b - a) / a * 100.0 } else { 0.0 };
+        println!(
+            "TCGplayer change since {}: {:+.2} ({pct:+.1}%)",
+            first.date,
+            b - a
+        );
+    }
+    Ok(())
+}
+
+fn db(cfg: &Config, command: DbCommand) -> Result<()> {
+    let scryfall = std::rc::Rc::new(scryfall::Scryfall::new(app::http_client()?));
+    let store = app::connect_postgres(cfg, scryfall)?;
+    match command {
+        DbCommand::Migrate => {
+            // `connect` already applied anything pending.
+            let status = store.status()?;
+            println!(
+                "{}: schema at version {}",
+                store.location(),
+                status.schema_version
+            );
+        }
+        DbCommand::Status => {
+            let s = store.status()?;
+            println!("Connected to {}", store.location());
+            println!("  schema version   {}", s.schema_version);
+            println!("  printings        {}", s.printings);
+            println!("  cards            {}", s.cards);
+            println!(
+                "  price points     {}{}",
+                s.price_points,
+                s.first_price_date
+                    .map(|d| format!(" (since {d})"))
+                    .unwrap_or_default()
+            );
+        }
+        DbCommand::Import { file } => {
+            let path = file.unwrap_or_else(|| cfg.collection.clone());
+            let entries = store::markdown::MarkdownStore::open(&path)?.entries()?;
+            let n = store.import(&entries)?;
+            println!(
+                "Imported {n} rows from {} into {}",
+                path.display(),
+                store.location()
+            );
+        }
+        DbCommand::Export { file } => {
+            let path = file.unwrap_or_else(|| cfg.collection.clone());
+            let entries = store.entries()?;
+            std::fs::write(&path, store::markdown::render(&entries))
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            println!("Exported {} rows to {}", entries.len(), path.display());
+        }
+    }
+    Ok(())
 }
 
 fn reprice(cfg: &Config) -> Result<()> {

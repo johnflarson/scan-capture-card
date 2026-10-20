@@ -13,7 +13,10 @@ clap = { version = "4.6", features = ["derive"] }
 dirs = "7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 minifb = "0.29"
+native-tls = "0.2.18"
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }
+postgres = { version = "0.19", features = ["with-chrono-0_4"] }
+postgres-native-tls = "0.5"
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "native-tls", "gzip", "query", "charset", "http2"] }
 serde = { version = "1", features = ["derive"] }
