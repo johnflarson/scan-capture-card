@@ -1,0 +1,120 @@
+# mtg-scan
+
+Scan Magic: The Gathering cards with a webcam, keep the collection in a Markdown
+file, and price every card with **TCGplayer** (market price) and **Card Kingdom**
+(retail + buylist).
+
+Built in Rust for Windows and tested with an **Insta360 Link 2 Pro**. Any UVC
+webcam works.
+
+## How it works
+
+```
+camera frame ─┬─ single card in guide ─────────────────────┐
+              └─ whole table ─ vision LLM finds each card ─┤
+                                                           ▼
+              Windows OCR (fast, offline) ─→ vision LLM (fallback)
+                                                           ▼
+     name / set / number ─→ Scryfall (corrects misreads, picks printing)
+                                                           ▼
+           TCGplayer + Card Kingdom prices ─→ collection.md
+```
+
+* **Hands-free.** The camera watches continuously. When something new holds
+  still, it scans it. Cards left in place are never added twice.
+* **Recognition.** Windows' built-in OCR runs first, so you don't need to
+  install Tesseract. When OCR can't read the card, a vision LLM takes over:
+  **Ollama / LM Studio** running locally, or **OpenRouter** in the cloud.
+* **Picking the right printing.** Misread names are corrected against
+  Scryfall's full name list. If a card has several printings, the photo is
+  compared with each printing's image. That separates regular, showcase and
+  borderless frames, which is usually where the price differences are.
+
+## Install
+
+Prerequisites, all installed via `winget`:
+
+```powershell
+winget install Rustlang.Rustup
+winget install Microsoft.VisualStudio.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Ollama.Ollama          # optional: local vision LLM
+ollama pull qwen3-vl:8b-instruct      # ~6 GB; runs well on a 12 GB GPU
+```
+
+Build:
+
+```powershell
+cargo build --release
+copy mtg-scan.example.toml mtg-scan.toml   # then edit as needed
+```
+
+## Usage
+
+```powershell
+# Lay cards out under the camera; every card in view is scanned and added
+mtg-scan scan-all
+
+# One card at a time inside an on-screen guide (OCR works best this way)
+mtg-scan scan
+
+# One-shot: capture, report prices, exit. --dry-run doesn't save anything.
+mtg-scan scan-all --once --dry-run
+
+mtg-scan list                         # collection + totals
+mtg-scan reprice                      # refresh every price
+mtg-scan price "Sheoldred, the Apocalypse" --set dmu
+mtg-scan add "Lightning Bolt" --set m11 --number 149 --finish foil --qty 2
+mtg-scan remove "Lightning Bolt" --set m11
+mtg-scan identify photo1.jpg photo2.jpg --add
+mtg-scan cameras                      # list cameras
+mtg-scan snapshot frame.jpg           # check framing / focus
+```
+
+Live window keys:
+
+| Key | Action |
+|---|---|
+| (none) | Scanning is automatic. Swap cards and hold still. |
+| `Space` | Scan now |
+| `A` | Toggle auto-scan |
+| `F` | Cycle finish for new cards: nonfoil, foil, etched |
+| `U` | Undo the last scan |
+| `L` | (`scan`) Retry the current card with the LLM |
+| `R` | (`scan-all`) Forget what's on the table so everything is re-added |
+| `Q` / `Esc` | Quit |
+
+Box colours: green = added, orange = added but printing uncertain, dark green =
+unchanged since the last pass, red = not recognised.
+
+### Camera tips (Insta360 Link 2 Pro)
+
+* Turn **off** AI tracking / auto-framing in Insta360 Link Controller so the
+  camera stays still. An overhead or desk-view mount works best.
+* `scan-all` captures at 4K. OCR reads cards that fill a good part of the frame.
+  Smaller cards are read by the LLM.
+
+## Configuration
+
+`mtg-scan.toml` in the working directory, or `%APPDATA%\mtg-scan\config.toml`.
+See [`mtg-scan.example.toml`](mtg-scan.example.toml). CLI flags `--mode`,
+`--llm-provider`, `--llm-model` and `--collection` override the file.
+
+| Provider | Setup |
+|---|---|
+| `ollama` (default in the example) | `ollama pull qwen3-vl:8b-instruct` |
+| `lmstudio` | Load a vision model and start the local server |
+| `openrouter` | `setx OPENROUTER_API_KEY sk-or-...` (default model `google/gemini-2.5-flash`) |
+| `openai` | `setx OPENAI_API_KEY ...` or any compatible `base_url` |
+
+Caches (Card Kingdom price list, Scryfall names/sets, card images) live in
+`%LOCALAPPDATA%\mtg-scan`.
+
+## Collection file
+
+`collection.md` is a readable Markdown table with a summary of totals. It is
+also the app's source of truth. You can edit quantities or delete rows by hand.
+It is git-ignored by default.
+
+## Roadmap
+
+See [CLAUDE.md](CLAUDE.md#roadmap). Next up is **iteration 2: PostgreSQL storage**.

@@ -1,0 +1,7 @@
+/target
+
+# Local settings and personal collection data
+mtg-scan.toml
+collection.md
+scans/
+*.md.tmp

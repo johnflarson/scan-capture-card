@@ -1,0 +1,36 @@
+[package]
+name = "mtg-scan"
+version = "0.1.0"
+edition = "2024"
+description = "Scan Magic: The Gathering cards with a webcam, track the collection in Markdown, and price cards via TCGplayer and Card Kingdom"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.6", features = ["derive"] }
+dirs = "7"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+minifb = "0.29"
+nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "native-tls", "gzip", "query", "charset", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strsim = "0.11"
+toml = "0.9"
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"

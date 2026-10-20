@@ -1,0 +1,36 @@
+# mtg-scan configuration. Copy to `mtg-scan.toml` (in the directory you run
+# mtg-scan from) or to %APPDATA%\mtg-scan\config.toml. Every setting is optional.
+
+# Markdown file the collection is stored in.
+collection = "collection.md"
+
+[camera]
+# Index from `mtg-scan cameras`. Leave unset to auto-pick the Insta360.
+# index = 0
+# Capture size for `scan` (single card). `scan-all` defaults to 3840x2160.
+width = 1920
+height = 1080
+# Height of the single-card guide as a fraction of the frame.
+guide_height = 0.85
+
+[recognition]
+# ocr  = Windows OCR only (offline, fast; needs the card close to the camera)
+# llm  = vision LLM only
+# auto = OCR first, LLM when OCR can't pin down the card
+mode = "auto"
+# Save every captured image here (handy for tuning recognition).
+# save_scans = "scans"
+
+[llm]
+# none | ollama | lmstudio | openrouter | openai
+provider = "ollama"
+# Defaults per provider:
+#   ollama     -> qwen3-vl:8b-instruct   (ollama pull qwen3-vl:8b-instruct)
+#   lmstudio   -> qwen/qwen3-vl-8b
+#   openrouter -> google/gemini-2.5-flash (needs OPENROUTER_API_KEY)
+#   openai     -> gpt-5-mini              (needs OPENAI_API_KEY)
+# model = "qwen3-vl:8b-instruct"
+# base_url = "http://localhost:11434"
+# Name of the environment variable holding the API key (openrouter/openai).
+# api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 120

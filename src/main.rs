@@ -1,0 +1,511 @@
+mod app;
+mod cache;
+mod camera;
+mod config;
+mod live;
+mod llm;
+mod model;
+mod ocr;
+mod pipeline;
+mod pricing;
+mod printing;
+mod recognize;
+mod scryfall;
+mod store;
+
+use std::path::PathBuf;
+
+use anyhow::{Context, Result, bail};
+use clap::{Args, Parser, Subcommand};
+
+use app::{App, describe_card, describe_prices};
+use config::{Config, LlmProvider, RecognitionMode};
+use live::{LiveMode, LiveOptions};
+use llm::VisionLlm;
+use model::{CollectionEntry, Finish, format_usd};
+use recognize::{CardHints, Method, Recognizer};
+use store::totals;
+
+#[derive(Parser)]
+#[command(
+    name = "mtg-scan",
+    version,
+    about = "Scan Magic: The Gathering cards with a webcam, track them in Markdown, and price them via TCGplayer and Card Kingdom"
+)]
+struct Cli {
+    /// Config file (default: ./mtg-scan.toml, then %APPDATA%\mtg-scan\config.toml)
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    /// Collection Markdown file (overrides config)
+    #[arg(long, global = true)]
+    collection: Option<PathBuf>,
+    /// How cards are recognised (overrides config)
+    #[arg(long, global = true, value_enum)]
+    mode: Option<RecognitionMode>,
+    /// Vision LLM provider (overrides config)
+    #[arg(long, global = true, value_enum)]
+    llm_provider: Option<LlmProvider>,
+    /// Vision LLM model id (overrides config)
+    #[arg(long, global = true)]
+    llm_model: Option<String>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Live scanning of one card at a time inside an on-screen guide.
+    /// Scans automatically whenever a new card is held still in the guide.
+    Scan {
+        #[command(flatten)]
+        camera: CameraArgs,
+        /// Finish for scanned cards (toggle with F while scanning)
+        #[arg(long, value_enum, default_value_t = Finish::Nonfoil)]
+        finish: Finish,
+        /// Only scan when SPACE is pressed (auto-scan off)
+        #[arg(long)]
+        manual: bool,
+        /// Identify and price only; don't add to the collection
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Live scanning of every card laid out in view (needs a vision LLM).
+    /// Rescans automatically whenever cards are added, removed or swapped.
+    ScanAll {
+        #[command(flatten)]
+        camera: CameraArgs,
+        #[arg(long, value_enum, default_value_t = Finish::Nonfoil)]
+        finish: Finish,
+        /// Capture a single frame, report, and exit (no window)
+        #[arg(long)]
+        once: bool,
+        /// Scan this photo instead of the camera (implies --once)
+        #[arg(long)]
+        image: Option<PathBuf>,
+        /// Only scan when SPACE is pressed (auto-scan off)
+        #[arg(long)]
+        manual: bool,
+        /// Identify and price only; don't add to the collection
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Identify card(s) from image files, each image showing a single card
+    Identify {
+        images: Vec<PathBuf>,
+        /// Also add the identified cards to the collection
+        #[arg(long)]
+        add: bool,
+        #[arg(long, value_enum, default_value_t = Finish::Nonfoil)]
+        finish: Finish,
+    },
+    /// Add a card by name (and optionally set / collector number)
+    Add {
+        #[command(flatten)]
+        card: CardArgs,
+        #[arg(long, default_value_t = 1)]
+        qty: u32,
+    },
+    /// Remove copies of a card from the collection
+    Remove {
+        /// Name (or part of it) as it appears in the collection
+        name: String,
+        #[arg(long)]
+        set: Option<String>,
+        #[arg(long)]
+        number: Option<String>,
+        #[arg(long, value_enum)]
+        finish: Option<Finish>,
+        #[arg(long, default_value_t = 1)]
+        qty: u32,
+    },
+    /// Look up a card's current prices without adding it
+    Price {
+        #[command(flatten)]
+        card: CardArgs,
+    },
+    /// Refresh prices for every card in the collection
+    Reprice,
+    /// Show the collection and its total value
+    List,
+    /// List available cameras
+    Cameras,
+    /// Print raw OCR lines for an image (debugging recognition)
+    #[command(hide = true)]
+    OcrDump { image: PathBuf },
+    /// Save a single camera frame to a file (to check framing / focus)
+    Snapshot {
+        #[arg(default_value = "snapshot.jpg")]
+        output: PathBuf,
+        #[command(flatten)]
+        camera: CameraArgs,
+    },
+}
+
+#[derive(Args, Clone)]
+struct CameraArgs {
+    /// Camera index from `mtg-scan cameras` (default: the Insta360)
+    #[arg(long)]
+    camera: Option<u32>,
+    /// Capture width
+    #[arg(long)]
+    width: Option<u32>,
+    /// Capture height
+    #[arg(long)]
+    height: Option<u32>,
+}
+
+#[derive(Args, Clone)]
+struct CardArgs {
+    /// Card name (fuzzy matched)
+    name: String,
+    /// Set code, e.g. DMU
+    #[arg(long)]
+    set: Option<String>,
+    /// Collector number within the set
+    #[arg(long)]
+    number: Option<String>,
+    #[arg(long, value_enum, default_value_t = Finish::Nonfoil)]
+    finish: Finish,
+}
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    let cli = Cli::parse();
+    let mut cfg = Config::load(cli.config.as_deref())?;
+    if let Some(c) = cli.collection {
+        cfg.collection = c;
+    }
+    if let Some(m) = cli.mode {
+        cfg.recognition.mode = m;
+    }
+    if let Some(p) = cli.llm_provider {
+        cfg.llm.provider = p;
+    }
+    if let Some(m) = cli.llm_model {
+        cfg.llm.model = Some(m);
+    }
+
+    match cli.command {
+        Command::Scan {
+            camera,
+            finish,
+            manual,
+            dry_run,
+        } => {
+            apply_camera(&mut cfg, &camera);
+            live::run(
+                &cfg,
+                LiveOptions {
+                    mode: LiveMode::Single,
+                    finish,
+                    auto: !manual,
+                    dry_run,
+                },
+            )
+        }
+        Command::ScanAll {
+            camera,
+            finish,
+            once,
+            image,
+            manual,
+            dry_run,
+        } => {
+            // A whole table needs every pixel: default to 4K unless overridden.
+            if camera.width.is_none() && camera.height.is_none() {
+                cfg.camera.width = 3840;
+                cfg.camera.height = 2160;
+            }
+            apply_camera(&mut cfg, &camera);
+            if once || image.is_some() {
+                live::scan_table_once(&cfg, image.as_deref(), finish, dry_run)
+            } else {
+                live::run(
+                    &cfg,
+                    LiveOptions {
+                        mode: LiveMode::Table,
+                        finish,
+                        auto: !manual,
+                        dry_run,
+                    },
+                )
+            }
+        }
+        Command::Identify {
+            images,
+            add,
+            finish,
+        } => identify(&cfg, &images, add, finish),
+        Command::Add { card, qty } => {
+            let mut app = App::new(&cfg)?;
+            let found = lookup(&app, &card)?;
+            let entry = app.add_card(&found, card.finish, qty)?;
+            println!("✓ {}", describe_card(&found, entry.finish));
+            println!(
+                "    {} · now x{}",
+                describe_prices(&entry.prices),
+                entry.quantity
+            );
+            Ok(())
+        }
+        Command::Remove {
+            name,
+            set,
+            number,
+            finish,
+            qty,
+        } => remove(&cfg, &name, set, number, finish, qty),
+        Command::Price { card } => {
+            let app = App::new(&cfg)?;
+            let found = lookup(&app, &card)?;
+            let finish = found.best_finish(card.finish);
+            let prices = app.prices.price(&found, finish);
+            println!("{}", describe_card(&found, finish));
+            println!("    {}", describe_prices(&prices));
+            for url in [&prices.tcgplayer_url, &prices.cardkingdom_url]
+                .into_iter()
+                .flatten()
+            {
+                println!("    {url}");
+            }
+            Ok(())
+        }
+        Command::Reprice => reprice(&cfg),
+        Command::List => list(&cfg),
+        Command::Cameras => {
+            for c in camera::list_cameras()? {
+                println!("{}: {}", c.index(), c.human_name());
+            }
+            Ok(())
+        }
+        Command::OcrDump { image } => {
+            let img = image::open(&image)
+                .with_context(|| format!("failed to open {}", image.display()))?;
+            for l in ocr::Ocr::new()?.recognize(&img)? {
+                println!(
+                    "[x {:.3} y {:.3} w {:.3} h {:.4}] {}",
+                    l.x, l.y, l.w, l.h, l.text
+                );
+            }
+            Ok(())
+        }
+        Command::Snapshot { output, camera } => {
+            apply_camera(&mut cfg, &camera);
+            let mut cam =
+                camera::Webcam::open(cfg.camera.index, cfg.camera.width, cfg.camera.height)?;
+            let frame = camera::warm_frame(&mut cam)?;
+            frame
+                .save(&output)
+                .with_context(|| format!("failed to save {}", output.display()))?;
+            println!(
+                "Saved {}x{} frame from {} to {}",
+                frame.width(),
+                frame.height(),
+                cam.name,
+                output.display()
+            );
+            Ok(())
+        }
+    }
+}
+
+fn apply_camera(cfg: &mut Config, args: &CameraArgs) {
+    if args.camera.is_some() {
+        cfg.camera.index = args.camera;
+    }
+    if let Some(w) = args.width {
+        cfg.camera.width = w;
+    }
+    if let Some(h) = args.height {
+        cfg.camera.height = h;
+    }
+}
+
+fn lookup(app: &App, args: &CardArgs) -> Result<model::Card> {
+    let hints = CardHints {
+        name: Some(args.name.clone()),
+        set_code: args.set.as_ref().map(|s| s.to_lowercase()),
+        collector_number: args
+            .number
+            .as_deref()
+            .map(recognize::normalize_collector_number),
+        foil: None,
+    };
+    let names = recognize::NameIndex::load(&app.scryfall);
+    match recognize::resolve(&hints, &app.scryfall, Method::Ocr, &names)? {
+        Some(id) => Ok(id.card),
+        None => bail!("no card found matching {hints}"),
+    }
+}
+
+fn identify(cfg: &Config, images: &[PathBuf], add: bool, finish: Finish) -> Result<()> {
+    if images.is_empty() {
+        bail!("pass at least one image file");
+    }
+    let mut app = App::new(cfg)?;
+    let llm = VisionLlm::from_config(&cfg.llm)?;
+    let recognizer = Recognizer::new(cfg.recognition.mode, llm, &app.scryfall)?;
+    for path in images {
+        let img =
+            image::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+        print!("{}: ", path.display());
+        match recognizer.identify(&img, &app.scryfall, false) {
+            Ok(id) => {
+                let f = id.card.best_finish(finish);
+                println!(
+                    "{} via {} ({})",
+                    describe_card(&id.card, f),
+                    id.method,
+                    id.quality.label()
+                );
+                if add {
+                    let entry = app.add_card(&id.card, finish, 1)?;
+                    println!(
+                        "    added · {} · now x{}",
+                        describe_prices(&entry.prices),
+                        entry.quantity
+                    );
+                }
+            }
+            Err(e) => println!("✗ {e:#}"),
+        }
+    }
+    Ok(())
+}
+
+fn remove(
+    cfg: &Config,
+    name: &str,
+    set: Option<String>,
+    number: Option<String>,
+    finish: Option<Finish>,
+    qty: u32,
+) -> Result<()> {
+    let mut app = App::new(cfg)?;
+    let needle = name.to_lowercase();
+    let matches: Vec<CollectionEntry> = app
+        .store
+        .entries()?
+        .into_iter()
+        .filter(|e| e.name.to_lowercase().contains(&needle))
+        .filter(|e| {
+            set.as_ref()
+                .is_none_or(|s| e.set_code.eq_ignore_ascii_case(s))
+        })
+        .filter(|e| {
+            number
+                .as_ref()
+                .is_none_or(|n| e.collector_number.eq_ignore_ascii_case(n))
+        })
+        .filter(|e| finish.is_none_or(|f| e.finish == f))
+        .collect();
+    match matches.as_slice() {
+        [] => bail!("no card in the collection matches '{name}'"),
+        [e] => {
+            let left = app
+                .store
+                .remove(&e.scryfall_id, e.finish, qty)?
+                .map(|e| e.quantity)
+                .unwrap_or(0);
+            println!(
+                "Removed {} x {} ({} #{}, {}); {left} left",
+                qty.min(e.quantity),
+                e.name,
+                e.set_code,
+                e.collector_number,
+                e.finish
+            );
+            Ok(())
+        }
+        many => {
+            println!("'{name}' matches several rows; narrow it with --set / --number / --finish:");
+            for e in many {
+                println!(
+                    "  {} ({} #{}, {}) x{}",
+                    e.name, e.set_code, e.collector_number, e.finish, e.quantity
+                );
+            }
+            bail!("ambiguous card")
+        }
+    }
+}
+
+fn reprice(cfg: &Config) -> Result<()> {
+    let mut app = App::new(cfg)?;
+    app.prices
+        .cardkingdom
+        .force_refresh()
+        .context("failed to refresh Card Kingdom prices")?;
+    let entries = app.store.entries()?;
+    println!("Repricing {} printings…", entries.len());
+    for e in &entries {
+        let Some(card) = app.scryfall.by_id(&e.scryfall_id)? else {
+            println!("  ? {} — no longer on Scryfall, skipped", e.name);
+            continue;
+        };
+        let prices = app.prices.price(&card, e.finish);
+        println!(
+            "  {} ({} #{}, {}): TCG {} → {} · CK {} → {}",
+            e.name,
+            e.set_code,
+            e.collector_number,
+            e.finish,
+            format_usd(e.prices.tcgplayer),
+            format_usd(prices.tcgplayer),
+            format_usd(e.prices.cardkingdom),
+            format_usd(prices.cardkingdom)
+        );
+        app.store.update_prices(&e.scryfall_id, e.finish, prices)?;
+    }
+    print_totals(&app.store.entries()?);
+    Ok(())
+}
+
+fn list(cfg: &Config) -> Result<()> {
+    let app = App::new(cfg)?;
+    let entries = app.store.entries()?;
+    if entries.is_empty() {
+        println!("{} is empty — scan some cards first.", app.store.location());
+        return Ok(());
+    }
+    let name_w = entries
+        .iter()
+        .map(|e| e.name.chars().count())
+        .max()
+        .unwrap_or(4)
+        .clamp(4, 40);
+    println!(
+        "{:>3}  {:<name_w$}  {:<5} {:>5}  {:<7}  {:>9}  {:>9}  {:>9}",
+        "Qty", "Name", "Set", "#", "Finish", "TCG", "CK", "CK buy"
+    );
+    for e in &entries {
+        let name: String = e.name.chars().take(name_w).collect();
+        println!(
+            "{:>3}  {:<name_w$}  {:<5} {:>5}  {:<7}  {:>9}  {:>9}  {:>9}",
+            e.quantity,
+            name,
+            e.set_code,
+            e.collector_number,
+            e.finish.as_str(),
+            format_usd(e.prices.tcgplayer),
+            format_usd(e.prices.cardkingdom),
+            format_usd(e.prices.cardkingdom_buylist)
+        );
+    }
+    print_totals(&entries);
+    Ok(())
+}
+
+fn print_totals(entries: &[CollectionEntry]) {
+    let t = totals(entries);
+    println!(
+        "\n{} printings, {} cards · TCGplayer ${:.2} · Card Kingdom ${:.2} (buylist ${:.2})",
+        t.printings, t.cards, t.tcgplayer, t.cardkingdom, t.cardkingdom_buylist
+    );
+}
