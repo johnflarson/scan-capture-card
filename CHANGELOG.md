@@ -28,6 +28,8 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   with picks); group by type, rarity or color with per-group count and value; the search also
   matches type line, rarity and color; totals follow the filter. Filters and grouping are kept
   when switching tabs.
+- Phone layout for the web UI (#16): at 360-430 px wide every page fits the screen (two-row top
+  bar, one column, thumb-sized controls under the camera; wide tables scroll inside their card).
 - Card image on hover (#29): hovering a card name on the Collection, Deck and Home pages shows the
   card at a readable size next to the pointer (kept inside the window) for as long as the pointer
   stays on the name; images load only on hover, and touch taps just open the link.
@@ -56,6 +58,7 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   overwrite each other's changes.
 
 ### Fixed
+- Empty session totals showed "$-0.00" (an empty sum is negative zero); they now show "$0.00".
 - "Retry with LLM" now replaces the card the previous single-card scan added instead of adding a
   second copy. The original is removed only once the retry has identified the card, and a retry
   never removes cards from a table pass.

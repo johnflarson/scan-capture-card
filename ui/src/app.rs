@@ -215,7 +215,10 @@ pub fn App() -> impl IntoView {
                         .filter(|s| s.dry_run)
                         .map(|_| view! { <span class="chip warning">"Dry run: nothing is saved"</span> })
                 }}
-                <span title=move || state.get().map(|s| s.collection).unwrap_or_default()>
+                <span
+                    class="bar-location"
+                    title=move || state.get().map(|s| s.collection).unwrap_or_default()
+                >
                     {move || state.get().map(|s| s.collection).unwrap_or_default()}
                 </span>
                 <span class="dot" class:on=move || connected.get()></span>
