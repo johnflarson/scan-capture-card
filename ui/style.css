@@ -223,6 +223,31 @@ main { padding: 20px 24px 40px; max-width: 1800px; margin: 0 auto; }
 .prices .ck { color: var(--md-secondary); }
 .prices .muted { color: var(--md-on-surface-variant); }
 
+/* Review list: uncertain printings waiting for the user. */
+.review { border-bottom: 1px solid var(--md-outline-variant); background: rgb(240 168 50 / 0.06); }
+.review-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 14px 18px 0; }
+.review-head h3 { margin: 0; font-size: 15px; font-weight: 500; color: #f0a832; }
+.review-head .muted { font-size: 13px; }
+.review-list { max-height: none; }
+.review-tile { animation: none; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.review-actions .btn { padding: 7px 14px; }
+.picker { margin-top: 10px; }
+.picker > p { margin: 0 0 8px; font-size: 13px; }
+.picker-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px;
+  max-height: 280px; overflow-y: auto; padding: 2px;
+}
+.picker-item {
+  display: grid; justify-items: center; gap: 2px; padding: 4px;
+  border: 2px solid transparent; border-radius: 8px; background: transparent; color: inherit;
+  font-size: 11px; cursor: pointer;
+}
+.picker-item img { width: 100%; aspect-ratio: 63 / 88; border-radius: 4px; object-fit: cover; background: var(--md-surface-container-highest); }
+.picker-item:hover { background: var(--md-surface-container-highest); }
+.picker-item.selected { border-color: var(--md-primary); }
+.picker-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+
 /* ------------------------------------------------------- collection --- */
 .collection-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
 .collection-head h1 { margin: 0; font-size: 22px; font-weight: 400; }

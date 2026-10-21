@@ -299,6 +299,8 @@ fn run() -> Result<()> {
                     finish,
                     auto: !manual,
                     dry_run,
+                    // The desktop window has no review list: save as before.
+                    review_uncertain: false,
                 },
             )
         }
@@ -321,6 +323,7 @@ fn run() -> Result<()> {
                         finish,
                         auto: !manual,
                         dry_run,
+                        review_uncertain: false,
                     },
                 )
             }
@@ -344,6 +347,7 @@ fn run() -> Result<()> {
                     finish,
                     auto: !manual,
                     dry_run,
+                    review_uncertain: cfg.recognition.review_uncertain,
                 },
                 web::WebOptions {
                     addr: std::net::SocketAddr::new(bind, port),

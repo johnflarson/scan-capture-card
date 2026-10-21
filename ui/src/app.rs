@@ -15,6 +15,7 @@ use crate::filters::{
 };
 use crate::home::HomePage;
 use crate::preview::{CardLink, Preview, PreviewLayer};
+use crate::review::ReviewList;
 
 use crate::api;
 
@@ -155,10 +156,10 @@ pub fn App() -> impl IntoView {
                 if card.outcome == CardOutcome::Added {
                     cache.mark_stale();
                 }
-                cards.update(|list| {
-                    if !list.iter().any(|c| c.seq == card.seq) {
-                        list.push(card);
-                    }
+                // A reviewed card comes back with the same seq: replace it.
+                cards.update(|list| match list.iter_mut().find(|c| c.seq == card.seq) {
+                    Some(existing) => *existing = card,
+                    None => list.push(card),
                 })
             }
             ServerEvent::Undone { seqs } => {
@@ -369,21 +370,33 @@ fn LivePage(
                     </div>
                 </div>
             </section>
-            <SessionPanel cards />
+            <SessionPanel cards send />
         </div>
     }
 }
 
 #[component]
-fn SessionPanel(cards: RwSignal<Vec<CardView>>) -> impl IntoView {
+fn SessionPanel(cards: RwSignal<Vec<CardView>>, send: Callback<ClientCommand>) -> impl IntoView {
+    // Saved (or, in a dry run, priced) cards: what the totals count.
     let kept = move || {
         cards.with(|list| {
             list.iter()
-                .filter(|c| !c.undone)
+                .filter(|c| {
+                    !c.undone && matches!(c.outcome, CardOutcome::Added | CardOutcome::Priced)
+                })
                 .cloned()
                 .collect::<Vec<_>>()
         })
     };
+    let held = Signal::derive(move || {
+        cards.with(|list| {
+            list.iter()
+                .rev()
+                .filter(|c| c.outcome == CardOutcome::Held && !c.undone)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    });
     let total =
         move |price: fn(&CardView) -> Option<f64>| kept().iter().filter_map(price).sum::<f64>();
 
@@ -406,6 +419,7 @@ fn SessionPanel(cards: RwSignal<Vec<CardView>>) -> impl IntoView {
                     <div class="value ck">{move || usd(Some(total(|c| c.cardkingdom)))}</div>
                 </div>
             </div>
+            <ReviewList held send />
             <Show
                 when=move || cards.with(|list| !list.is_empty())
                 fallback=|| {
@@ -421,10 +435,12 @@ fn SessionPanel(cards: RwSignal<Vec<CardView>>) -> impl IntoView {
                     <For
                         each=move || {
                             let mut list = cards.get();
+                            // Held cards are in the review list above.
+                            list.retain(|c| c.outcome != CardOutcome::Held || c.undone);
                             list.reverse();
                             list
                         }
-                        key=|c| (c.seq, c.undone)
+                        key=|c| format!("{}|{}|{:?}", c.seq, c.undone, c.outcome)
                         children=|card| view! { <CardTile card /> }
                     />
                 </ul>
@@ -439,7 +455,7 @@ fn CardTile(card: CardView) -> impl IntoView {
     let foil = c.finish != Finish::Nonfoil;
     let review = c.needs_review;
     view! {
-        <li class="tile" class:undone=c.undone>
+        <li class="tile" class:undone=c.undone || c.outcome == CardOutcome::Discarded>
             {match c.image_url.clone() {
                 Some(src) => view! { <img src=src alt="" loading="lazy" /> }.into_any(),
                 None => view! { <div class="noimg"></div> }.into_any(),
@@ -459,6 +475,8 @@ fn CardTile(card: CardView) -> impl IntoView {
                     {c.quantity.map(|q| view! { <span class="chip">{format!("{q} owned")}</span> })}
                     {(c.outcome == CardOutcome::Priced)
                         .then(|| view! { <span class="chip">"not saved"</span> })}
+                    {(c.outcome == CardOutcome::Discarded)
+                        .then(|| view! { <span class="chip">"discarded"</span> })}
                     <span
                         class="chip"
                         class:primary=!review

@@ -29,6 +29,11 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 - Access token for the web UI (#17): with `MTG_SCAN_UI_TOKEN` in `.env` (`mtg-scan ui-token` creates
   one), other computers get a sign-in page (or use a `?token=` link once; a cookie remembers it);
   this computer never needs it. `--bind 127.0.0.1` keeps the UI on this computer only.
+- Review uncertain identifications (#8): in the web UI, a card whose printing is uncertain (amber)
+  is no longer saved straight away; it waits under **To review** on the Scan page with Accept,
+  Other printing (every printing as thumbnails, plus the finish) and Discard.
+  `[recognition] review_uncertain = false` saves them directly as before; the desktop window and
+  `scan-all --once` always do.
 - Collection page type, rarity and color (#23): three new columns (full type line and color
   letters on hover); filter chips for each, combinable (any value within a column, every column
   with picks); group by type, rarity or color with per-group count and value; the search also

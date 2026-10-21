@@ -58,7 +58,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `web/` | Web front end: Axum server for `mtg-scan ui` (MJPEG preview, SSE events, JSON API, embedded `ui/dist` via rust-embed); `access.rs` guards other computers with `MTG_SCAN_UI_TOKEN` (cookie / Bearer / `?token=` link, loopback exempt) |
 | `../shared/` | `mtg-scan-shared`: serde types exchanged by server and UI (`StateView`, `CardView`, `ServerEvent`, `ClientCommand`, `CollectionRow`, …) and logic both sides use: `Stats::of` (landing statistics), `ColorGroup`, `main_type`, `Totals::of`, `RowFilter` + `Facet` (Collection search, filter chips, group-by). Statistics and filtering are computed in the browser from `/api/collection` |
 | `../ui/` | `mtg-scan-ui`: Leptos 0.8 CSR app (`app.rs` components, `home.rs` landing page, `filters.rs` Collection filters, `api.rs` fetch + EventSource), `style.css` Material 3 tokens |
-| `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo |
+| `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo; with `hold_uncertain` (web UI, `[recognition] review_uncertain`) uncertain matches become `Outcome::Held`, which the engine saves on `Command::Accept` or drops on `Discard` |
 | `recognize.rs` | `Recognizer` (OCR, then LLM, then visual refine), `resolve()` hints to a Scryfall printing, `NameIndex`, `MatchQuality` |
 | `ocr.rs` | Windows OCR wrapper; returns lines with normalised boxes |
 | `llm.rs` | Vision LLM: `read_card`, `detect_cards` (bbox_2d, 0-1000). OpenAI wire format, or Ollama native `/api/chat` |

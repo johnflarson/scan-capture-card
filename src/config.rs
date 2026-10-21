@@ -278,6 +278,9 @@ pub struct RecognitionConfig {
     pub mode: RecognitionMode,
     /// Save each captured card image into this folder (for debugging).
     pub save_scans: Option<PathBuf>,
+    /// Web UI: hold matches whose printing is uncertain in a review list
+    /// instead of saving them right away.
+    pub review_uncertain: bool,
 }
 
 impl Default for RecognitionConfig {
@@ -285,6 +288,7 @@ impl Default for RecognitionConfig {
         Self {
             mode: RecognitionMode::Auto,
             save_scans: None,
+            review_uncertain: true,
         }
     }
 }
@@ -432,9 +436,19 @@ mod tests {
             Some("http://localhost:11434")
         );
         assert_eq!(cfg.recognition.mode, RecognitionMode::Auto);
+        assert!(
+            cfg.recognition.review_uncertain,
+            "held for review by default"
+        );
         assert_eq!(cfg.camera.width, 1920);
         assert_eq!(cfg.storage.backend, StorageBackend::Markdown);
         assert_eq!(cfg.storage.schema, "mtg_scan");
+    }
+
+    #[test]
+    fn review_of_uncertain_matches_can_be_turned_off() {
+        let cfg: Config = toml::from_str("[recognition]\nreview_uncertain = false").unwrap();
+        assert!(!cfg.recognition.review_uncertain);
     }
 
     #[test]

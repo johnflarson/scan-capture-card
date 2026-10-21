@@ -35,6 +35,9 @@ guide_height = 0.85
 mode = "auto"
 # Save every captured image here (handy for tuning recognition).
 # save_scans = "scans"
+# Web UI: when the printing is uncertain (amber), hold the card in a review
+# list (accept, pick another printing, or discard) instead of saving it.
+review_uncertain = true
 
 [llm]
 # none | ollama | lmstudio | openrouter | openai

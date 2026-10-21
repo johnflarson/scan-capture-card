@@ -71,7 +71,10 @@ asks). The pages:
 - **Scan**: the camera with the guide or detected-card boxes; mode, finish
   and auto-scan controls; Scan now / Retry with LLM / Rescan all / Undo; and
   each card the moment it is saved, with its image, set, price links and
-  match confidence, plus session totals.
+  match confidence, plus session totals. When the printing is uncertain the
+  card waits under **To review** instead: accept it, pick the right printing
+  from thumbnails, or discard it (`[recognition] review_uncertain = false`
+  turns this off).
 - **Collection**: everything you own, with each card's type, rarity and color.
   Search by name, set, type, rarity or color (e.g. `blue creature`). Pick
   filter chips, e.g. Red + Green and Rare + Mythic for red or green rares and
