@@ -49,7 +49,7 @@ cargo install trunk --locked
 cd ui; trunk build --release; cd ..        # web UI -> ui/dist (embedded below)
 cargo build --release
 copy mtg-scan.example.toml mtg-scan.toml   # settings; edit as needed
-copy .env.example .env                     # secrets: DB password, API keys
+copy .env.example .env                     # secrets and settings: DB password, API keys, Moxfield user
 ```
 
 ## Usage
@@ -80,7 +80,11 @@ asks). The pages:
   each row edits it: change the quantity or finish, paste a Scryfall link
   (e.g. `https://scryfall.com/card/a25/141/lightning-bolt`) to fix the
   printing, or remove the row. Editing is off in `--dry-run`.
-- **Decks**: a placeholder for Moxfield decks (planned).
+- **Decks**: your public Moxfield decks (set `MTG_SCAN_MOXFIELD_USER` in
+  `.env`, e.g. `https://moxfield.com/users/YourName`). Each deck shows how
+  much of it you already own (any printing counts) and what it costs to
+  finish; open one for every card's status: owned, other printing, partly
+  owned or missing. Prices are Moxfield's (TCGplayer and Card Kingdom).
 
 Dark theme, luminaldata colours. Anyone on the network can use it, and there's
 no login yet (see issue #17). Phone layouts are planned (#16).

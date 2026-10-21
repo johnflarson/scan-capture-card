@@ -2,17 +2,23 @@
 //! next to statistics about the collection.
 
 use leptos::prelude::*;
-use mtg_scan_shared::{CollectionRow, Finish, Mode, Slice, StateView, Stats, ValueChange, usd};
+use mtg_scan_shared::{
+    CollectionRow, DeckOwnership, Finish, Mode, Slice, StateView, Stats, ValueChange, usd,
+};
 
 use crate::app::{CollectionCache, Metric, Tab};
+use crate::decks::{DeckCache, DeckStatsBlock, ownership};
 
 #[component]
 pub fn HomePage(
     state: RwSignal<Option<StateView>>,
     cache: CollectionCache,
+    decks: DeckCache,
     notify: Callback<(String, bool)>,
     go: Callback<Tab>,
 ) -> impl IntoView {
+    decks.ensure(notify);
+    let owned = ownership(decks, cache);
     let stats = Memo::new(move |_| cache.data.with(|d| d.as_ref().map(|d| Stats::of(&d.rows))));
     let value_change = move || {
         cache
@@ -42,6 +48,20 @@ pub fn HomePage(
         ),
         None => "Loading…".into(),
     });
+    let decks_detail = Signal::derive(move || match decks.list.get() {
+        None => "Loading…".into(),
+        Some(v) if v.user.is_none() => "Connect Moxfield in .env".into(),
+        Some(v) => {
+            let complete = owned.with(|o| o.values().filter(|x| x.owned == x.total).count());
+            let checked = owned.with(|o| o.len());
+            if checked == 0 {
+                format!("{} decks on Moxfield", v.decks.len())
+            } else {
+                format!("{} decks · {complete} complete", v.decks.len())
+            }
+        }
+    });
+    let go_decks = Callback::new(move |()| go.run(Tab::Decks));
 
     view! {
         <div class="home">
@@ -65,8 +85,8 @@ pub fn HomePage(
                 <LaunchButton
                     kind="decks"
                     title="Decks"
-                    detail=Signal::derive(|| "Moxfield decks · coming soon".to_string())
-                    on_click=Callback::new(move |()| go.run(Tab::Decks))
+                    detail=decks_detail
+                    on_click=go_decks
                 >
                     <DecksIcon />
                 </LaunchButton>
@@ -96,7 +116,10 @@ pub fn HomePage(
                         <div class="empty">"No cards yet. Start with Scan."</div>
                     }
                     .into_any(),
-                    Some(s) => view! { <StatsBody stats=s value_change=value_change() /> }.into_any(),
+                    Some(s) => {
+                        view! { <StatsBody stats=s value_change=value_change() decks owned go_decks /> }
+                            .into_any()
+                    }
                 }}
             </section>
         </div>
@@ -123,7 +146,13 @@ fn LaunchButton(
 }
 
 #[component]
-fn StatsBody(stats: Stats, value_change: Option<ValueChange>) -> impl IntoView {
+fn StatsBody(
+    stats: Stats,
+    value_change: Option<ValueChange>,
+    decks: DeckCache,
+    owned: Memo<std::collections::HashMap<String, DeckOwnership>>,
+    go_decks: Callback<()>,
+) -> impl IntoView {
     let t = stats.totals.clone();
     let (change_value, change_kind, change_title) = match &value_change {
         Some(c) => {
@@ -190,10 +219,7 @@ fn StatsBody(stats: Stats, value_change: Option<ValueChange>) -> impl IntoView {
                 />
             </StatBlock>
             <StatBlock title="Decks" wide=true>
-                <p class="muted">
-                    "Deck count, deck colors, how much of each deck you own and the cost to finish it "
-                    "will show here once Moxfield decks are connected."
-                </p>
+                <DeckStatsBlock decks owned go_decks />
             </StatBlock>
         </div>
     }
@@ -213,9 +239,14 @@ fn StatBlock(
     }
 }
 
-/// A stacked bar of the color groups with a legend.
+/// A stacked bar of the color groups with a legend; `unit` names what is
+/// counted ("cards", "decks").
 #[component]
-fn ColorBreakdown(slices: Vec<(mtg_scan_shared::ColorGroup, Slice)>, total: u32) -> impl IntoView {
+pub fn ColorBreakdown(
+    slices: Vec<(mtg_scan_shared::ColorGroup, Slice)>,
+    total: u32,
+    #[prop(default = "cards")] unit: &'static str,
+) -> impl IntoView {
     let pct = move |cards: u32| {
         if total == 0 {
             0.0
@@ -231,7 +262,7 @@ fn ColorBreakdown(slices: Vec<(mtg_scan_shared::ColorGroup, Slice)>, total: u32)
                 <span
                     class=format!("seg {}", g.class())
                     style=format!("width: {:.2}%", pct(s.cards))
-                    title=format!("{}: {} cards", s.label, s.cards)
+                    title=format!("{}: {} {unit}", s.label, s.cards)
                 ></span>
             }
         })
@@ -255,16 +286,26 @@ fn ColorBreakdown(slices: Vec<(mtg_scan_shared::ColorGroup, Slice)>, total: u32)
     }
 }
 
-/// Horizontal bars, scaled to the largest slice.
+/// Horizontal bars, scaled to the largest slice; the value is shown on
+/// hover when there is one.
 #[component]
-fn Bars(slices: Vec<Slice>, class_of: fn(&str) -> String) -> impl IntoView {
+pub fn Bars(
+    slices: Vec<Slice>,
+    class_of: fn(&str) -> String,
+    #[prop(default = "cards")] unit: &'static str,
+) -> impl IntoView {
     let max = slices.iter().map(|s| s.cards).max().unwrap_or(0).max(1);
     let rows = slices
         .into_iter()
         .map(|s| {
             let width = s.cards as f64 * 100.0 / max as f64;
+            let title = if s.value > 0.0 {
+                format!("{} {unit} · {}", s.cards, usd(Some(s.value)))
+            } else {
+                format!("{} {unit}", s.cards)
+            };
             view! {
-                <li title=format!("{} cards · {}", s.cards, usd(Some(s.value)))>
+                <li title=title>
                     <span class="bar-label">{s.label.clone()}</span>
                     <span class="bar-track">
                         <span
@@ -323,21 +364,6 @@ fn CardList(rows: Vec<CollectionRow>, show_price: bool) -> impl IntoView {
 }
 
 #[component]
-pub fn DecksPage() -> impl IntoView {
-    view! {
-        <section class="card placeholder">
-            <div class="launch-icon big"><DecksIcon /></div>
-            <h1>"Decks"</h1>
-            <p>
-                "Your Moxfield decks will appear here: each deck's cards, which of them you "
-                "already own, and what the deck costs to finish."
-            </p>
-            <p class="muted">"Coming in a later update."</p>
-        </section>
-    }
-}
-
-#[component]
 fn CameraIcon() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -357,7 +383,7 @@ fn LibraryIcon() -> impl IntoView {
 }
 
 #[component]
-fn DecksIcon() -> impl IntoView {
+pub fn DecksIcon() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="m2.53 19.65 1.34.56v-9.03l-2.43 5.86c-.41 1.02.08 2.19 1.09 2.61zm19.5-3.7L17.07 3.98a2.01 2.01 0 0 0-2.6-1.08L7.1 5.95a2 2 0 0 0-1.08 2.6l4.96 11.97a2 2 0 0 0 2.6 1.08l7.36-3.05a2 2 0 0 0 1.09-2.6zM7.88 8.75a1 1 0 1 1 0-2 1 1 0 0 1 0 2zm-2 11a2 2 0 0 0 2 2h1.45l-3.45-8.34v6.34z" />

@@ -8,10 +8,11 @@ use mtg_scan_shared::{
     PrintingView, RowEdit, ServerEvent, StateView, Totals, usd,
 };
 
+use crate::decks::{DeckCache, DecksPage};
 use crate::filters::{
     CollectionPrefs, ColorCell, FilterBar, GroupHead, Item, RarityCell, TypeCell, items,
 };
-use crate::home::{DecksPage, HomePage};
+use crate::home::HomePage;
 
 use crate::api;
 
@@ -96,6 +97,7 @@ pub fn App() -> impl IntoView {
     let tab = RwSignal::new(Tab::Home);
     let cache = CollectionCache::new();
     let prefs = CollectionPrefs::new();
+    let decks = DeckCache::new();
     let snack = RwSignal::new(None::<(String, bool, u64)>);
     let snack_seq = StoredValue::new(0u64);
 
@@ -117,7 +119,7 @@ pub fn App() -> impl IntoView {
     // Home and Collection show the collection, so keep it current while either
     // is open (a scan adding cards marks it stale).
     cache.keep_fresh(
-        move || matches!(tab.get(), Tab::Home | Tab::Collection),
+        move || matches!(tab.get(), Tab::Home | Tab::Collection | Tab::Decks),
         notify,
     );
 
@@ -219,13 +221,13 @@ pub fn App() -> impl IntoView {
             {move || match tab.get() {
                 Tab::Home => {
                     let go = Callback::new(move |t: Tab| tab.set(t));
-                    view! { <HomePage state cache notify go /> }.into_any()
+                    view! { <HomePage state cache decks notify go /> }.into_any()
                 }
                 Tab::Scan => view! { <LivePage state cards send epoch /> }.into_any(),
                 Tab::Collection => {
                     view! { <CollectionPage state cache prefs notify /> }.into_any()
                 }
-                Tab::Decks => view! { <DecksPage /> }.into_any(),
+                Tab::Decks => view! { <DecksPage decks cache notify /> }.into_any(),
             }}
         </main>
         {move || {

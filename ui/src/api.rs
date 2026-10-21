@@ -5,7 +5,8 @@ use gloo_net::eventsource::futures::EventSource;
 use gloo_net::http::{Request, Response};
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    ClientCommand, CollectionView, EditResult, PrintingView, RowEdit, ServerEvent, SessionView,
+    ClientCommand, CollectionView, DeckView, DecksView, EditResult, PrintingView, RowEdit,
+    ServerEvent, SessionView,
 };
 use serde::de::DeserializeOwned;
 
@@ -53,6 +54,25 @@ pub async fn edit(edit: &RowEdit) -> Result<EditResult, String> {
     let resp = Request::post("/api/collection/edit")
         .json(edit)
         .map_err(err)?
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+/// The Moxfield user's decks; `refresh` skips the server's short-term cache.
+pub async fn decks(refresh: bool) -> Result<DecksView, String> {
+    let resp = Request::get("/api/decks")
+        .query([("refresh", if refresh { "true" } else { "false" })])
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn deck(id: &str) -> Result<DeckView, String> {
+    // Deck IDs are URL-safe (letters, digits, `-`, `_`), as Moxfield issues them.
+    let resp = Request::get(&format!("/api/decks/{id}"))
         .send()
         .await
         .map_err(err)?;
