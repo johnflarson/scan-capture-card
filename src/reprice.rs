@@ -104,6 +104,8 @@ mod tests {
             set_name: "Ixalan".into(),
             collector_number: "65".into(),
             rarity: "common".into(),
+            colors: Vec::new(),
+            type_line: String::new(),
             finish: Finish::Nonfoil,
             quantity: 1,
             prices: Prices::default(),

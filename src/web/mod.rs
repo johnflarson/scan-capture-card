@@ -29,7 +29,7 @@ use axum::{Json, Router};
 use futures_util::{Stream, StreamExt};
 use mtg_scan_shared::{
     ClientCommand, CollectionRow, CollectionView, EditResult, PrintingView, RowEdit, ServerEvent,
-    SessionView, Totals,
+    SessionView, Totals, ValueChange,
 };
 use tokio::sync::watch;
 use tokio_stream::wrappers::BroadcastStream;
@@ -337,7 +337,7 @@ fn edit_row(cfg: &Config, edit: RowEdit) -> Result<EditResult> {
             .ok_or_else(|| anyhow!(GONE))?;
         return Ok(EditResult {
             message: format!("{} ({finish}): {} owned", row.name, row.quantity),
-            row: Some(collection_row(row)),
+            row: Some(row_with_details(&app, row)),
         });
     }
 
@@ -372,8 +372,40 @@ fn edit_row(cfg: &Config, edit: RowEdit) -> Result<EditResult> {
             "Changed to {} ({} #{}, {to_finish}){merged}",
             row.name, row.set_code, row.collector_number
         ),
-        row: Some(collection_row(row)),
+        row: Some(row_with_details(&app, row)),
     })
+}
+
+/// Look up colors and type line for entries that don't carry them (the
+/// Markdown store doesn't keep them). Degrades to "unknown" if Scryfall
+/// can't be reached.
+fn fill_details(app: &App, entries: &mut [CollectionEntry]) {
+    let missing: Vec<String> = entries
+        .iter()
+        .filter(|e| e.type_line.is_empty())
+        .map(|e| e.scryfall_id.clone())
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let cards = match app.scryfall.cards_by_id(&missing) {
+        Ok(cards) => cards,
+        Err(e) => {
+            eprintln!("  ! could not fetch card details from Scryfall ({e:#})");
+            return;
+        }
+    };
+    for e in entries.iter_mut().filter(|e| e.type_line.is_empty()) {
+        if let Some(card) = cards.get(&e.scryfall_id) {
+            e.colors = card.colors.clone();
+            e.type_line = card.type_line.clone();
+        }
+    }
+}
+
+fn row_with_details(app: &App, mut entry: CollectionEntry) -> CollectionRow {
+    fill_details(app, std::slice::from_mut(&mut entry));
+    collection_row(entry)
 }
 
 fn collection_row(e: CollectionEntry) -> CollectionRow {
@@ -385,11 +417,14 @@ fn collection_row(e: CollectionEntry) -> CollectionRow {
         set_name: e.set_name,
         number: e.collector_number,
         rarity: e.rarity,
+        colors: e.colors,
+        type_line: e.type_line,
         finish: e.finish.into(),
         quantity: e.quantity,
         tcgplayer: e.prices.tcgplayer,
         cardkingdom: e.prices.cardkingdom,
         cardkingdom_buylist: e.prices.cardkingdom_buylist,
+        added: e.added.to_string(),
         priced: e.price_updated.map(|d| d.to_string()),
         tcgplayer_url: e.prices.tcgplayer_url,
         cardkingdom_url: e.prices.cardkingdom_url,
@@ -398,8 +433,22 @@ fn collection_row(e: CollectionEntry) -> CollectionRow {
 
 fn collection_view(cfg: &Config) -> Result<CollectionView> {
     let app = App::new(cfg)?;
-    let entries = app.store.entries()?;
+    let mut entries = app.store.entries()?;
+    fill_details(&app, &mut entries);
     let t = crate::store::totals(&entries);
+    let since = chrono::Local::now().date_naive() - chrono::Days::new(7);
+    let value_change = match app.store.value_change(since) {
+        Ok(change) => change.map(|c| ValueChange {
+            since: since.to_string(),
+            before: c.before,
+            now: c.now,
+            rows: c.rows,
+        }),
+        Err(e) => {
+            eprintln!("  ! could not compute the value change ({e:#})");
+            None
+        }
+    };
     Ok(CollectionView {
         location: app.store.location(),
         totals: Totals {
@@ -410,6 +459,7 @@ fn collection_view(cfg: &Config) -> Result<CollectionView> {
             cardkingdom_buylist: t.cardkingdom_buylist,
         },
         rows: entries.into_iter().map(collection_row).collect(),
+        value_change,
     })
 }
 

@@ -80,7 +80,7 @@ pub enum Outcome {
     /// Identified and added to the collection.
     Added {
         id: Box<Identification>,
-        entry: CollectionEntry,
+        entry: Box<CollectionEntry>,
     },
     /// Identified and priced only (dry run).
     Priced {
@@ -202,7 +202,7 @@ impl Pipeline {
             .push((entry.scryfall_id.clone(), entry.finish, entry.name.clone()));
         Ok(Outcome::Added {
             id: Box::new(id),
-            entry,
+            entry: Box::new(entry),
         })
     }
 

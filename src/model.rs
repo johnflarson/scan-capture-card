@@ -80,6 +80,10 @@ pub struct Card {
     pub set_name: String,
     pub collector_number: String,
     pub rarity: String,
+    /// Color letters (`W`, `U`, `B`, `R`, `G`); empty for colorless.
+    pub colors: Vec<String>,
+    /// e.g. "Legendary Creature — Phyrexian Praetor".
+    pub type_line: String,
     pub finishes: Vec<Finish>,
     pub tcgplayer_id: Option<u64>,
     pub tcgplayer_etched_id: Option<u64>,
@@ -127,6 +131,10 @@ pub struct CollectionEntry {
     pub set_name: String,
     pub collector_number: String,
     pub rarity: String,
+    /// From Scryfall; empty when not looked up (the Markdown file doesn't
+    /// store them).
+    pub colors: Vec<String>,
+    pub type_line: String,
     pub finish: Finish,
     pub quantity: u32,
     pub prices: Prices,
@@ -144,6 +152,8 @@ impl CollectionEntry {
             set_name: card.set_name.clone(),
             collector_number: card.collector_number.clone(),
             rarity: card.rarity.clone(),
+            colors: card.colors.clone(),
+            type_line: card.type_line.clone(),
             finish,
             quantity,
             prices,

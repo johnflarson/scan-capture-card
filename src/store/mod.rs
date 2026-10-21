@@ -5,8 +5,18 @@ pub mod markdown;
 pub mod postgres;
 
 use anyhow::{Result, bail};
+use chrono::NaiveDate;
 
 use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
+
+/// TCGplayer value of the cards owned now, at the prices of `since` and at
+/// their latest prices, over the rows priced on both dates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValueChange {
+    pub before: f64,
+    pub now: f64,
+    pub rows: u32,
+}
 
 pub trait CollectionStore {
     fn entries(&self) -> Result<Vec<CollectionEntry>>;
@@ -52,6 +62,12 @@ pub trait CollectionStore {
         bail!(
             "price history is only kept by the postgres storage backend ([storage] backend = \"postgres\")"
         )
+    }
+
+    /// How the collection's value moved since `since`; `None` without price
+    /// history (Markdown) or when no card was priced back then.
+    fn value_change(&self, _since: NaiveDate) -> Result<Option<ValueChange>> {
+        Ok(None)
     }
 
     /// Human-readable location, e.g. a file path.

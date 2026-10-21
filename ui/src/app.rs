@@ -8,12 +8,79 @@ use mtg_scan_shared::{
     PrintingView, RowEdit, ServerEvent, StateView, Totals, usd,
 };
 
+use crate::home::{DecksPage, HomePage};
+
 use crate::api;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Live,
+pub enum Tab {
+    Home,
+    Scan,
     Collection,
+    Decks,
+}
+
+impl Tab {
+    const ALL: [Tab; 4] = [Tab::Home, Tab::Scan, Tab::Collection, Tab::Decks];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Home => "Home",
+            Tab::Scan => "Scan",
+            Tab::Collection => "Collection",
+            Tab::Decks => "Decks",
+        }
+    }
+}
+
+/// The collection as last loaded, shared by the Home and Collection pages.
+/// Loaded while one of those pages is open and the data is stale: on first
+/// use, after a scan adds or undoes cards, or after an edit that changes the
+/// 7-day value change. Refresh reloads it on demand.
+#[derive(Clone, Copy)]
+pub struct CollectionCache {
+    pub data: RwSignal<Option<CollectionView>>,
+    pub loading: RwSignal<bool>,
+    stale: RwSignal<bool>,
+}
+
+impl CollectionCache {
+    fn new() -> Self {
+        Self {
+            data: RwSignal::new(None),
+            loading: RwSignal::new(false),
+            stale: RwSignal::new(true),
+        }
+    }
+
+    pub fn load(self, notify: Callback<(String, bool)>) {
+        if self.loading.get_untracked() {
+            return;
+        }
+        self.loading.set(true);
+        self.stale.set(false);
+        spawn_local(async move {
+            match api::collection().await {
+                Ok(view) => self.data.set(Some(view)),
+                Err(e) => notify.run((format!("Could not load the collection: {e}"), true)),
+            }
+            self.loading.set(false);
+        });
+    }
+
+    /// Reload whenever the cache is stale while `showing` is true, including
+    /// after a load that was already running when more changes arrived.
+    fn keep_fresh(self, showing: impl Fn() -> bool + 'static, notify: Callback<(String, bool)>) {
+        Effect::new(move |_| {
+            if showing() && self.stale.get() && !self.loading.get() {
+                self.load(notify);
+            }
+        });
+    }
+
+    pub fn mark_stale(self) {
+        self.stale.set(true);
+    }
 }
 
 #[component]
@@ -23,7 +90,8 @@ pub fn App() -> impl IntoView {
     let connected = RwSignal::new(false);
     // Bumped on every reconnect so the camera stream is reopened.
     let epoch = RwSignal::new(0u32);
-    let tab = RwSignal::new(Tab::Live);
+    let tab = RwSignal::new(Tab::Home);
+    let cache = CollectionCache::new();
     let snack = RwSignal::new(None::<(String, bool, u64)>);
     let snack_seq = StoredValue::new(0u64);
 
@@ -41,6 +109,13 @@ pub fn App() -> impl IntoView {
             });
         });
     });
+
+    // Home and Collection show the collection, so keep it current while either
+    // is open (a scan adding cards marks it stale).
+    cache.keep_fresh(
+        move || matches!(tab.get(), Tab::Home | Tab::Collection),
+        notify,
+    );
 
     let load_session = move || {
         spawn_local(async move {
@@ -66,16 +141,24 @@ pub fn App() -> impl IntoView {
     let subscribed = api::subscribe(
         move |event| match event {
             ServerEvent::State(s) => state.set(Some(s)),
-            ServerEvent::Card(card) => cards.update(|list| {
-                if !list.iter().any(|c| c.seq == card.seq) {
-                    list.push(card);
+            ServerEvent::Card(card) => {
+                if card.outcome == CardOutcome::Added {
+                    cache.mark_stale();
                 }
-            }),
-            ServerEvent::Undone { seqs } => cards.update(|list| {
-                for c in list.iter_mut().filter(|c| seqs.contains(&c.seq)) {
-                    c.undone = true;
-                }
-            }),
+                cards.update(|list| {
+                    if !list.iter().any(|c| c.seq == card.seq) {
+                        list.push(card);
+                    }
+                })
+            }
+            ServerEvent::Undone { seqs } => {
+                cache.mark_stale();
+                cards.update(|list| {
+                    for c in list.iter_mut().filter(|c| seqs.contains(&c.seq)) {
+                        c.undone = true;
+                    }
+                })
+            }
             ServerEvent::Info { message, error } => notify.run((message, error)),
         },
         move |ok| {
@@ -95,22 +178,24 @@ pub fn App() -> impl IntoView {
 
     view! {
         <header class="top-bar">
-            <div class="brand">"MTG" <small>"scan"</small></div>
+            <button class="brand" title="Home" on:click=move |_| tab.set(Tab::Home)>
+                "MTG" <small>"scan"</small>
+            </button>
             <nav class="tabs">
-                <button
-                    class="tab"
-                    class:active=move || tab.get() == Tab::Live
-                    on:click=move |_| tab.set(Tab::Live)
-                >
-                    "Live"
-                </button>
-                <button
-                    class="tab"
-                    class:active=move || tab.get() == Tab::Collection
-                    on:click=move |_| tab.set(Tab::Collection)
-                >
-                    "Collection"
-                </button>
+                {Tab::ALL
+                    .into_iter()
+                    .map(|t| {
+                        view! {
+                            <button
+                                class="tab"
+                                class:active=move || tab.get() == t
+                                on:click=move |_| tab.set(t)
+                            >
+                                {t.label()}
+                            </button>
+                        }
+                    })
+                    .collect_view()}
             </nav>
             <div class="bar-end">
                 {move || {
@@ -128,8 +213,13 @@ pub fn App() -> impl IntoView {
         </header>
         <main>
             {move || match tab.get() {
-                Tab::Live => view! { <LivePage state cards send epoch /> }.into_any(),
-                Tab::Collection => view! { <CollectionPage state notify /> }.into_any(),
+                Tab::Home => {
+                    let go = Callback::new(move |t: Tab| tab.set(t));
+                    view! { <HomePage state cache notify go /> }.into_any()
+                }
+                Tab::Scan => view! { <LivePage state cards send epoch /> }.into_any(),
+                Tab::Collection => view! { <CollectionPage state cache notify /> }.into_any(),
+                Tab::Decks => view! { <DecksPage /> }.into_any(),
             }}
         </main>
         {move || {
@@ -392,10 +482,11 @@ fn PriceLink(
 #[component]
 fn CollectionPage(
     state: RwSignal<Option<StateView>>,
+    cache: CollectionCache,
     notify: Callback<(String, bool)>,
 ) -> impl IntoView {
-    let data = RwSignal::new(None::<CollectionView>);
-    let loading = RwSignal::new(false);
+    let data = cache.data;
+    let loading = cache.loading;
     let filter = RwSignal::new(String::new());
     let editing = RwSignal::new(None::<CollectionRow>);
     let dry_run = Signal::derive(move || state.get().is_some_and(|s| s.dry_run));
@@ -423,22 +514,17 @@ fn CollectionPage(
                 });
             }
             d.totals = Totals::of(&d.rows);
+            // The 7-day change depends on quantities and prices; only the server
+            // can recompute it, so reload in the background.
+            if d.value_change.is_some() {
+                cache.mark_stale();
+            }
         });
         editing.set(None);
         notify.run((result.message, false));
     });
 
-    let load = move || {
-        loading.set(true);
-        spawn_local(async move {
-            match api::collection().await {
-                Ok(view) => data.set(Some(view)),
-                Err(e) => notify.run((format!("Could not load the collection: {e}"), true)),
-            }
-            loading.set(false);
-        });
-    };
-    load();
+    let load = move || cache.load(notify);
 
     let rows = move || {
         let needle = filter.get().to_lowercase();
@@ -526,7 +612,7 @@ fn CollectionPage(
                 </table>
             </div>
             <Show when=move || data.with(|d| d.as_ref().is_some_and(|d| d.rows.is_empty()))>
-                <div class="empty">"No cards yet. Scan some on the Live tab."</div>
+                <div class="empty">"No cards yet. Scan some on the Scan tab."</div>
             </Show>
         </section>
         {move || editing.get().map(|row| view! { <EditDialog row on_close on_saved /> })}
@@ -534,7 +620,7 @@ fn CollectionPage(
 }
 
 #[component]
-fn Metric(label: &'static str, value: String, kind: &'static str) -> impl IntoView {
+pub fn Metric(label: &'static str, value: String, kind: &'static str) -> impl IntoView {
     view! {
         <div class="metric">
             <div class="label">{label}</div>

@@ -62,9 +62,13 @@ mtg-scan ui            # single-card mode; add --table for every card in view
 
 It opens `http://localhost:8787` and also prints an address for **other
 computers on your network** (allow mtg-scan on *Private networks* when Windows
-asks). The page shows:
+asks). The pages:
 
-- **Live**: the camera with the guide or detected-card boxes; mode, finish
+- **Home** (the start page): big Scan / Collection / Decks buttons next to
+  collection statistics: card and printing counts, value, the 7-day value
+  change (PostgreSQL), breakdowns by color, type, rarity, finish and set, the
+  most valuable and most recently added cards. Click the MTG logo to return.
+- **Scan**: the camera with the guide or detected-card boxes; mode, finish
   and auto-scan controls; Scan now / Retry with LLM / Rescan all / Undo; and
   each card the moment it is saved, with its image, set, price links and
   match confidence, plus session totals.
@@ -72,6 +76,7 @@ asks). The page shows:
   each row edits it: change the quantity or finish, paste a Scryfall link
   (e.g. `https://scryfall.com/card/a25/141/lightning-bolt`) to fix the
   printing, or remove the row. Editing is off in `--dry-run`.
+- **Decks**: a placeholder for Moxfield decks (planned).
 
 Dark theme, luminaldata colours. Anyone on the network can use it, and there's
 no login yet (see issue #17). Phone layouts are planned (#16).
