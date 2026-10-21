@@ -85,11 +85,25 @@ asks). The pages:
   each row edits it: change the quantity or finish, paste a Scryfall link
   (e.g. `https://scryfall.com/card/a25/141/lightning-bolt`) to fix the
   printing, or remove the row. Editing is off in `--dry-run`.
-- **Decks**: your public Moxfield decks (set `MTG_SCAN_MOXFIELD_USER` in
-  `.env`, e.g. `https://moxfield.com/users/YourName`). Each deck shows how
+- **Decks**: your public Moxfield decks (enter your profile link, e.g.
+  `https://moxfield.com/users/YourName`, on the Settings page). Each deck shows how
   much of it you already own (any printing counts) and what it costs to
   finish; open one for every card's status: owned, other printing, partly
   owned or missing. Prices are Moxfield's (TCGplayer and Card Kingdom).
+- **Settings** (the cog, top right):
+  - **Startup:** whether auto-scan is on when `mtg-scan ui` starts, single-card or
+    table mode, and the default finish. `--manual`, `--table` and `--finish` override
+    them for one run, and the page says so.
+  - **Moxfield account.**
+  - **Decks:** Show / Hide for each deck. Hidden (e.g. retired) decks are left off
+    the Decks page and out of the deck statistics.
+  - **Database:** where the collection is stored, with live status (server version,
+    schema version, row counts). Never passwords.
+  - **Connect:** how to connect from other computers and phones. On this computer it
+    also shows the sign-in link when an access token is set.
+
+  Changes are saved in the `[ui]` and `[decks]` sections of `mtg-scan.toml`, and the
+  rest of that file is kept as it is.
 
 Hover over any card name to see the card. It works on phones too (open the
 "other computers" address). Dark theme, luminaldata colours.

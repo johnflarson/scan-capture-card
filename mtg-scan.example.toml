@@ -52,3 +52,18 @@ provider = "ollama"
 # Name of the environment variable holding the API key (openrouter/openai).
 # api_key_env = "OPENROUTER_API_KEY"
 timeout_secs = 120
+
+# The web UI's Settings page (the cog) saves the two sections below here,
+# keeping the rest of this file as it is.
+[ui]
+# How `mtg-scan ui` starts; --manual, --table and --finish override them.
+auto_scan = true
+table_mode = false
+finish = "nonfoil"
+
+[decks]
+# Moxfield user name or profile link. Wins over MTG_SCAN_MOXFIELD_USER in .env;
+# "" means no account.
+# moxfield_user = "https://moxfield.com/users/YourName"
+# Moxfield deck IDs left off the Decks page and out of deck statistics.
+hidden = []

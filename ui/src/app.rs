@@ -16,6 +16,7 @@ use crate::filters::{
 use crate::home::HomePage;
 use crate::preview::{CardLink, Preview, PreviewLayer};
 use crate::review::ReviewList;
+use crate::settings::SettingsPage;
 
 use crate::api;
 
@@ -25,6 +26,8 @@ pub enum Tab {
     Scan,
     Collection,
     Decks,
+    /// Opened with the cog at the right of the top bar, not a tab.
+    Settings,
 }
 
 impl Tab {
@@ -36,6 +39,7 @@ impl Tab {
             Tab::Scan => "Scan",
             Tab::Collection => "Collection",
             Tab::Decks => "Decks",
+            Tab::Settings => "Settings",
         }
     }
 }
@@ -98,6 +102,8 @@ pub fn App() -> impl IntoView {
     // Bumped on every reconnect so the camera stream is reopened.
     let epoch = RwSignal::new(0u32);
     let tab = RwSignal::new(Tab::Home);
+    // Pages can send the user elsewhere (e.g. Decks to Settings).
+    provide_context(tab);
     let cache = CollectionCache::new();
     let preview = Preview::new();
     provide_context(preview);
@@ -223,7 +229,18 @@ pub fn App() -> impl IntoView {
                     {move || state.get().map(|s| s.collection).unwrap_or_default()}
                 </span>
                 <span class="dot" class:on=move || connected.get()></span>
-                {move || if connected.get() { "Connected" } else { "Offline" }}
+                <span class="connection">
+                    {move || if connected.get() { "Connected" } else { "Offline" }}
+                </span>
+                <button
+                    class="icon-btn settings-btn"
+                    class:active=move || tab.get() == Tab::Settings
+                    title="Settings"
+                    aria-label="Settings"
+                    on:click=move |_| tab.set(Tab::Settings)
+                >
+                    <CogIcon />
+                </button>
             </div>
         </header>
         <main>
@@ -237,6 +254,7 @@ pub fn App() -> impl IntoView {
                     view! { <CollectionPage state cache prefs notify /> }.into_any()
                 }
                 Tab::Decks => view! { <DecksPage decks cache notify /> }.into_any(),
+                Tab::Settings => view! { <SettingsPage decks notify /> }.into_any(),
             }}
         </main>
         {move || {
@@ -759,6 +777,15 @@ fn PlusIcon() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+        </svg>
+    }
+}
+
+#[component]
+fn CogIcon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.47.47 0 0 0-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.47.47 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" />
         </svg>
     }
 }

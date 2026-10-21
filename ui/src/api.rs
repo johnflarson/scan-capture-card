@@ -5,8 +5,8 @@ use gloo_net::eventsource::futures::EventSource;
 use gloo_net::http::{Request, Response};
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    AddCard, ClientCommand, CollectionView, DeckView, DecksView, EditResult, PrintingView, RowEdit,
-    ServerEvent, SessionView,
+    AddCard, ClientCommand, CollectionView, DatabaseView, DeckView, DecksView, EditResult,
+    PrintingView, RowEdit, ServerEvent, SessionView, SettingsChange, SettingsView,
 };
 use serde::de::DeserializeOwned;
 
@@ -84,6 +84,40 @@ pub async fn add(add: &AddCard) -> Result<EditResult, String> {
 pub async fn decks(refresh: bool) -> Result<DecksView, String> {
     let resp = Request::get("/api/decks")
         .query([("refresh", if refresh { "true" } else { "false" })])
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+/// Every deck, including those hidden on the Settings page.
+pub async fn all_decks() -> Result<DecksView, String> {
+    let resp = Request::get("/api/decks")
+        .query([("all", "true")])
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn settings() -> Result<SettingsView, String> {
+    let resp = Request::get("/api/settings").send().await.map_err(err)?;
+    json_or_message(resp).await
+}
+
+/// Save one change; returns the settings as saved.
+pub async fn change_settings(change: &SettingsChange) -> Result<SettingsView, String> {
+    let resp = Request::post("/api/settings")
+        .json(change)
+        .map_err(err)?
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn database() -> Result<DatabaseView, String> {
+    let resp = Request::get("/api/settings/database")
         .send()
         .await
         .map_err(err)?;

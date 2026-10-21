@@ -19,7 +19,7 @@ use super::{CollectionStore, PriceMove, ValueChange};
 use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
 use crate::scryfall::Scryfall;
 
-fn latest_migration() -> i32 {
+pub fn latest_migration() -> i32 {
     MIGRATIONS.iter().map(|m| m.0).max().unwrap_or(0)
 }
 

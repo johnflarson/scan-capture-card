@@ -11,6 +11,19 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 ## [Unreleased]
 
 ### Added
+- Settings page in the web UI (#40), opened with the cog at the top right:
+  - **Startup:** auto-scan on or off, single-card or table mode, and the finish when
+    `mtg-scan ui` starts. `--manual`, `--table` and `--finish` override them for one run,
+    and the page says so.
+  - **Moxfield account.** It wins over `MTG_SCAN_MOXFIELD_USER` in `.env`.
+  - **Decks:** Show / Hide for each deck. Hidden decks are left off the Decks page and out
+    of the deck statistics.
+  - **Database:** where the collection is stored, with live status. Never passwords.
+  - **Connect:** the addresses for this computer and the network, whether an access token
+    is required, and (on this computer only) the sign-in link.
+
+  Changes are saved in `[ui]` and `[decks]` in `mtg-scan.toml`, and comments and other
+  settings in that file are kept. Changes are refused in `--dry-run`.
 - Web UI (`mtg-scan ui`, #2): the live camera with the guide or detected-card boxes; mode, finish
   and auto-scan controls; each card shown the moment it is saved (image, set, prices, match
   confidence) with session totals; a Collection page with totals and a filter. Dark Material
