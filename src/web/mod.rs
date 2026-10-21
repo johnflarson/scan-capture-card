@@ -599,12 +599,19 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
+        let text = |uri: &'static str| {
+            rt.block_on(async {
+                let resp = static_file(Uri::from_static(uri)).await;
+                let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+                String::from_utf8_lossy(&body.unwrap()).into_owned()
+            })
+        };
         for uri in ["/api/nope", "/api/decks/x/y", "/api"] {
             let resp = rt.block_on(static_file(Uri::from_static(uri)));
             assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert!(text(uri).contains("different builds"), "{uri}");
         }
-        // Client-side pages still get the app (or the build instructions).
-        let page = rt.block_on(static_file(Uri::from_static("/apis")));
-        assert_ne!(page.status(), StatusCode::NOT_FOUND);
+        // Other paths are client-side pages (the app, or 404 when no UI is built).
+        assert!(!text("/apis").contains("different builds"));
     }
 }
