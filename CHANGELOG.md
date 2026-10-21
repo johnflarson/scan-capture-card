@@ -28,6 +28,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   with picks); group by type, rarity or color with per-group count and value; the search also
   matches type line, rarity and color; totals follow the filter. Filters and grouping are kept
   when switching tabs.
+- Collapsible groups on the Collection page (#28): click a group header to hide or show its rows
+  (count and value stay in the header); Expand all / Collapse all; each grouping remembers its
+  collapsed groups while switching tabs.
 - Add a card by hand on the Collection page (#26): **Add card** opens a dialog for a Scryfall link
   (card page, localized link or ID) with quantity and finish (only finishes the printing exists
   in). The card is priced and added, merging into the row you already own.

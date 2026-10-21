@@ -255,6 +255,18 @@ tr.group-head td {
 tr.group-head:hover { background: none; }
 .group-label { font-weight: 500; font-size: 15px; margin-right: 12px; color: var(--md-on-surface); }
 .group-head .swatch, .group-head .rarity-dot { display: inline-block; vertical-align: middle; margin-right: 8px; }
+.group-toggle {
+  display: flex; align-items: center; width: 100%; padding: 0;
+  border: none; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.group-toggle:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 4px; border-radius: 4px; }
+.chevron {
+  width: 8px; height: 8px; margin: 0 14px 0 4px; flex: none;
+  border-right: 2px solid var(--md-on-surface-variant); border-bottom: 2px solid var(--md-on-surface-variant);
+  transform: rotate(45deg); transition: transform 0.15s;
+}
+tr.group-head.collapsed .chevron { transform: rotate(-45deg); }
+tr.group-head.collapsed td { border-bottom-color: var(--md-outline-variant); }
 
 /* Filter chips and group-by. */
 .filters { padding: 14px 18px; margin-bottom: 16px; display: grid; gap: 10px; }

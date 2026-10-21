@@ -1,17 +1,21 @@
 //! Collection page filters: chips per column, group-by, and the type,
 //! rarity and color cells.
 
+use std::collections::HashSet;
+
 use leptos::prelude::*;
 use mtg_scan_shared::{
     CollectionRow, CollectionView, ColorGroup, Facet, RowFilter, Totals, UNKNOWN, usd,
 };
 
-/// The Collection page's search, picks and grouping. Lives in `App` so they
-/// survive switching tabs.
+/// The Collection page's search, picks, grouping and collapsed groups.
+/// Lives in `App` so they survive switching tabs.
 #[derive(Clone, Copy)]
 pub struct CollectionPrefs {
     pub filter: RwSignal<RowFilter>,
     pub group_by: RwSignal<Option<Facet>>,
+    /// Collapsed groups, per grouping column, so each grouping keeps its own.
+    pub collapsed: RwSignal<HashSet<(Facet, String)>>,
 }
 
 impl CollectionPrefs {
@@ -19,7 +23,17 @@ impl CollectionPrefs {
         Self {
             filter: RwSignal::new(RowFilter::default()),
             group_by: RwSignal::new(None),
+            collapsed: RwSignal::new(HashSet::new()),
         }
+    }
+
+    pub fn toggle_group(self, facet: Facet, label: &str) {
+        self.collapsed.update(|c| {
+            let key = (facet, label.to_string());
+            if !c.remove(&key) {
+                c.insert(key);
+            }
+        });
     }
 }
 
@@ -30,6 +44,7 @@ pub enum Item {
         facet: Facet,
         label: String,
         totals: Totals,
+        collapsed: bool,
     },
     Card(CollectionRow),
 }
@@ -37,8 +52,13 @@ pub enum Item {
 impl Item {
     pub fn key(&self) -> String {
         match self {
-            Item::Group { label, totals, .. } => format!(
-                "group|{label}|{}|{}|{}",
+            Item::Group {
+                label,
+                totals,
+                collapsed,
+                ..
+            } => format!(
+                "group|{label}|{}|{}|{}|{collapsed}",
                 totals.printings, totals.cards, totals.tcgplayer
             ),
             Item::Card(r) => format!(
@@ -49,8 +69,13 @@ impl Item {
     }
 }
 
-/// `rows` as table lines, split under group headers when grouping.
-pub fn items(rows: Vec<CollectionRow>, group_by: Option<Facet>) -> Vec<Item> {
+/// `rows` as table lines, split under group headers when grouping; a
+/// collapsed group keeps its header (with its totals) but not its rows.
+pub fn items(
+    rows: Vec<CollectionRow>,
+    group_by: Option<Facet>,
+    collapsed: &HashSet<(Facet, String)>,
+) -> Vec<Item> {
     match group_by {
         None => rows.into_iter().map(Item::Card).collect(),
         Some(facet) => facet
@@ -58,12 +83,15 @@ pub fn items(rows: Vec<CollectionRow>, group_by: Option<Facet>) -> Vec<Item> {
             .into_iter()
             .flat_map(|(label, rows)| {
                 let totals = Totals::of(&rows);
+                let collapsed = collapsed.contains(&(facet, label.clone()));
+                let cards = if collapsed { Vec::new() } else { rows };
                 std::iter::once(Item::Group {
                     facet,
                     label,
                     totals,
+                    collapsed,
                 })
-                .chain(rows.into_iter().map(Item::Card))
+                .chain(cards.into_iter().map(Item::Card))
             })
             .collect(),
     }
@@ -90,21 +118,37 @@ fn rarity_class(label: &str) -> String {
     format!("rarity-dot rarity-{}", label.to_lowercase())
 }
 
+/// A group's header row; clicking it collapses or expands the group.
 #[component]
-pub fn GroupHead(facet: Facet, label: String, totals: Totals) -> impl IntoView {
+pub fn GroupHead(
+    facet: Facet,
+    label: String,
+    totals: Totals,
+    collapsed: bool,
+    prefs: CollectionPrefs,
+) -> impl IntoView {
+    let toggle = label.clone();
     view! {
-        <tr class="group-head">
+        <tr class="group-head" class:collapsed=collapsed>
             <td colspan="13">
-                {marker(facet, &label)}
-                <span class="group-label">{label}</span>
-                <span class="muted">
-                    {format!(
-                        "{} · {} · {}",
-                        count(totals.cards as usize, "card"),
-                        count(totals.printings, "printing"),
-                        usd(Some(totals.tcgplayer)),
-                    )}
-                </span>
+                <button
+                    class="group-toggle"
+                    aria-expanded=(!collapsed).to_string()
+                    title=if collapsed { "Show this group" } else { "Hide this group" }
+                    on:click=move |_| prefs.toggle_group(facet, &toggle)
+                >
+                    <span class="chevron" aria-hidden="true"></span>
+                    {marker(facet, &label)}
+                    <span class="group-label">{label.clone()}</span>
+                    <span class="muted">
+                        {format!(
+                            "{} · {} · {}",
+                            count(totals.cards as usize, "card"),
+                            count(totals.printings, "printing"),
+                            usd(Some(totals.tcgplayer)),
+                        )}
+                    </span>
+                </button>
             </td>
         </tr>
     }
@@ -257,6 +301,44 @@ pub fn FilterBar(
                         })
                         .collect_view()}
                 </div>
+                {move || {
+                    group_by
+                        .get()
+                        .map(|facet| {
+                            // Every value of this column in the collection, so
+                            // groups hidden by a filter collapse too.
+                            let all = move || {
+                                data.with(|d| {
+                                    d.as_ref()
+                                        .map(|d| facet.present(&d.rows))
+                                        .unwrap_or_default()
+                                })
+                            };
+                            view! {
+                                <button
+                                    class="btn text"
+                                    on:click=move |_| {
+                                        prefs.collapsed.update(|c| c.retain(|(f, _)| *f != facet))
+                                    }
+                                >
+                                    "Expand all"
+                                </button>
+                                <button
+                                    class="btn text"
+                                    on:click=move |_| {
+                                        let labels = all();
+                                        prefs
+                                            .collapsed
+                                            .update(|c| {
+                                                c.extend(labels.into_iter().map(|(v, _)| (facet, v)))
+                                            })
+                                    }
+                                >
+                                    "Collapse all"
+                                </button>
+                            }
+                        })
+                }}
                 <span class="spacer"></span>
                 <span class="filter-summary">{summary}</span>
                 <Show when=move || filter.with(RowFilter::is_active)>

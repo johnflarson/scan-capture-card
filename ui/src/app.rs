@@ -558,7 +558,11 @@ fn CollectionPage(
     });
     let shown_totals =
         Signal::derive(move || shown.with(|rows: &Vec<CollectionRow>| Totals::of(rows)));
-    let lines = move || items(shown.get(), group_by.get());
+    let lines = move || {
+        prefs
+            .collapsed
+            .with(|c| items(shown.get(), group_by.get(), c))
+    };
 
     view! {
         <div class="collection-head">
@@ -632,8 +636,9 @@ fn CollectionPage(
                             each=lines
                             key=Item::key
                             children=move |item| match item {
-                                Item::Group { facet, label, totals } => {
-                                    view! { <GroupHead facet label totals /> }.into_any()
+                                Item::Group { facet, label, totals, collapsed } => {
+                                    view! { <GroupHead facet label totals collapsed prefs /> }
+                                        .into_any()
                                 }
                                 Item::Card(row) => {
                                     view! { <Row row on_edit locked=dry_run /> }.into_any()
