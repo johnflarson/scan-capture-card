@@ -331,6 +331,162 @@ pub fn capitalize(s: &str) -> String {
     }
 }
 
+/// A Collection page column that rows can be filtered and grouped by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Facet {
+    Type,
+    Rarity,
+    Color,
+}
+
+impl Facet {
+    pub const ALL: [Facet; 3] = [Facet::Type, Facet::Rarity, Facet::Color];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Facet::Type => "Type",
+            Facet::Rarity => "Rarity",
+            Facet::Color => "Color",
+        }
+    }
+
+    /// Every value, in display order.
+    pub fn values(self) -> Vec<String> {
+        match self {
+            Facet::Type => CARD_TYPES.iter().map(|t| t.to_string()).collect(),
+            Facet::Rarity => RARITIES
+                .iter()
+                .map(|r| capitalize(r))
+                .chain([UNKNOWN_RARITY.to_string()])
+                .collect(),
+            Facet::Color => ColorGroup::ALL
+                .iter()
+                .map(|g| g.label().to_string())
+                .collect(),
+        }
+    }
+
+    /// Where `value` sorts; values this list doesn't know go last.
+    fn rank(self, value: &str) -> usize {
+        let values = self.values();
+        values
+            .iter()
+            .position(|v| v == value)
+            .unwrap_or(values.len())
+    }
+
+    /// `rows` split by this column: groups in display order, rows within a
+    /// group in their original order. Only values present appear.
+    pub fn group(self, rows: &[CollectionRow]) -> Vec<(String, Vec<CollectionRow>)> {
+        let mut groups = std::collections::BTreeMap::<(usize, String), Vec<CollectionRow>>::new();
+        for r in rows {
+            let value = r.facet(self);
+            groups
+                .entry((self.rank(&value), value))
+                .or_default()
+                .push(r.clone());
+        }
+        groups.into_iter().map(|((_, v), rows)| (v, rows)).collect()
+    }
+
+    /// The values present in `rows`, in display order, with their copies.
+    pub fn present(self, rows: &[CollectionRow]) -> Vec<(String, u32)> {
+        self.group(rows)
+            .into_iter()
+            .map(|(v, rows)| (v, rows.iter().map(|r| r.quantity).sum()))
+            .collect()
+    }
+}
+
+/// Rarity shown for rows without one.
+pub const UNKNOWN_RARITY: &str = "Unknown";
+
+impl CollectionRow {
+    /// "Mythic", or "Unknown" when the row has none.
+    pub fn rarity_label(&self) -> String {
+        match self.rarity.trim() {
+            "" => UNKNOWN_RARITY.to_string(),
+            r => capitalize(&r.to_lowercase()),
+        }
+    }
+
+    /// This row's value in a filterable column, as shown in the table.
+    pub fn facet(&self, facet: Facet) -> String {
+        match facet {
+            Facet::Type => self.main_type().to_string(),
+            Facet::Rarity => self.rarity_label(),
+            Facet::Color => self.color_group().label().to_string(),
+        }
+    }
+
+    /// Whether one lowercase search word matches: anywhere in the name, set
+    /// or type line, or at the start of the rarity, the color group or one of
+    /// the card's colors (so "common" doesn't find uncommons).
+    fn matches_word(&self, word: &str) -> bool {
+        let text = [&self.name, &self.set_code, &self.set_name, &self.type_line];
+        if text.iter().any(|t| t.to_lowercase().contains(word)) {
+            return true;
+        }
+        let mut terms = vec![self.rarity_label(), self.color_group().label().to_string()];
+        terms.extend(
+            self.colors
+                .iter()
+                .map(|c| ColorGroup::of(std::slice::from_ref(c)).label().to_string()),
+        );
+        terms.iter().any(|t| t.to_lowercase().starts_with(word))
+    }
+}
+
+/// What the Collection page shows: search words plus values picked per
+/// column. Every search word must match the row (see `matches_word`); within a
+/// column any picked value matches (OR); every column with picks must match
+/// (AND).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RowFilter {
+    pub text: String,
+    pub picked: std::collections::BTreeMap<Facet, std::collections::BTreeSet<String>>,
+}
+
+impl RowFilter {
+    pub fn is_picked(&self, facet: Facet, value: &str) -> bool {
+        self.picked.get(&facet).is_some_and(|p| p.contains(value))
+    }
+
+    /// Pick `value`, or unpick it if it was picked.
+    pub fn toggle(&mut self, facet: Facet, value: &str) {
+        let picks = self.picked.entry(facet).or_default();
+        if !picks.remove(value) {
+            picks.insert(value.to_string());
+        }
+        if picks.is_empty() {
+            self.picked.remove(&facet);
+        }
+    }
+
+    pub fn has_picks(&self) -> bool {
+        !self.picked.is_empty()
+    }
+
+    /// Whether anything is hidden: search text or picks.
+    pub fn is_active(&self) -> bool {
+        !self.text.trim().is_empty() || self.has_picks()
+    }
+
+    pub fn matches(&self, row: &CollectionRow) -> bool {
+        let picks_match = self
+            .picked
+            .iter()
+            .all(|(facet, values)| values.contains(&row.facet(*facet)));
+        if !picks_match {
+            return false;
+        }
+        self.text
+            .to_lowercase()
+            .split_whitespace()
+            .all(|w| row.matches_word(w))
+    }
+}
+
 /// One slice of a breakdown: copies and their TCGplayer value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Slice {
@@ -622,6 +778,138 @@ mod tests {
             names(&s.recently_added),
             ["Sheoldred", "Sol Ring", "Lightning Bolt"]
         );
+    }
+
+    /// Lightning Bolt (red instant), Lightning Helix (multicolor instant),
+    /// Sheoldred (black mythic creature) and Sol Ring (colorless artifact).
+    fn sample() -> Vec<CollectionRow> {
+        let card = |name: &str, colors: &[&str], type_line: &str, rarity: &str, qty: u32| {
+            let mut r = row(qty, Some(1.0));
+            r.name = name.into();
+            r.colors = colors.iter().map(|c| c.to_string()).collect();
+            r.type_line = type_line.into();
+            r.rarity = rarity.into();
+            r
+        };
+        vec![
+            card("Lightning Bolt", &["R"], "Instant", "common", 4),
+            card("Lightning Helix", &["R", "W"], "Instant", "uncommon", 1),
+            card(
+                "Sheoldred, the Apocalypse",
+                &["B"],
+                "Legendary Creature — Phyrexian Praetor",
+                "mythic",
+                1,
+            ),
+            card("Sol Ring", &[], "Artifact", "", 2),
+        ]
+    }
+
+    fn names(rows: &[CollectionRow], f: &RowFilter) -> Vec<String> {
+        rows.iter()
+            .filter(|r| f.matches(r))
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn rows_have_a_value_per_column() {
+        let rows = sample();
+        let col = |f| rows.iter().map(|r| r.facet(f)).collect::<Vec<_>>();
+        assert_eq!(
+            col(Facet::Type),
+            ["Instant", "Instant", "Creature", "Artifact"]
+        );
+        assert_eq!(
+            col(Facet::Rarity),
+            ["Common", "Uncommon", "Mythic", "Unknown"]
+        );
+        assert_eq!(
+            col(Facet::Color),
+            ["Red", "Multicolor", "Black", "Colorless"]
+        );
+    }
+
+    #[test]
+    fn search_matches_type_rarity_and_color() {
+        let rows = sample();
+        let search = |text: &str| {
+            names(
+                &rows,
+                &RowFilter {
+                    text: text.into(),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(search("").len(), 4);
+        assert_eq!(search("CREATURE"), ["Sheoldred, the Apocalypse"]);
+        assert_eq!(search("praetor"), ["Sheoldred, the Apocalypse"]);
+        assert_eq!(search("myth"), ["Sheoldred, the Apocalypse"]);
+        // Rarity and color match from the start: "common" isn't "uncommon".
+        assert_eq!(search("common"), ["Lightning Bolt"]);
+        assert_eq!(search("colorless"), ["Sol Ring"]);
+        // A multicolor card matches each of its colors as well.
+        assert_eq!(search("white"), ["Lightning Helix"]);
+        assert_eq!(search("multicolor"), ["Lightning Helix"]);
+        // Every word has to match.
+        assert_eq!(search("red instant common"), ["Lightning Bolt"]);
+        assert_eq!(search("lightning uncommon"), ["Lightning Helix"]);
+        assert!(search("blue instant").is_empty());
+    }
+
+    #[test]
+    fn picks_or_within_a_column_and_across_columns() {
+        let rows = sample();
+        let mut f = RowFilter::default();
+        f.toggle(Facet::Color, "Red");
+        assert_eq!(names(&rows, &f), ["Lightning Bolt"]);
+        f.toggle(Facet::Color, "Multicolor");
+        assert_eq!(names(&rows, &f), ["Lightning Bolt", "Lightning Helix"]);
+        f.toggle(Facet::Rarity, "Uncommon");
+        assert_eq!(names(&rows, &f), ["Lightning Helix"]);
+        f.text = "bolt".into();
+        assert!(names(&rows, &f).is_empty(), "search and picks combine");
+        f.text.clear();
+        // Unpicking the last value of a column drops that column's condition.
+        f.toggle(Facet::Rarity, "Uncommon");
+        assert!(!f.picked.contains_key(&Facet::Rarity));
+        assert!(f.is_picked(Facet::Color, "Red") && f.has_picks() && f.is_active());
+        f.toggle(Facet::Color, "Red");
+        f.toggle(Facet::Color, "Multicolor");
+        assert!(!f.is_active());
+        assert_eq!(names(&rows, &f).len(), 4);
+    }
+
+    #[test]
+    fn groups_follow_display_order() {
+        let rows = sample();
+        let groups = |f: Facet| {
+            f.group(&rows)
+                .into_iter()
+                .map(|(v, rows)| format!("{v}:{}", rows.len()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            groups(Facet::Type),
+            ["Creature:1", "Instant:2", "Artifact:1"]
+        );
+        assert_eq!(
+            groups(Facet::Color),
+            ["Black:1", "Red:1", "Multicolor:1", "Colorless:1"]
+        );
+        assert_eq!(
+            Facet::Rarity.present(&rows),
+            [
+                ("Common".to_string(), 4),
+                ("Uncommon".to_string(), 1),
+                ("Mythic".to_string(), 1),
+                ("Unknown".to_string(), 2)
+            ]
+        );
+        // Rows keep their order within a group.
+        let instants = &Facet::Type.group(&rows)[1].1;
+        assert_eq!(instants[0].name, "Lightning Bolt");
     }
 
     #[test]

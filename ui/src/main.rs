@@ -3,6 +3,7 @@
 
 mod api;
 mod app;
+mod filters;
 mod home;
 
 fn main() {

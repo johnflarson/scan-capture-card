@@ -8,6 +8,9 @@ use mtg_scan_shared::{
     PrintingView, RowEdit, ServerEvent, StateView, Totals, usd,
 };
 
+use crate::filters::{
+    CollectionPrefs, ColorCell, FilterBar, GroupHead, Item, RarityCell, TypeCell, items,
+};
 use crate::home::{DecksPage, HomePage};
 
 use crate::api;
@@ -92,6 +95,7 @@ pub fn App() -> impl IntoView {
     let epoch = RwSignal::new(0u32);
     let tab = RwSignal::new(Tab::Home);
     let cache = CollectionCache::new();
+    let prefs = CollectionPrefs::new();
     let snack = RwSignal::new(None::<(String, bool, u64)>);
     let snack_seq = StoredValue::new(0u64);
 
@@ -218,7 +222,9 @@ pub fn App() -> impl IntoView {
                     view! { <HomePage state cache notify go /> }.into_any()
                 }
                 Tab::Scan => view! { <LivePage state cards send epoch /> }.into_any(),
-                Tab::Collection => view! { <CollectionPage state cache notify /> }.into_any(),
+                Tab::Collection => {
+                    view! { <CollectionPage state cache prefs notify /> }.into_any()
+                }
                 Tab::Decks => view! { <DecksPage /> }.into_any(),
             }}
         </main>
@@ -483,11 +489,13 @@ fn PriceLink(
 fn CollectionPage(
     state: RwSignal<Option<StateView>>,
     cache: CollectionCache,
+    prefs: CollectionPrefs,
     notify: Callback<(String, bool)>,
 ) -> impl IntoView {
     let data = cache.data;
     let loading = cache.loading;
-    let filter = RwSignal::new(String::new());
+    let filter = prefs.filter;
+    let group_by = prefs.group_by;
     let editing = RwSignal::new(None::<CollectionRow>);
     let dry_run = Signal::derive(move || state.get().is_some_and(|s| s.dry_run));
 
@@ -526,25 +534,19 @@ fn CollectionPage(
 
     let load = move || cache.load(notify);
 
-    let rows = move || {
-        let needle = filter.get().to_lowercase();
-        data.with(|d| {
-            d.as_ref()
-                .map(|d| {
-                    d.rows
-                        .iter()
-                        .filter(|r| {
-                            needle.is_empty()
-                                || r.name.to_lowercase().contains(&needle)
-                                || r.set_code.to_lowercase().contains(&needle)
-                                || r.set_name.to_lowercase().contains(&needle)
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
+    // The rows that pass the search and the picked chips.
+    let shown = Memo::new(move |_| {
+        filter.with(|f| {
+            data.with(|d| {
+                d.as_ref()
+                    .map(|d| d.rows.iter().filter(|r| f.matches(r)).cloned().collect())
+                    .unwrap_or_default()
+            })
         })
-    };
+    });
+    let shown_totals =
+        Signal::derive(move || shown.with(|rows: &Vec<CollectionRow>| Totals::of(rows)));
+    let lines = move || items(shown.get(), group_by.get());
 
     view! {
         <div class="collection-head">
@@ -553,18 +555,19 @@ fn CollectionPage(
             <input
                 class="search"
                 type="search"
-                placeholder="Filter by name or set"
-                prop:value=move || filter.get()
-                on:input=move |ev| filter.set(event_target_value(&ev))
+                placeholder="Search name, set, type, rarity or color"
+                prop:value=move || filter.with(|f| f.text.clone())
+                on:input=move |ev| filter.update(|f| f.text = event_target_value(&ev))
             />
             <button class="btn tonal" disabled=move || loading.get() on:click=move |_| load()>
                 {move || if loading.get() { "Loading…" } else { "Refresh" }}
             </button>
         </div>
         {move || {
-            data.get()
-                .map(|d| {
-                    let t = d.totals;
+            data.with(|d| d.is_some())
+                .then(|| {
+                    // Totals follow the filter.
+                    let t = shown_totals.get();
                     view! {
                         <div class="metrics-row">
                             <Metric label="Printings" value=t.printings.to_string() kind="" />
@@ -576,6 +579,7 @@ fn CollectionPage(
                     }
                 })
         }}
+        <FilterBar prefs data shown=shown_totals />
         <section class="card">
             <div class="table-wrap">
                 <table>
@@ -583,6 +587,9 @@ fn CollectionPage(
                         <tr>
                             <th class="num">"Qty"</th>
                             <th>"Name"</th>
+                            <th>"Type"</th>
+                            <th>"Rarity"</th>
+                            <th>"Color"</th>
                             <th>"Set"</th>
                             <th>"#"</th>
                             <th>"Finish"</th>
@@ -595,24 +602,27 @@ fn CollectionPage(
                     </thead>
                     <tbody>
                         <For
-                            each=rows
-                            key=|r| {
-                                format!(
-                                    "{}|{:?}|{}|{:?}|{:?}",
-                                    r.scryfall_id,
-                                    r.finish,
-                                    r.quantity,
-                                    r.tcgplayer,
-                                    r.cardkingdom,
-                                )
+                            each=lines
+                            key=Item::key
+                            children=move |item| match item {
+                                Item::Group { facet, label, totals } => {
+                                    view! { <GroupHead facet label totals /> }.into_any()
+                                }
+                                Item::Card(row) => {
+                                    view! { <Row row on_edit locked=dry_run /> }.into_any()
+                                }
                             }
-                            children=move |row| view! { <Row row on_edit locked=dry_run /> }
                         />
                     </tbody>
                 </table>
             </div>
             <Show when=move || data.with(|d| d.as_ref().is_some_and(|d| d.rows.is_empty()))>
                 <div class="empty">"No cards yet. Scan some on the Scan tab."</div>
+            </Show>
+            <Show when=move || {
+                shown.with(Vec::is_empty) && data.with(|d| d.as_ref().is_some_and(|d| !d.rows.is_empty()))
+            }>
+                <div class="empty">"No cards match the search and filters."</div>
             </Show>
         </section>
         {move || editing.get().map(|row| view! { <EditDialog row on_close on_saved /> })}
@@ -653,6 +663,9 @@ fn Row(
             <td>
                 <a href=r.scryfall_url.clone() target="_blank" rel="noopener">{r.name.clone()}</a>
             </td>
+            <TypeCell row=r.clone() />
+            <RarityCell row=r.clone() />
+            <ColorCell row=r.clone() />
             <td title=r.set_name.clone()>{r.set_code.clone()}</td>
             <td>{r.number.clone()}</td>
             <td>{r.finish.label()}</td>

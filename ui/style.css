@@ -228,7 +228,7 @@ main { padding: 20px 24px 40px; max-width: 1800px; margin: 0 auto; }
 .collection-head .location { color: var(--md-on-surface-variant); font-size: 13px; }
 .metrics-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .search {
-  margin-left: auto; min-width: 260px;
+  margin-left: auto; min-width: 320px;
   padding: 9px 14px; border-radius: var(--radius-full);
   border: 1px solid var(--md-outline); background: var(--md-surface-container); outline: none;
 }
@@ -243,6 +243,28 @@ td a { color: var(--md-on-surface); }
 td.tcg a { color: var(--md-primary); }
 td.ck a { color: var(--md-secondary); }
 td.row-actions { width: 1%; padding: 4px 8px; }
+.pips { display: inline-flex; gap: 3px; vertical-align: middle; margin-right: 8px; }
+.pips .swatch { width: 10px; height: 10px; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35); }
+.rarity-dot { display: inline-block; width: 10px; height: 10px; margin-right: 8px; vertical-align: middle; border-radius: 2px; transform: rotate(45deg); background: var(--rarity); }
+tr.group-head td {
+  padding: 14px 14px 8px; background: var(--md-surface-container);
+  border-bottom: 1px solid var(--md-outline);
+}
+tr.group-head:hover { background: none; }
+.group-label { font-weight: 500; font-size: 15px; margin-right: 12px; color: var(--md-on-surface); }
+.group-head .swatch, .group-head .rarity-dot { display: inline-block; vertical-align: middle; margin-right: 8px; }
+
+/* Filter chips and group-by. */
+.filters { padding: 14px 18px; margin-bottom: 16px; display: grid; gap: 10px; }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.filter-label { width: 80px; flex: none; color: var(--md-on-surface-variant); font-size: 13px; }
+.chip.filter { cursor: pointer; background: transparent; font-size: 13px; padding: 4px 12px; border-radius: var(--radius-s); }
+.chip.filter:hover { background: rgb(76 191 191 / 0.08); color: var(--md-on-surface); }
+.chip.filter.selected { border-color: transparent; background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.chip.filter .count { opacity: 0.7; font-variant-numeric: tabular-nums; }
+.chip.filter .swatch, .chip.filter .rarity-dot { width: 9px; height: 9px; margin: 0; }
+.filter-row .spacer { flex: 1; }
+.filter-summary { color: var(--md-on-surface-variant); font-size: 13px; }
 .icon-btn {
   display: inline-grid; place-items: center;
   width: 36px; height: 36px; padding: 0;
@@ -357,10 +379,14 @@ td.row-actions { width: 1%; padding: 4px 8px; }
 .bar-track { height: 10px; border-radius: var(--radius-full); background: var(--md-surface-container-highest); overflow: hidden; }
 .bar-fill { display: block; height: 100%; border-radius: var(--radius-full); background: var(--md-primary); }
 .bar-fill.foil { background: linear-gradient(90deg, #ffd54f, #4cbfbf, #c48bf0); }
-.bar-fill.rarity-common { background: #a79f97; }
-.bar-fill.rarity-uncommon { background: #b8c7d3; }
-.bar-fill.rarity-rare { background: #d9b23c; }
-.bar-fill.rarity-mythic { background: #e8761e; }
+/* Rarity colors, for bars and the Collection table. */
+.rarity-common { --rarity: #a79f97; }
+.rarity-uncommon { --rarity: #b8c7d3; }
+.rarity-rare { --rarity: #d9b23c; }
+.rarity-mythic { --rarity: #e8761e; }
+.rarity-special, .rarity-bonus { --rarity: #c48bf0; }
+.rarity-unknown { --rarity: var(--md-outline); }
+.bar-fill[class*="rarity-"] { background: var(--rarity); }
 .bar-count { text-align: right; font-variant-numeric: tabular-nums; }
 
 .mini { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 4px 0; }
