@@ -51,6 +51,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   second copy. The original is removed only once the retry has identified the card, and a retry
   never removes cards from a table pass.
 - The startup header showed `collection.md` even when saving to PostgreSQL; it now shows the real location.
+- An unknown `/api/...` request now gets a "not found" message saying the UI and server may come
+  from different builds, instead of the web page (which the UI reported as "expected value at
+  line 1 column 1").
 
 ## [0.2.0] - 2026-10-20
 

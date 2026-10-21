@@ -511,6 +511,19 @@ fn collection_view(cfg: &Config) -> Result<CollectionView> {
 async fn static_file(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
+    // An unknown API call must not get the app's HTML: the UI would fail to parse
+    // it as JSON. It happens when the embedded UI is newer than the server.
+    if path == "api" || path.starts_with("api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            format!(
+                "This server has no /{path} request. The web UI and the server may come \
+                 from different builds: run trunk build --release in ui, then cargo build \
+                 --release."
+            ),
+        )
+            .into_response();
+    }
     // Unknown paths without an extension get the app, so reloading any page works.
     let found = match Assets::get(path) {
         Some(f) => Some((path, f)),
@@ -579,5 +592,19 @@ mod tests {
         );
         let missing = rt.block_on(static_file(Uri::from_static("/nope.js")));
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn unknown_api_call_is_not_found_not_the_app() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for uri in ["/api/nope", "/api/decks/x/y", "/api"] {
+            let resp = rt.block_on(static_file(Uri::from_static(uri)));
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+        // Client-side pages still get the app (or the build instructions).
+        let page = rt.block_on(static_file(Uri::from_static("/apis")));
+        assert_ne!(page.status(), StatusCode::NOT_FOUND);
     }
 }
