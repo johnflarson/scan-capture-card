@@ -26,6 +26,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 - `mtg-scan movers [--days N] [--top N]` (#6, PostgreSQL): the collection's TCGplayer and Card
   Kingdom value now versus N days ago (default 7), and the cards that gained or lost the most for
   the copies owned.
+- Access token for the web UI (#17): with `MTG_SCAN_UI_TOKEN` in `.env` (`mtg-scan ui-token` creates
+  one), other computers get a sign-in page (or use a `?token=` link once; a cookie remembers it);
+  this computer never needs it. `--bind 127.0.0.1` keeps the UI on this computer only.
 - Collection page type, rarity and color (#23): three new columns (full type line and color
   letters on hover); filter chips for each, combinable (any value within a column, every column
   with picks); group by type, rarity or color with per-group count and value; the search also

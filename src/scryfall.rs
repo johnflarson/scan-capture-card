@@ -437,7 +437,7 @@ pub fn parse_card_ref(text: &str) -> Option<CardRef> {
 }
 
 /// Decode `%XX` escapes (collector numbers can contain e.g. `★`).
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

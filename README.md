@@ -89,8 +89,19 @@ asks). The pages:
   owned or missing. Prices are Moxfield's (TCGplayer and Card Kingdom).
 
 Hover over any card name to see the card. It works on phones too (open the
-"other computers" address). Dark theme, luminaldata colours. Anyone on the
-network can use it, and there's no login yet (see issue #17).
+"other computers" address). Dark theme, luminaldata colours.
+
+**Who can use it.** This computer always can. By default so can anyone on your
+network. To require a token from other computers:
+
+```powershell
+mtg-scan ui-token          # saves MTG_SCAN_UI_TOKEN in .env and prints a sign-in link
+mtg-scan ui-token --show   # print it again
+```
+
+Other computers then get a sign-in page (or open the printed `?token=` link
+once; the browser remembers it). To keep the UI on this computer only, run
+`mtg-scan ui --bind 127.0.0.1`.
 
 ### Desktop window and command line
 
