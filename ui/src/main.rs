@@ -1,6 +1,7 @@
 //! mtg-scan web UI. Built with `trunk build --release`; the server embeds
 //! the output (`dist/`) and serves it from `mtg-scan ui`.
 
+mod add;
 mod api;
 mod app;
 mod decks;

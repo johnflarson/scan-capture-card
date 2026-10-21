@@ -646,6 +646,16 @@ pub struct PrintingView {
     pub scryfall_url: String,
 }
 
+/// `POST /api/collection/add`: copies of a printing to add by hand (merged
+/// into the row for that printing and finish if there is one). Answered with
+/// an [`EditResult`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AddCard {
+    pub scryfall_id: String,
+    pub finish: Finish,
+    pub quantity: u32,
+}
+
 /// `POST /api/collection/edit`: what one row should become.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RowEdit {
