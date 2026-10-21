@@ -5,25 +5,39 @@ edition = "2024"
 description = "Scan Magic: The Gathering cards with a webcam, track the collection in Markdown, and price cards via TCGplayer and Card Kingdom"
 license = "MIT"
 
+[workspace]
+members = [".", "shared", "ui"]
+# `cargo build/test/clippy` at the root skip the WebAssembly UI; it is built
+# with `trunk build` (see ui/README.md) and checked separately in CI.
+default-members = [".", "shared"]
+resolver = "3"
+
 [dependencies]
 anyhow = "1"
+axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6", features = ["derive"] }
 dirs = "7"
+futures-util = "0.3"
 getrandom = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+mime_guess = "2"
 minifb = "0.29"
+mtg-scan-shared = { version = "0.2.0", path = "shared" }
 native-tls = "0.2.18"
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }
 postgres = { version = "0.19", features = ["with-chrono-0_4"] }
 postgres-native-tls = "0.5"
 postgres-protocol = "0.6"
 regex = "1"
+rust-embed = "8"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "native-tls", "gzip", "query", "charset", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strsim = "0.11"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "0.9"
 windows = { version = "0.62", features = [
     "Foundation",
@@ -39,3 +53,7 @@ tempfile = "3"
 
 [profile.release]
 lto = "thin"
+
+# Small WebAssembly download for the web UI.
+[profile.release.package.mtg-scan-ui]
+opt-level = "z"

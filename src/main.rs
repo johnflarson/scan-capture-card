@@ -2,6 +2,7 @@ mod app;
 mod cache;
 mod camera;
 mod config;
+mod engine;
 mod live;
 mod llm;
 mod model;
@@ -13,6 +14,7 @@ mod recognize;
 mod reprice;
 mod scryfall;
 mod store;
+mod web;
 
 use std::path::PathBuf;
 
@@ -21,9 +23,10 @@ use clap::{Args, Parser, Subcommand};
 
 use app::{App, describe_card, describe_prices};
 use config::{Config, LlmProvider, RecognitionMode, StorageBackend};
-use live::{LiveMode, LiveOptions};
+use engine::EngineOptions;
 use llm::VisionLlm;
 use model::{CollectionEntry, Finish, format_usd};
+use mtg_scan_shared::Mode;
 use recognize::{CardHints, Method, Recognizer};
 use store::{CollectionStore, totals};
 
@@ -92,6 +95,31 @@ enum Command {
         /// Identify and price only; don't add to the collection
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Web UI: camera, controls and each card as it is saved, in a browser.
+    /// Reachable from other computers on the network.
+    Ui {
+        #[command(flatten)]
+        camera: CameraArgs,
+        /// Start in table mode (every card in view) instead of single-card mode
+        #[arg(long)]
+        table: bool,
+        #[arg(long, value_enum, default_value_t = Finish::Nonfoil)]
+        finish: Finish,
+        /// Only scan when "Scan now" is pressed (auto-scan off)
+        #[arg(long)]
+        manual: bool,
+        /// Identify and price only; don't add to the collection
+        #[arg(long)]
+        dry_run: bool,
+        /// Address to listen on (0.0.0.0 = every network interface)
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: std::net::IpAddr,
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+        /// Don't open a browser on this computer
+        #[arg(long)]
+        no_open: bool,
     },
     /// Identify card(s) from image files, each image showing a single card
     Identify {
@@ -246,11 +274,11 @@ fn run() -> Result<()> {
             manual,
             dry_run,
         } => {
-            apply_camera(&mut cfg, &camera);
+            apply_camera(&mut cfg, &camera, Mode::Single);
             live::run(
                 &cfg,
-                LiveOptions {
-                    mode: LiveMode::Single,
+                EngineOptions {
+                    mode: Mode::Single,
                     finish,
                     auto: !manual,
                     dry_run,
@@ -265,25 +293,46 @@ fn run() -> Result<()> {
             manual,
             dry_run,
         } => {
-            // A whole table needs every pixel: default to 4K unless overridden.
-            if camera.width.is_none() && camera.height.is_none() {
-                cfg.camera.width = 3840;
-                cfg.camera.height = 2160;
-            }
-            apply_camera(&mut cfg, &camera);
+            apply_camera(&mut cfg, &camera, Mode::Table);
             if once || image.is_some() {
                 live::scan_table_once(&cfg, image.as_deref(), finish, dry_run)
             } else {
                 live::run(
                     &cfg,
-                    LiveOptions {
-                        mode: LiveMode::Table,
+                    EngineOptions {
+                        mode: Mode::Table,
                         finish,
                         auto: !manual,
                         dry_run,
                     },
                 )
             }
+        }
+        Command::Ui {
+            camera,
+            table,
+            finish,
+            manual,
+            dry_run,
+            bind,
+            port,
+            no_open,
+        } => {
+            let mode = if table { Mode::Table } else { Mode::Single };
+            apply_camera(&mut cfg, &camera, mode);
+            web::run(
+                &cfg,
+                EngineOptions {
+                    mode,
+                    finish,
+                    auto: !manual,
+                    dry_run,
+                },
+                web::WebOptions {
+                    addr: std::net::SocketAddr::new(bind, port),
+                    open_browser: !no_open,
+                },
+            )
         }
         Command::Identify {
             images,
@@ -351,7 +400,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Command::Snapshot { output, camera } => {
-            apply_camera(&mut cfg, &camera);
+            apply_camera(&mut cfg, &camera, Mode::Single);
             let mut cam =
                 camera::Webcam::open(cfg.camera.index, cfg.camera.width, cfg.camera.height)?;
             let frame = camera::warm_frame(&mut cam)?;
@@ -370,15 +419,20 @@ fn run() -> Result<()> {
     }
 }
 
-fn apply_camera(cfg: &mut Config, args: &CameraArgs) {
+/// Apply `--camera/--width/--height`; the size applies to the given mode.
+fn apply_camera(cfg: &mut Config, args: &CameraArgs, mode: Mode) {
     if args.camera.is_some() {
         cfg.camera.index = args.camera;
     }
-    if let Some(w) = args.width {
-        cfg.camera.width = w;
+    let (w, h) = match mode {
+        Mode::Single => (&mut cfg.camera.width, &mut cfg.camera.height),
+        Mode::Table => (&mut cfg.camera.table_width, &mut cfg.camera.table_height),
+    };
+    if let Some(v) = args.width {
+        *w = v;
     }
-    if let Some(h) = args.height {
-        cfg.camera.height = h;
+    if let Some(v) = args.height {
+        *h = v;
     }
 }
 

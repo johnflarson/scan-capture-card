@@ -42,16 +42,30 @@ impl Rect {
         }
     }
 
-    pub fn iou(&self, o: &Rect) -> f32 {
+    fn intersection(&self, o: &Rect) -> f32 {
         let ix = (self.x + self.w)
             .min(o.x + o.w)
             .saturating_sub(self.x.max(o.x));
         let iy = (self.y + self.h)
             .min(o.y + o.h)
             .saturating_sub(self.y.max(o.y));
-        let inter = (ix * iy) as f32;
+        (ix * iy) as f32
+    }
+
+    pub fn iou(&self, o: &Rect) -> f32 {
+        let inter = self.intersection(o);
         let union = (self.w * self.h + o.w * o.h) as f32 - inter;
         if union <= 0.0 { 0.0 } else { inter / union }
+    }
+
+    /// Share of the smaller rectangle covered by the other one.
+    pub fn overlap(&self, o: &Rect) -> f32 {
+        let smaller = (self.w * self.h).min(o.w * o.h) as f32;
+        if smaller <= 0.0 {
+            0.0
+        } else {
+            self.intersection(o) / smaller
+        }
     }
 
     pub fn crop(&self, img: &RgbImage) -> DynamicImage {
@@ -139,6 +153,9 @@ pub struct Pipeline {
     seen: Vec<Seen>,
     /// Rows added by the most recent scan, for undo.
     last_added: Vec<(String, Finish, String)>,
+    /// The most recent scan was a single-card scan, so "Retry with LLM" may
+    /// replace what it added (never a whole table pass).
+    last_was_single: bool,
 }
 
 impl Pipeline {
@@ -153,6 +170,7 @@ impl Pipeline {
             save_counter: 0,
             seen: Vec::new(),
             last_added: Vec::new(),
+            last_was_single: false,
         })
     }
 
@@ -189,29 +207,53 @@ impl Pipeline {
     }
 
     /// Identify the single card in `img` (already cropped to the card).
+    ///
+    /// With `force_llm` ("Retry with LLM") the new result replaces the card
+    /// the previous single-card scan added, but only once the retry has
+    /// identified and recorded the card; a failed retry leaves the previous
+    /// scan, and its undo, as they were. Returns whether it replaced one.
     pub fn scan_single(
         &mut self,
         img: &DynamicImage,
         finish: Finish,
         force_llm: bool,
         dry_run: bool,
-    ) -> Result<CardResult> {
+    ) -> Result<(CardResult, bool)> {
         if force_llm && !self.recognizer.has_llm() {
             bail!("no LLM configured (see [llm] in mtg-scan.toml)");
         }
         self.save_debug(img);
-        self.last_added.clear();
         let rect = Rect {
             x: 0,
             y: 0,
             w: img.width(),
             h: img.height(),
         };
-        let outcome = match self.recognizer.identify(img, &self.app.scryfall, force_llm) {
-            Ok(id) => self.record(id, finish, dry_run)?,
-            Err(e) => Outcome::Failed(format!("{e:#}")),
+        let id = match self.recognizer.identify(img, &self.app.scryfall, force_llm) {
+            Ok(id) => id,
+            Err(e) => {
+                if !force_llm {
+                    self.last_added.clear();
+                    self.last_was_single = true;
+                }
+                let outcome = Outcome::Failed(format!("{e:#}"));
+                return Ok((CardResult { rect, outcome }, false));
+            }
         };
-        Ok(CardResult { rect, outcome })
+        let replace = force_llm && self.last_was_single;
+        let previous = std::mem::take(&mut self.last_added);
+        let outcome = match self.record(id, finish, dry_run) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                self.last_added = previous;
+                return Err(e);
+            }
+        };
+        if replace {
+            self.remove_rows(previous)?;
+        }
+        self.last_was_single = true;
+        Ok((CardResult { rect, outcome }, replace))
     }
 
     /// Find and identify every card on the table. Cards that haven't moved
@@ -228,6 +270,7 @@ impl Pipeline {
         self.save_debug(&scene);
         let boxes = self.recognizer.detect_cards(&scene)?;
         self.last_added.clear();
+        self.last_was_single = false;
 
         let mut results: Vec<CardResult> = Vec::new();
         let mut seen_now = Vec::new();
@@ -251,6 +294,9 @@ impl Pipeline {
                     Some(prev.label.clone()),
                 ),
                 None => match self.recognizer.identify(&crop, &self.app.scryfall, false) {
+                    // Two overlapping boxes on the same card (common on a
+                    // fanned pile): keep the first, ignore the second.
+                    Ok(id) if is_duplicate(&results, &rect, &id.card.scryfall_id) => continue,
                     Ok(id) => {
                         let label = label_for(&id.card);
                         (self.record(id, finish, dry_run)?, Some(label))
@@ -279,16 +325,36 @@ impl Pipeline {
 
     /// Remove the cards added by the most recent scan.
     pub fn undo(&mut self) -> Result<Vec<String>> {
-        let mut undone = Vec::new();
-        for (id, finish, name) in std::mem::take(&mut self.last_added) {
-            if self.app.store.remove(&id, finish, 1)?.is_some() {
-                undone.push(format!("{name} ({finish})"));
-            }
-        }
+        let rows = std::mem::take(&mut self.last_added);
+        self.last_was_single = false;
+        let undone = self.remove_rows(rows)?;
         // Undone cards should be picked up again on the next pass.
         self.seen.clear();
         Ok(undone)
     }
+
+    fn remove_rows(&mut self, rows: Vec<(String, Finish, String)>) -> Result<Vec<String>> {
+        let mut removed = Vec::new();
+        for (id, finish, name) in rows {
+            if self.app.store.remove(&id, finish, 1)?.is_some() {
+                removed.push(format!("{name} ({finish})"));
+            }
+        }
+        Ok(removed)
+    }
+}
+
+/// Already identified this pass as the same printing, in an overlapping box.
+fn is_duplicate(results: &[CardResult], rect: &Rect, scryfall_id: &str) -> bool {
+    results.iter().any(|r| {
+        let same = match &r.outcome {
+            Outcome::Added { id, .. } | Outcome::Priced { id, .. } => {
+                id.card.scryfall_id == scryfall_id
+            }
+            _ => false,
+        };
+        same && r.rect.overlap(rect) > 0.3
+    })
 }
 
 fn label_for(card: &Card) -> String {
@@ -325,6 +391,33 @@ mod tests {
                 w: 110,
                 h: 240
             }
+        );
+    }
+
+    #[test]
+    fn overlap_is_relative_to_the_smaller_rect() {
+        let big = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        };
+        let inside = Rect {
+            x: 10,
+            y: 10,
+            w: 20,
+            h: 20,
+        };
+        assert_eq!(big.overlap(&inside), 1.0);
+        assert_eq!(inside.overlap(&big), 1.0);
+        assert_eq!(
+            big.overlap(&Rect {
+                x: 200,
+                y: 0,
+                w: 10,
+                h: 10
+            }),
+            0.0
         );
     }
 

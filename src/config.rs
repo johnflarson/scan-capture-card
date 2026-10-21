@@ -238,8 +238,12 @@ fn parse_env(text: &str) -> Vec<(String, String)> {
 pub struct CameraConfig {
     /// Camera index from `mtg-scan cameras`; default picks the Insta360.
     pub index: Option<u32>,
+    /// Capture size in single-card mode.
     pub width: u32,
     pub height: u32,
+    /// Capture size in table mode (every card in view): as large as possible.
+    pub table_width: u32,
+    pub table_height: u32,
     /// Card guide height as a fraction of the frame height.
     pub guide_height: f32,
 }
@@ -250,6 +254,8 @@ impl Default for CameraConfig {
             index: None,
             width: 1920,
             height: 1080,
+            table_width: 3840,
+            table_height: 2160,
             guide_height: 0.85,
         }
     }

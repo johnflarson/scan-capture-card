@@ -1,6 +1,6 @@
 # Continuous integration: every pull request (and every push to main) must
-# pass formatting, lint, unit tests and the PostgreSQL integration test.
-# Branch protection on `main` requires both jobs to succeed before merging.
+# pass formatting, lint, unit tests, the web UI build and the PostgreSQL
+# integration test. Branch protection on `main` requires all jobs to pass.
 name: CI
 
 on:
@@ -38,6 +38,27 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Unit tests
         run: cargo test --locked
+
+  web-ui:
+    name: Web UI (WebAssembly)
+    # The UI is plain Rust compiled to WebAssembly: no Windows APIs needed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      - name: Lint (warnings are errors)
+        run: cargo clippy -p mtg-scan-ui --target wasm32-unknown-unknown --locked -- -D warnings
+      - name: Build the UI bundle
+        working-directory: ui
+        run: trunk build --release
 
   integration:
     name: PostgreSQL integration test

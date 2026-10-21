@@ -52,11 +52,23 @@ cargo fmt; cargo clippy --all-targets -- -D warnings; cargo test
   applied. Ask first whether the data is already on Scryfall; only store what
   isn't.
 
+### Web UI
+
+The UI (`ui/`) is Leptos compiled to WebAssembly. It's built separately with
+Trunk, and `cargo build` embeds the result. For live reload while editing it,
+see [ui/README.md](ui/README.md):
+- run `mtg-scan ui --no-open --dry-run` in one terminal
+- run `trunk serve --open` in `ui/` in another
+
+Server and UI share their API types through `shared/`. Change a type there
+and both sides must be updated, or the build fails.
+
 ### Testing layers
 
 | Layer | What | When |
 |---|---|---|
 | Unit | Parsing, heuristics, pure logic (`cargo test`) | Every PR (CI) |
+| UI build | `cargo clippy -p mtg-scan-ui --target wasm32-unknown-unknown`, `trunk build` | Every PR (CI) |
 | Integration | Real PostgreSQL round trip (`cargo test -- --ignored`) | Every PR (CI) |
 | Manual / end-to-end | Live camera scan, the real database | Before each release |
 

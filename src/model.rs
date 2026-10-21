@@ -33,6 +33,26 @@ impl Finish {
     }
 }
 
+impl From<Finish> for mtg_scan_shared::Finish {
+    fn from(f: Finish) -> Self {
+        match f {
+            Finish::Nonfoil => Self::Nonfoil,
+            Finish::Foil => Self::Foil,
+            Finish::Etched => Self::Etched,
+        }
+    }
+}
+
+impl From<mtg_scan_shared::Finish> for Finish {
+    fn from(f: mtg_scan_shared::Finish) -> Self {
+        match f {
+            mtg_scan_shared::Finish::Nonfoil => Self::Nonfoil,
+            mtg_scan_shared::Finish::Foil => Self::Foil,
+            mtg_scan_shared::Finish::Etched => Self::Etched,
+        }
+    }
+}
+
 impl fmt::Display for Finish {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())

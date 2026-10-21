@@ -10,6 +10,26 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 
 ## [Unreleased]
 
+### Added
+- Web UI (`mtg-scan ui`, #2): the live camera with the guide or detected-card boxes; mode, finish
+  and auto-scan controls; each card shown the moment it is saved (image, set, prices, match
+  confidence) with session totals; a Collection page with totals and a filter. Dark Material
+  design in the luminaldata palette. Leptos + Axum, reachable from other computers on the network.
+- Single-card / table mode switch while running (`M` key in the desktop window, toggle in the UI).
+- `[camera] table_width` / `table_height` settings for table mode (default 3840x2160).
+
+### Changed
+- The camera loop, auto-scan and scan worker are now a shared scanning engine that the desktop
+  window and the web UI both drive.
+- Table detection is more robust on messy scenes: capped model output, recovery of boxes from a
+  truncated reply, a card-shape filter, and skipping a second overlapping detection of the same card.
+
+### Fixed
+- "Retry with LLM" now replaces the card the previous single-card scan added instead of adding a
+  second copy. The original is removed only once the retry has identified the card, and a retry
+  never removes cards from a table pass.
+- The startup header showed `collection.md` even when saving to PostgreSQL; it now shows the real location.
+
 ## [0.2.0] - 2026-10-20
 
 Iteration 2: PostgreSQL storage, plus the development foundation.
