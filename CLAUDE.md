@@ -49,7 +49,8 @@ the camera and `Windows.Media.Ocr` for OCR.
 
 | Module | Role |
 |---|---|
-| `main.rs` | clap CLI; config overrides; small commands (add/remove/price/list/reprice/history/db) |
+| `main.rs` | clap CLI; config overrides; small commands (add/remove/price/list/reprice/history/movers/db) |
+| `movers.rs` | `mtg-scan movers`: ranks `CollectionStore::price_moves` (price then vs now per row) by change for the copies owned |
 | `config.rs` | `mtg-scan.toml` (`Config`, `StorageConfig`, `RecognitionMode`, `LlmProvider`), provider defaults |
 | `camera.rs` | nokhwa/Media Foundation capture; picks the camera mode itself; MJPEG/NV12/YUYV decode |
 | `engine/` | Scanning engine shared by both front ends: capture thread (camera, `Watcher` auto-scan trigger, preview frames via `draw`) and worker thread (`Pipeline`, background reprice); `Command`s in, `EngineEvent` broadcast + `StateView` out |

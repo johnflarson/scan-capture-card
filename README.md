@@ -176,6 +176,7 @@ mtg-scan db setup-app-user            # create a least-privilege login for daily
 mtg-scan db status                    # connection, server version, row counts
 mtg-scan db import collection.md      # move an existing Markdown collection over
 mtg-scan history "Lightning Bolt" --set m11
+mtg-scan movers --days 30             # biggest price gains and drops, collection value change
 mtg-scan db export backup.md          # Markdown snapshot of the database
 ```
 

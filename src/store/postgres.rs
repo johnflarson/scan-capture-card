@@ -15,7 +15,7 @@ use chrono::{DateTime, Local, NaiveDate, Utc};
 use postgres::{Client, GenericClient, Row};
 use postgres_native_tls::MakeTlsConnector;
 
-use super::{CollectionStore, ValueChange};
+use super::{CollectionStore, PriceMove, ValueChange};
 use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
 use crate::scryfall::Scryfall;
 
@@ -555,6 +555,49 @@ impl CollectionStore for PostgresStore {
             .collect())
     }
 
+    fn price_moves(&self, since: NaiveDate) -> Result<Vec<PriceMove>> {
+        let rows = self.client.borrow_mut().query(
+            "select c.scryfall_id::text, c.finish, c.quantity,
+                    old.price_date, old.price_tcg::float8, old.price_ck::float8,
+                    old.price_ck_buylist::float8,
+                    cur.price_date, cur.price_tcg::float8, cur.price_ck::float8,
+                    cur.price_ck_buylist::float8
+             from collection c
+             join lateral (
+               select * from price_history ph
+               where ph.scryfall_id = c.scryfall_id and ph.finish = c.finish
+                 and ph.price_date <= $1
+               order by ph.price_date desc limit 1
+             ) old on true
+             join lateral (
+               select * from price_history ph
+               where ph.scryfall_id = c.scryfall_id and ph.finish = c.finish
+               order by ph.price_date desc limit 1
+             ) cur on true
+             where cur.price_date > old.price_date",
+            &[&since],
+        )?;
+        rows.iter()
+            .map(|r| {
+                let finish: String = r.get(1);
+                let quantity: i32 = r.get(2);
+                let point = |at: usize| PricePoint {
+                    date: r.get(at),
+                    tcgplayer: r.get(at + 1),
+                    cardkingdom: r.get(at + 2),
+                    cardkingdom_buylist: r.get(at + 3),
+                };
+                Ok(PriceMove {
+                    scryfall_id: r.get(0),
+                    finish: finish.parse()?,
+                    quantity: quantity as u32,
+                    then: point(3),
+                    now: point(7),
+                })
+            })
+            .collect()
+    }
+
     fn value_change(&self, since: NaiveDate) -> Result<Option<ValueChange>> {
         let row = self.client.borrow_mut().query_one(
             "select coalesce(sum(c.quantity * old.price_tcg), 0)::float8,
@@ -861,6 +904,24 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((change.before, change.now, change.rows), (6.0, 9.0, 1));
+
+        // Price moves: the same row, $1.00 ten days ago and $1.50 today.
+        let moves = store.price_moves(today - chrono::Days::new(7)).unwrap();
+        assert_eq!(moves.len(), 1);
+        let m = &moves[0];
+        assert_eq!(
+            (m.scryfall_id.as_str(), m.finish, m.quantity),
+            (m11, Finish::Nonfoil, 6)
+        );
+        assert_eq!((m.then.date, m.now.date), (ten_days_ago, today));
+        assert_eq!((m.then.tcgplayer, m.now.tcgplayer), (Some(1.0), Some(1.5)));
+        assert!(
+            store
+                .price_moves(ten_days_ago - chrono::Days::new(1))
+                .unwrap()
+                .is_empty(),
+            "nothing was priced before then"
+        );
 
         let status = store.status().unwrap();
         assert_eq!(status.schema_version, 1);
