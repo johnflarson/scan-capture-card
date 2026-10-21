@@ -13,7 +13,6 @@ pub fn HomePage(
     notify: Callback<(String, bool)>,
     go: Callback<Tab>,
 ) -> impl IntoView {
-    cache.ensure(notify);
     let stats = Memo::new(move |_| cache.data.with(|d| d.as_ref().map(|d| Stats::of(&d.rows))));
     let value_change = move || {
         cache

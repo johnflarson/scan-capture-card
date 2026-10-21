@@ -34,8 +34,9 @@ impl Tab {
 }
 
 /// The collection as last loaded, shared by the Home and Collection pages.
-/// Loaded on first use and again when marked stale (a scan added or undid
-/// cards) or refreshed.
+/// Loaded while one of those pages is open and the data is stale: on first
+/// use, after a scan adds or undoes cards, or after an edit that changes the
+/// 7-day value change. Refresh reloads it on demand.
 #[derive(Clone, Copy)]
 pub struct CollectionCache {
     pub data: RwSignal<Option<CollectionView>>,
@@ -67,14 +68,17 @@ impl CollectionCache {
         });
     }
 
-    /// Load unless what we have is current.
-    pub fn ensure(self, notify: Callback<(String, bool)>) {
-        if self.stale.get_untracked() {
-            self.load(notify);
-        }
+    /// Reload whenever the cache is stale while `showing` is true, including
+    /// after a load that was already running when more changes arrived.
+    fn keep_fresh(self, showing: impl Fn() -> bool + 'static, notify: Callback<(String, bool)>) {
+        Effect::new(move |_| {
+            if showing() && self.stale.get() && !self.loading.get() {
+                self.load(notify);
+            }
+        });
     }
 
-    fn mark_stale(self) {
+    pub fn mark_stale(self) {
         self.stale.set(true);
     }
 }
@@ -105,6 +109,13 @@ pub fn App() -> impl IntoView {
             });
         });
     });
+
+    // Home and Collection show the collection, so keep it current while either
+    // is open (a scan adding cards marks it stale).
+    cache.keep_fresh(
+        move || matches!(tab.get(), Tab::Home | Tab::Collection),
+        notify,
+    );
 
     let load_session = move || {
         spawn_local(async move {
@@ -503,13 +514,17 @@ fn CollectionPage(
                 });
             }
             d.totals = Totals::of(&d.rows);
+            // The 7-day change depends on quantities and prices; only the server
+            // can recompute it, so reload in the background.
+            if d.value_change.is_some() {
+                cache.mark_stale();
+            }
         });
         editing.set(None);
         notify.run((result.message, false));
     });
 
     let load = move || cache.load(notify);
-    cache.ensure(notify);
 
     let rows = move || {
         let needle = filter.get().to_lowercase();
