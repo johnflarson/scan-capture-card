@@ -63,18 +63,20 @@ button, input { font: inherit; color: inherit; }
 }
 .brand {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 4px 12px;
-  border: 2px solid var(--md-secondary);
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 2px 2px;
+  border: none;
   border-radius: var(--radius-s);
-  background: var(--md-on-surface);
-  color: #5c2d0e;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  background: transparent;
+  color: var(--md-on-surface);
   white-space: nowrap;
 }
-.brand small { color: var(--md-secondary); font-weight: 600; letter-spacing: 0.02em; }
+.brand:hover { background: var(--md-surface-container-highest); }
+.brand-logo { display: block; width: 36px; height: 36px; flex: none; }
+.brand-logo svg { display: block; width: 100%; height: 100%; }
+.brand-name { font-family: Georgia, "Times New Roman", serif; font-size: 20px; letter-spacing: 0.01em; }
+.brand-name b { color: var(--md-secondary); font-weight: 700; }
 .tabs { display: flex; gap: 4px; }
 .tab {
   padding: 8px 16px;
@@ -495,7 +497,7 @@ button.deck-mini:hover { background: var(--md-surface-container-highest); }
 
 .placeholder { max-width: 560px; margin: 40px auto; padding: 32px; text-align: center; }
 .placeholder h1 { margin: 0 0 8px; font-size: 24px; font-weight: 400; }
-button.brand { cursor: pointer; font-size: 14px; }
+button.brand { cursor: pointer; }
 
 /* Card image shown while hovering a card name. */
 .card-preview {
@@ -561,6 +563,9 @@ dl.info dd { margin: 0; overflow-wrap: anywhere; }
   .bar-end .connection { display: none; }
   .visibility-row { grid-template-columns: auto minmax(0, 1fr) auto; }
   .visibility-row > .muted { display: none; }
+  .brand { gap: 8px; }
+  .brand-logo { width: 32px; height: 32px; }
+  .brand-name { font-size: 18px; }
   .tabs { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
   .tab { flex: 1 0 auto; padding: 8px 12px; }
   .bar-location { display: none; }

@@ -40,6 +40,7 @@ Edits to `src/*.rs` or `style.css` rebuild and reload the page.
 | `src/home.rs` | Home (landing) page: launch buttons and statistics (computed by `mtg_scan_shared::Stats`), Decks placeholder |
 | `src/api.rs` | JSON requests and the Server-Sent Events subscription |
 | `style.css` | Material 3 role tokens with the luminaldata palette (dark by default) |
+| `logo.svg` | The Shuffling Tome icon: the favicon (via Trunk) and, inlined by `app.rs`, the top-bar logo |
 
 Types shared with the server come from `../shared` (`mtg-scan-shared`), so an
 API change that isn't made on both sides fails to compile.
