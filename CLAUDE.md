@@ -30,6 +30,11 @@ cargo fmt
 $env:MTG_SCAN_DEBUG=1            # print raw OCR/LLM reads during recognition
 mtg-scan ocr-dump <image>        # hidden: raw Windows OCR lines with positions
 mtg-scan scan-all --image <photo> --dry-run   # test the table pipeline offline from the camera
+mtg-scan ui --dry-run --no-open    # web UI on :8787 without saving scans
+
+# Web UI (Leptos -> WebAssembly), embedded into the binary by `cargo build`
+cd ui; trunk build --release; cd ..
+cargo clippy -p mtg-scan-ui --target wasm32-unknown-unknown -- -D warnings
 
 # PostgreSQL integration test (ignored by default; creates and drops its own schema)
 docker run -d --name mtg-scan-test-pg -e POSTGRES_USER=mtg -e POSTGRES_PASSWORD=mtgtest -e POSTGRES_DB=mtg -p 55432:5432 postgres:18
@@ -47,7 +52,11 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `main.rs` | clap CLI; config overrides; small commands (add/remove/price/list/reprice/history/db) |
 | `config.rs` | `mtg-scan.toml` (`Config`, `StorageConfig`, `RecognitionMode`, `LlmProvider`), provider defaults |
 | `camera.rs` | nokhwa/Media Foundation capture; picks the camera mode itself; MJPEG/NV12/YUYV decode |
-| `live.rs` | Live window (minifb) + worker thread; `Watcher` motion/change detector for auto-scan; `scan_table_once` |
+| `engine/` | Scanning engine shared by both front ends: capture thread (camera, `Watcher` auto-scan trigger, preview frames via `draw`) and worker thread (`Pipeline`, background reprice); `Command`s in, `EngineEvent` broadcast + `StateView` out |
+| `live.rs` | Desktop front end (minifb window, keys), console logger, `scan_table_once` |
+| `web/` | Web front end: Axum server for `mtg-scan ui` (MJPEG preview, SSE events, JSON API, embedded `ui/dist` via rust-embed) |
+| `../shared/` | `mtg-scan-shared`: serde types exchanged by server and UI (`StateView`, `CardView`, `ServerEvent`, `ClientCommand`, …) |
+| `../ui/` | `mtg-scan-ui`: Leptos 0.8 CSR app (`app.rs` components, `api.rs` fetch + EventSource), `style.css` Material 3 tokens |
 | `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo |
 | `recognize.rs` | `Recognizer` (OCR, then LLM, then visual refine), `resolve()` hints to a Scryfall printing, `NameIndex`, `MatchQuality` |
 | `ocr.rs` | Windows OCR wrapper; returns lines with normalised boxes |
@@ -98,6 +107,18 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
 3. if still `NameOnly`, `printing::best_printing` (`Visual`).
 
 ## Hard-won facts (don't relearn these)
+
+- **Never `taskkill /IM msedge.exe`** (or any browser by image name): it closes the user's own
+  browser windows. To screenshot the UI, run headless Edge with its own `--user-data-dir` in the
+  scratchpad and `--timeout=10000`. The MJPEG `<img>` never finishes loading, so
+  `--virtual-time-budget` hangs. Screenshots show the camera and Scryfall images blank because the
+  timeout cancels loading; verify those with `curl` instead.
+- **Vision-LLM detection can loop** on messy scenes (e.g. a fanned pile), repeating near-identical
+  boxes until it runs out of tokens. Hence `num_predict`/`max_tokens` caps, the regex box parser
+  that survives truncated JSON, the card-shape filter (`llm::plausible_cards`), and dropping
+  same-card overlapping detections (`pipeline::is_duplicate`).
+- `rust-embed` needs `ui/dist` to exist at compile time; `build.rs` creates it (empty) so the server
+  builds without the UI and explains how to build it at runtime.
 
 - **The DB owner account can't create logins** on the user's server (no CREATEROLE).
   `db setup-app-user` therefore prints a `CREATE ROLE ... PASSWORD 'SCRAM-SHA-256$...'` statement

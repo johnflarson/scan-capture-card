@@ -6,3 +6,4 @@ mtg-scan.toml
 collection.md
 scans/
 *.md.tmp
+ui/dist/

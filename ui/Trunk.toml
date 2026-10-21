@@ -1,0 +1,12 @@
+# Build:   trunk build --release        (output in dist/, embedded by `cargo build`)
+# Develop: run `mtg-scan ui --no-open` in one terminal, then `trunk serve --open`
+#          here; the UI reloads on save and /api is forwarded to mtg-scan.
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+port = 8080
+
+[[proxy]]
+backend = "http://localhost:8787/api/"

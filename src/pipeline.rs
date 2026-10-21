@@ -42,16 +42,30 @@ impl Rect {
         }
     }
 
-    pub fn iou(&self, o: &Rect) -> f32 {
+    fn intersection(&self, o: &Rect) -> f32 {
         let ix = (self.x + self.w)
             .min(o.x + o.w)
             .saturating_sub(self.x.max(o.x));
         let iy = (self.y + self.h)
             .min(o.y + o.h)
             .saturating_sub(self.y.max(o.y));
-        let inter = (ix * iy) as f32;
+        (ix * iy) as f32
+    }
+
+    pub fn iou(&self, o: &Rect) -> f32 {
+        let inter = self.intersection(o);
         let union = (self.w * self.h + o.w * o.h) as f32 - inter;
         if union <= 0.0 { 0.0 } else { inter / union }
+    }
+
+    /// Share of the smaller rectangle covered by the other one.
+    pub fn overlap(&self, o: &Rect) -> f32 {
+        let smaller = (self.w * self.h).min(o.w * o.h) as f32;
+        if smaller <= 0.0 {
+            0.0
+        } else {
+            self.intersection(o) / smaller
+        }
     }
 
     pub fn crop(&self, img: &RgbImage) -> DynamicImage {
@@ -200,7 +214,12 @@ impl Pipeline {
             bail!("no LLM configured (see [llm] in mtg-scan.toml)");
         }
         self.save_debug(img);
-        self.last_added.clear();
+        if force_llm {
+            // "Retry with LLM" replaces the card the previous scan added.
+            self.undo()?;
+        } else {
+            self.last_added.clear();
+        }
         let rect = Rect {
             x: 0,
             y: 0,
@@ -251,6 +270,9 @@ impl Pipeline {
                     Some(prev.label.clone()),
                 ),
                 None => match self.recognizer.identify(&crop, &self.app.scryfall, false) {
+                    // Two overlapping boxes on the same card (common on a
+                    // fanned pile): keep the first, ignore the second.
+                    Ok(id) if is_duplicate(&results, &rect, &id.card.scryfall_id) => continue,
                     Ok(id) => {
                         let label = label_for(&id.card);
                         (self.record(id, finish, dry_run)?, Some(label))
@@ -291,6 +313,19 @@ impl Pipeline {
     }
 }
 
+/// Already identified this pass as the same printing, in an overlapping box.
+fn is_duplicate(results: &[CardResult], rect: &Rect, scryfall_id: &str) -> bool {
+    results.iter().any(|r| {
+        let same = match &r.outcome {
+            Outcome::Added { id, .. } | Outcome::Priced { id, .. } => {
+                id.card.scryfall_id == scryfall_id
+            }
+            _ => false,
+        };
+        same && r.rect.overlap(rect) > 0.3
+    })
+}
+
 fn label_for(card: &Card) -> String {
     format!(
         "{} ({} #{})",
@@ -325,6 +360,33 @@ mod tests {
                 w: 110,
                 h: 240
             }
+        );
+    }
+
+    #[test]
+    fn overlap_is_relative_to_the_smaller_rect() {
+        let big = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        };
+        let inside = Rect {
+            x: 10,
+            y: 10,
+            w: 20,
+            h: 20,
+        };
+        assert_eq!(big.overlap(&inside), 1.0);
+        assert_eq!(inside.overlap(&big), 1.0);
+        assert_eq!(
+            big.overlap(&Rect {
+                x: 200,
+                y: 0,
+                w: 10,
+                h: 10
+            }),
+            0.0
         );
     }
 

@@ -44,12 +44,36 @@ ollama pull qwen3-vl:8b-instruct      # ~6 GB; runs well on a 12 GB GPU
 Build:
 
 ```powershell
+rustup target add wasm32-unknown-unknown   # for the web UI
+cargo install trunk --locked
+cd ui; trunk build --release; cd ..        # web UI -> ui/dist (embedded below)
 cargo build --release
 copy mtg-scan.example.toml mtg-scan.toml   # settings; edit as needed
 copy .env.example .env                     # secrets: DB password, API keys
 ```
 
 ## Usage
+
+### Web UI
+
+```powershell
+mtg-scan ui            # single-card mode; add --table for every card in view
+```
+
+It opens `http://localhost:8787` and also prints an address for **other
+computers on your network** (allow mtg-scan on *Private networks* when Windows
+asks). The page shows:
+
+- **Live**: the camera with the guide or detected-card boxes; mode, finish
+  and auto-scan controls; Scan now / Retry with LLM / Rescan all / Undo; and
+  each card the moment it is saved, with its image, set, price links and
+  match confidence, plus session totals.
+- **Collection**: everything you own, with totals and a filter.
+
+Dark theme, luminaldata colours. Anyone on the network can use it, and there's
+no login yet (see issue #17). Phone layouts are planned (#16).
+
+### Desktop window and command line
 
 ```powershell
 # Lay cards out under the camera; every card in view is scanned and added
@@ -79,13 +103,15 @@ Live window keys:
 | `Space` | Scan now |
 | `A` | Toggle auto-scan |
 | `F` | Cycle finish for new cards: nonfoil, foil, etched |
+| `M` | Switch between single-card and table mode |
 | `U` | Undo the last scan |
 | `L` | (`scan`) Retry the current card with the LLM |
 | `R` | (`scan-all`) Forget what's on the table so everything is re-added |
 | `Q` / `Esc` | Quit |
 
-Box colours: green = added, orange = added but printing uncertain, dark green =
-unchanged since the last pass, red = not recognised.
+Box colours: teal = added, amber = added but printing uncertain, dark teal =
+unchanged since the last pass, blue = priced only (dry run), red = not
+recognised.
 
 ### Camera tips (Insta360 Link 2 Pro)
 

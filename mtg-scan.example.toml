@@ -19,9 +19,12 @@ schema = "mtg_scan"
 [camera]
 # Index from `mtg-scan cameras`. Leave unset to auto-pick the Insta360.
 # index = 0
-# Capture size for `scan` (single card). `scan-all` defaults to 3840x2160.
+# Capture size in single-card mode (`scan`).
 width = 1920
 height = 1080
+# Capture size in table mode (`scan-all`): every card in view, so go large.
+table_width = 3840
+table_height = 2160
 # Height of the single-card guide as a fraction of the frame.
 guide_height = 0.85
 

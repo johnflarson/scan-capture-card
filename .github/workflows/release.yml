@@ -21,7 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
 
       - name: Tag must match Cargo.toml version
         shell: pwsh
@@ -42,6 +47,11 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+      # Built first: `cargo build` embeds ui/dist into the binary.
+      - name: Build web UI
+        working-directory: ui
+        run: trunk build --release
 
       - name: Build
         run: cargo build --release --locked

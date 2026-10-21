@@ -31,9 +31,18 @@ Reply with ONLY a JSON object: {\"name\": string, \"set_code\": string|null, \
 \"collector_number\": string|null, \"foil\": boolean|null, \"confidence\": number}. \
 Use null for anything not clearly legible; never guess the set from the artwork.";
 
-const DETECT_PROMPT: &str = "Locate every Magic: The Gathering playing card in the image. \
-Output ONLY a JSON array like [{\"bbox_2d\": [x1, y1, x2, y2], \"label\": \"card\"}], one entry \
-per card, with coordinates normalized to 0-1000 of the image width and height.";
+const DETECT_PROMPT: &str = "Locate every Magic: The Gathering playing card in the image whose \
+face is fully visible. Ignore cards that are mostly covered by other cards (for example in a pile \
+or fanned stack). Output ONLY a JSON array like [{\"bbox_2d\": [x1, y1, x2, y2], \"label\": \
+\"card\"}], one entry per card, with coordinates normalized to 0-1000 of the image width and \
+height. List each card once.";
+
+/// Generation caps: enough for any real answer, but a model stuck repeating
+/// itself stops quickly instead of running for minutes.
+const READ_MAX_TOKENS: u32 = 400;
+const DETECT_MAX_TOKENS: u32 = 2048;
+/// More boxes than this means the model is looping, not seeing cards.
+const MAX_DETECTIONS: usize = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NormBox {
@@ -67,11 +76,6 @@ struct LlmAnswer {
     collector_number: Option<serde_json::Value>,
     foil: Option<bool>,
     confidence: Option<f32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Detection {
-    bbox_2d: Vec<f32>,
 }
 
 impl VisionLlm {
@@ -119,30 +123,38 @@ impl VisionLlm {
 
     /// Read name / set / number from a photo of a single card.
     pub fn read_card(&self, img: &DynamicImage) -> Result<(CardHints, Option<f32>)> {
-        let content = self.ask(READ_PROMPT, img, CARD_IMAGE_DIM)?;
+        let content = self.ask(READ_PROMPT, img, CARD_IMAGE_DIM, READ_MAX_TOKENS)?;
         parse_answer(&content)
     }
 
     /// Find every card in a photo of a table.
     pub fn detect_cards(&self, img: &DynamicImage) -> Result<Vec<NormBox>> {
-        let content = self.ask(DETECT_PROMPT, img, SCENE_IMAGE_DIM)?;
-        parse_boxes(&content)
+        let content = self.ask(DETECT_PROMPT, img, SCENE_IMAGE_DIM, DETECT_MAX_TOKENS)?;
+        let aspect = img.width() as f32 / img.height().max(1) as f32;
+        Ok(plausible_cards(parse_boxes(&content)?, aspect))
     }
 
-    fn ask(&self, prompt: &str, img: &DynamicImage, max_dim: u32) -> Result<String> {
+    fn ask(
+        &self,
+        prompt: &str,
+        img: &DynamicImage,
+        max_dim: u32,
+        max_tokens: u32,
+    ) -> Result<String> {
         let b64 = encode_jpeg(img, max_dim)?;
         let body = match self.wire {
             Wire::OllamaNative => json!({
                 "model": self.model,
                 "stream": false,
                 "think": false,
-                "options": {"temperature": 0},
+                "options": {"temperature": 0, "num_predict": max_tokens},
                 "messages": [{"role": "user", "content": prompt, "images": [b64]}]
             }),
             Wire::OpenAi => {
                 let mut body = json!({
                     "model": self.model,
                     "temperature": 0,
+                    "max_tokens": max_tokens,
                     "messages": [{
                         "role": "user",
                         "content": [
@@ -241,27 +253,55 @@ fn parse_answer(content: &str) -> Result<(CardHints, Option<f32>)> {
     Ok((hints, answer.confidence))
 }
 
+/// Every `"bbox_2d": [x1, y1, x2, y2]` in the reply. Matching entries one by
+/// one (rather than parsing the whole array) still recovers the boxes when a
+/// reply is cut off mid-JSON.
 fn parse_boxes(content: &str) -> Result<Vec<NormBox>> {
-    let detections: Vec<Detection> = serde_json::from_str(json_slice(content, '[', ']')?)
-        .with_context(|| format!("could not parse LLM detections: {content}"))?;
-    Ok(detections
-        .into_iter()
-        .filter(|d| d.bbox_2d.len() == 4)
-        .map(|d| {
-            let v: Vec<f32> = d
-                .bbox_2d
-                .iter()
-                .map(|c| (c / 1000.0).clamp(0.0, 1.0))
-                .collect();
-            NormBox {
+    static BOX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#""bbox_2d"\s*:\s*\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]"#,
+        )
+        .expect("valid regex")
+    });
+    let boxes: Vec<NormBox> = BOX
+        .captures_iter(content)
+        .filter_map(|c| {
+            let v: Vec<f32> = (1..=4)
+                .map(|i| c[i].parse::<f32>().map(|n| (n / 1000.0).clamp(0.0, 1.0)))
+                .collect::<Result<_, _>>()
+                .ok()?;
+            Some(NormBox {
                 x1: v[0].min(v[2]),
                 y1: v[1].min(v[3]),
                 x2: v[0].max(v[2]),
                 y2: v[1].max(v[3]),
-            }
+            })
         })
         .filter(|b| b.x2 - b.x1 > 0.01 && b.y2 - b.y1 > 0.01)
-        .collect())
+        .collect();
+    if boxes.is_empty() && !content.contains('[') {
+        bail!("no detections in LLM reply: {content}");
+    }
+    Ok(boxes)
+}
+
+/// Keep boxes shaped and sized like a card (63x88 mm, upright or sideways)
+/// in an image `aspect` wide per unit of height. Drops the slivers a looping
+/// model produces, and gives up entirely if it produced an absurd number.
+fn plausible_cards(boxes: Vec<NormBox>, aspect: f32) -> Vec<NormBox> {
+    if boxes.len() > MAX_DETECTIONS {
+        return Vec::new();
+    }
+    boxes
+        .into_iter()
+        .filter(|b| {
+            let (w, h) = (b.x2 - b.x1, b.y2 - b.y1);
+            // Width / height in pixels: about 0.72 upright, 1.4 sideways.
+            let shape = w / h * aspect;
+            let card_shaped = (0.5..=0.95).contains(&shape) || (1.05..=2.0).contains(&shape);
+            card_shaped && (0.002..=0.6).contains(&(w * h))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -290,6 +330,28 @@ mod tests {
             parse_answer(r#"{"name":"Opt","set_code":null,"collector_number":59}"#).unwrap();
         assert_eq!(h.collector_number.as_deref(), Some("59"));
         assert_eq!(h.set_code, None);
+    }
+
+    #[test]
+    fn recovers_boxes_from_truncated_reply_and_drops_slivers() {
+        let reply = "```json\n[{\"bbox_2d\": [145, 159, 245, 372], \"label\": \"card\"},\
+                     {\"bbox_2d\": [552, 700, 564, 830], \"label\": \"card\"},\
+                     {\"bbox_2d\": [552, 708, 562, 8";
+        let boxes = parse_boxes(reply).unwrap();
+        assert_eq!(boxes.len(), 2, "the cut-off third entry is ignored");
+        // 16:9 frame: the first box is card-shaped, the second a sliver.
+        let cards = plausible_cards(boxes, 16.0 / 9.0);
+        assert_eq!(
+            cards,
+            vec![NormBox {
+                x1: 0.145,
+                y1: 0.159,
+                x2: 0.245,
+                y2: 0.372
+            }]
+        );
+        let too_many = vec![cards[0]; MAX_DETECTIONS + 1];
+        assert!(plausible_cards(too_many, 16.0 / 9.0).is_empty());
     }
 
     #[test]
