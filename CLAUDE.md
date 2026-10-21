@@ -64,7 +64,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
 | `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs |
 | `pricing/` | `tcgplayer.rs` (mpapi pricepoints, Scryfall fallback), `cardkingdom.rs` (daily price list, then a compact index), `PriceService` |
-| `store/` | `CollectionStore` trait; `markdown.rs` (parse, render, atomic write); `postgres.rs` (migrations, upserts, Scryfall hydration, price history) |
+| `store/` | `CollectionStore` trait (add, remove, `set_quantity`, `relocate` to another printing/finish, prices); `markdown.rs` (parse, render, atomic write); `postgres.rs` (migrations, upserts, Scryfall hydration, price history) |
 | `cache.rs` | JSON cache in `%LOCALAPPDATA%\mtg-scan` |
 | `model.rs` | `Card`, `Finish`, `Prices`, `CollectionEntry`, `PricePoint` |
 | `migrations/` | Numbered SQL files embedded via `include_str!` and listed in `store::postgres::MIGRATIONS` |
@@ -109,10 +109,17 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
 ## Hard-won facts (don't relearn these)
 
 - **Never `taskkill /IM msedge.exe`** (or any browser by image name): it closes the user's own
-  browser windows. To screenshot the UI, run headless Edge with its own `--user-data-dir` in the
-  scratchpad and `--timeout=10000`. The MJPEG `<img>` never finishes loading, so
-  `--virtual-time-budget` hangs. Screenshots show the camera and Scryfall images blank because the
-  timeout cancels loading; verify those with `curl` instead.
+  browser windows. To test the UI, install `puppeteer-core` into the scratchpad and launch the
+  installed Edge headless with its own `userDataDir`; `browser.close()` ends only that instance.
+  Navigate with `waitUntil: 'domcontentloaded'`: the MJPEG `<img>` never finishes loading, so
+  "load"/"networkidle" (and Edge's `--virtual-time-budget`) hang.
+- **Test UI and edits against a throwaway collection**, never the user's database:
+  `mtg-scan --storage markdown --collection <scratch>.md ui --manual --no-open --port 8788`.
+- **Several stores can be open on one collection** (scanner worker, each web request). PostgreSQL
+  handles that. `MarkdownStore` makes every change one locked read-modify-write (exclusive
+  `std::fs::File::lock` on `<collection>.md.lock`, re-read, change, write), so concurrent changes,
+  even from another process, are never lost. Re-reading alone wasn't enough: two writers could
+  read the same snapshot.
 - **Vision-LLM detection can loop** on messy scenes (e.g. a fanned pile), repeating near-identical
   boxes until it runs out of tokens. Hence `num_predict`/`max_tokens` caps, the regex box parser
   that survives truncated JSON, the card-shape filter (`llm::plausible_cards`), and dropping

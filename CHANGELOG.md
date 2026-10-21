@@ -15,6 +15,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   and auto-scan controls; each card shown the moment it is saved (image, set, prices, match
   confidence) with session totals; a Collection page with totals and a filter. Dark Material
   design in the luminaldata palette. Leptos + Axum, reachable from other computers on the network.
+- Collection editing in the web UI (#19): each row's Edit button opens a dialog to change the
+  quantity, switch finish (only finishes the printing exists in), move the row to another printing
+  by pasting a Scryfall link (priced afresh, merged into a row you already own), or remove it.
 - Single-card / table mode switch while running (`M` key in the desktop window, toggle in the UI).
 - `[camera] table_width` / `table_height` settings for table mode (default 3840x2160).
 
@@ -23,6 +26,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   window and the web UI both drive.
 - Table detection is more robust on messy scenes: capped model output, recovery of boxes from a
   truncated reply, a card-shape filter, and skipping a second overlapping detection of the same card.
+- The Markdown store makes each change under an exclusive lock (`collection.md.lock`) and
+  re-reads the file first, so the scanner, the web UI and other mtg-scan commands never
+  overwrite each other's changes.
 
 ### Fixed
 - "Retry with LLM" now replaces the card the previous single-card scan added instead of adding a

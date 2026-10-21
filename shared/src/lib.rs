@@ -173,11 +173,61 @@ pub struct CollectionRow {
     pub cardkingdom_url: Option<String>,
 }
 
+impl Totals {
+    pub fn of(rows: &[CollectionRow]) -> Totals {
+        rows.iter().fold(Totals::default(), |mut t, r| {
+            let q = r.quantity as f64;
+            t.printings += 1;
+            t.cards += r.quantity;
+            t.tcgplayer += r.tcgplayer.unwrap_or(0.0) * q;
+            t.cardkingdom += r.cardkingdom.unwrap_or(0.0) * q;
+            t.cardkingdom_buylist += r.cardkingdom_buylist.unwrap_or(0.0) * q;
+            t
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CollectionView {
     pub location: String,
     pub rows: Vec<CollectionRow>,
     pub totals: Totals,
+}
+
+/// A printing, for the edit dialog: `GET /api/printing?q=<Scryfall link or ID>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrintingView {
+    pub scryfall_id: String,
+    pub name: String,
+    pub set_code: String,
+    pub set_name: String,
+    pub number: String,
+    pub rarity: String,
+    /// Finishes this printing exists in.
+    pub finishes: Vec<Finish>,
+    pub image_url: Option<String>,
+    pub scryfall_url: String,
+}
+
+/// `POST /api/collection/edit`: what one row should become.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowEdit {
+    /// The row being edited.
+    pub scryfall_id: String,
+    pub finish: Finish,
+    /// The printing and finish it should have (unchanged to keep them).
+    pub to_scryfall_id: String,
+    pub to_finish: Finish,
+    /// Copies; 0 removes the row.
+    pub quantity: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EditResult {
+    pub message: String,
+    /// The row as it now stands (merged with an existing row when moved onto
+    /// one); `None` when it was removed.
+    pub row: Option<CollectionRow>,
 }
 
 /// `$1.23`, or an em dash when unknown.
@@ -207,6 +257,33 @@ mod tests {
         let m: ClientCommand =
             serde_json::from_str(r#"{"type":"set_mode","mode":"table"}"#).unwrap();
         assert_eq!(m, ClientCommand::SetMode { mode: Mode::Table });
+    }
+
+    #[test]
+    fn totals_weigh_prices_by_quantity() {
+        let row = |quantity, tcg: Option<f64>| CollectionRow {
+            scryfall_id: String::new(),
+            name: String::new(),
+            set_code: String::new(),
+            set_name: String::new(),
+            number: String::new(),
+            rarity: String::new(),
+            finish: Finish::Nonfoil,
+            quantity,
+            tcgplayer: tcg,
+            cardkingdom: Some(1.0),
+            cardkingdom_buylist: None,
+            priced: None,
+            scryfall_url: String::new(),
+            tcgplayer_url: None,
+            cardkingdom_url: None,
+        };
+        let t = Totals::of(&[row(2, Some(1.25)), row(3, None)]);
+        assert_eq!((t.printings, t.cards), (2, 5));
+        assert_eq!(
+            (t.tcgplayer, t.cardkingdom, t.cardkingdom_buylist),
+            (2.5, 5.0, 0.0)
+        );
     }
 
     #[test]
