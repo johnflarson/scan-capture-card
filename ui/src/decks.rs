@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    Board, CardOwnership, ColorGroup, DeckOwnership, DeckStats, DeckSummary, DeckView, DecksView,
-    Have, Slice, usd,
+    Board, CardOwnership, ColorGroup, DeckOwnership, DeckPrice, DeckStats, DeckSummary, DeckView,
+    DecksView, Have, Slice, usd,
 };
 
 use crate::api;
@@ -53,7 +53,19 @@ impl DeckCache {
         spawn_local(async move {
             match api::decks(refresh).await {
                 Ok(view) => {
+                    // Forget decks no longer listed (deleted or made private).
+                    let listed: std::collections::HashSet<String> =
+                        view.decks.iter().map(|d| d.id.clone()).collect();
+                    self.details
+                        .update(|d| d.retain(|id, _| listed.contains(id)));
                     self.failed.set(HashMap::new());
+                    if self
+                        .open
+                        .get_untracked()
+                        .is_some_and(|id| !listed.contains(&id))
+                    {
+                        self.open.set(None);
+                    }
                     self.list.set(Some(view));
                     self.fetch_cards();
                 }
@@ -333,6 +345,41 @@ fn pips(colors: &[String]) -> impl IntoView + use<> {
     }
 }
 
+/// A price sum, with "+" when some copies have no price and aren't in it.
+fn sum(amount: f64, unpriced: u32) -> String {
+    let total = usd(Some(amount));
+    if unpriced > 0 {
+        format!("{total}+")
+    } else {
+        total
+    }
+}
+
+/// Explains the "+" on totals that leave unpriced copies out.
+fn unpriced_note(value: &DeckPrice) -> Option<String> {
+    let copies = |n: u32| {
+        if n == 1 {
+            "1 copy".to_string()
+        } else {
+            format!("{n} copies")
+        }
+    };
+    let parts: Vec<String> = [
+        (value.tcgplayer_unpriced, "TCGplayer"),
+        (value.cardkingdom_unpriced, "Card Kingdom"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, store)| format!("{} without a {store} price", copies(n)))
+    .collect();
+    (!parts.is_empty()).then(|| {
+        format!(
+            "+ Not included: {}. Moxfield has no price for them.",
+            parts.join(", ")
+        )
+    })
+}
+
 fn date(updated: &str) -> &str {
     updated.get(..10).unwrap_or(updated)
 }
@@ -360,7 +407,10 @@ fn DeckTile(
                     } else {
                         view! {
                             <span class="tcg" title="TCGplayer price of the missing copies">
-                                {format!("To finish {}", usd(Some(o.missing.tcgplayer)))}
+                                {format!(
+                                    "To finish {}",
+                                    sum(o.missing.tcgplayer, o.missing.tcgplayer_unpriced),
+                                )}
                             </span>
                         }
                             .into_any()
@@ -480,27 +530,28 @@ fn DeckDetail(
                     value=format!("{} ({}%)", o.owned, o.percent())
                     kind=""
                 />
-                <Metric label="Deck · TCGplayer" value=usd(Some(o.value.tcgplayer)) kind="tcg" />
-                <Metric label="Deck · Card Kingdom" value=usd(Some(o.value.cardkingdom)) kind="ck" />
-                <Metric label="To finish · TCGplayer" value=usd(Some(o.missing.tcgplayer)) kind="tcg" />
-                <Metric label="To finish · Card Kingdom" value=usd(Some(o.missing.cardkingdom)) kind="ck" />
+                <Metric
+                    label="Deck · TCGplayer"
+                    value=sum(o.value.tcgplayer, o.value.tcgplayer_unpriced)
+                    kind="tcg"
+                />
+                <Metric
+                    label="Deck · Card Kingdom"
+                    value=sum(o.value.cardkingdom, o.value.cardkingdom_unpriced)
+                    kind="ck"
+                />
+                <Metric
+                    label="To finish · TCGplayer"
+                    value=sum(o.missing.tcgplayer, o.missing.tcgplayer_unpriced)
+                    kind="tcg"
+                />
+                <Metric
+                    label="To finish · Card Kingdom"
+                    value=sum(o.missing.cardkingdom, o.missing.cardkingdom_unpriced)
+                    kind="ck"
+                />
             </div>
-            {(o.value.unpriced > 0)
-                .then(|| {
-                    view! {
-                        <p class="muted note">
-                            {format!(
-                                "{} without a TCGplayer price {} not in the TCGplayer totals.",
-                                if o.value.unpriced == 1 {
-                                    "1 copy".to_string()
-                                } else {
-                                    format!("{} copies", o.value.unpriced)
-                                },
-                                if o.value.unpriced == 1 { "is" } else { "are" },
-                            )}
-                        </p>
-                    }
-                })}
+            {unpriced_note(&o.value).map(|note| view! { <p class="muted note">{note}</p> })}
             <div class="filter-row deck-sort">
                 <span class="filter-label">"Show"</span>
                 <div class="segmented" role="group" aria-label="Show cards">
@@ -776,7 +827,9 @@ pub fn DeckStatsBlock(
                                                 {format!("{}% owned · {} missing", o.percent(), o.total - o.owned)}
                                             </span>
                                         </span>
-                                        <span class="mini-right tcg">{usd(Some(o.missing.tcgplayer))}</span>
+                                        <span class="mini-right tcg">
+                                            {sum(o.missing.tcgplayer, o.missing.tcgplayer_unpriced)}
+                                        </span>
                                     </button>
                                 }
                             })

@@ -146,9 +146,11 @@ pub struct DeckView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardOwnership {
     pub card: DeckCard,
-    /// Copies of this exact printing (any finish).
+    /// Collection copies of this exact printing (any finish) set aside for
+    /// this line.
     pub exact: u32,
-    /// Copies under this name, any printing or finish.
+    /// All copies set aside for this line, any printing (at most the
+    /// line's quantity).
     pub any: u32,
 }
 
@@ -184,7 +186,9 @@ impl CardOwnership {
 }
 
 /// A deck checked against the collection. A card counts as owned in any
-/// printing; the same collection copy can count for several decks.
+/// printing. Within a deck each collection copy covers one deck copy (a deck
+/// listing Mountains from two sets needs two Mountains); across decks the
+/// same copy counts for each.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeckOwnership {
     pub cards: Vec<CardOwnership>,
@@ -198,12 +202,16 @@ pub struct DeckOwnership {
     pub missing: DeckPrice,
 }
 
+/// Sums at Moxfield's prices. Copies without a price aren't in a sum; they
+/// are counted so the UI can say the sum is incomplete.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DeckPrice {
     pub tcgplayer: f64,
     pub cardkingdom: f64,
-    /// Copies without a TCGplayer price (not in the sum).
-    pub unpriced: u32,
+    /// Copies without a TCGplayer price.
+    pub tcgplayer_unpriced: u32,
+    /// Copies without a Card Kingdom price.
+    pub cardkingdom_unpriced: u32,
 }
 
 impl DeckPrice {
@@ -211,9 +219,12 @@ impl DeckPrice {
         let n = copies as f64;
         match card.tcgplayer {
             Some(p) => self.tcgplayer += p * n,
-            None => self.unpriced += copies,
+            None => self.tcgplayer_unpriced += copies,
         }
-        self.cardkingdom += card.cardkingdom.unwrap_or(0.0) * n;
+        match card.cardkingdom {
+            Some(p) => self.cardkingdom += p * n,
+            None => self.cardkingdom_unpriced += copies,
+        }
     }
 }
 
@@ -225,11 +236,58 @@ fn name_key(name: &str) -> String {
 
 impl DeckOwnership {
     pub fn of(deck: &DeckView, collection: &[CollectionRow]) -> DeckOwnership {
-        let mut by_id: HashMap<&str, u32> = HashMap::new();
-        let mut by_name: HashMap<String, u32> = HashMap::new();
+        // Copies not yet set aside for a line of this deck: per card name, the
+        // copies of each printing. Exact matches are found by ID even if the
+        // two sides spell the name differently.
+        let mut pool: HashMap<String, Vec<(&str, u32)>> = HashMap::new();
+        let mut name_of: HashMap<&str, String> = HashMap::new();
         for r in collection {
-            *by_id.entry(r.scryfall_id.as_str()).or_default() += r.quantity;
-            *by_name.entry(name_key(&r.name)).or_default() += r.quantity;
+            let name = name_key(&r.name);
+            let printings = pool.entry(name.clone()).or_default();
+            match printings.iter_mut().find(|(id, _)| *id == r.scryfall_id) {
+                Some((_, n)) => *n += r.quantity,
+                None => printings.push((r.scryfall_id.as_str(), r.quantity)),
+            }
+            name_of.insert(r.scryfall_id.as_str(), name);
+        }
+        let mut take = |name: &str, id: Option<&str>, wanted: u32| -> u32 {
+            let Some(printings) = pool.get_mut(name) else {
+                return 0;
+            };
+            let mut taken = 0;
+            for (pid, left) in printings.iter_mut() {
+                if id.is_some_and(|id| id != *pid) {
+                    continue;
+                }
+                let n = (*left).min(wanted - taken);
+                *left -= n;
+                taken += n;
+            }
+            taken
+        };
+
+        let mut exact = vec![0; deck.cards.len()];
+        let mut any = vec![0; deck.cards.len()];
+        // The deck itself first, the maybeboard gets what is left; each in
+        // the deck's order.
+        for counted in [true, false] {
+            let lines: Vec<usize> = (0..deck.cards.len())
+                .filter(|&i| deck.cards[i].board.counts() == counted)
+                .collect();
+            // First the exact printings, so a copy isn't used up by a line
+            // it only matches by name…
+            for &i in &lines {
+                let card = &deck.cards[i];
+                if let Some(name) = name_of.get(card.scryfall_id.as_str()) {
+                    exact[i] = take(name, Some(&card.scryfall_id), card.quantity);
+                    any[i] = exact[i];
+                }
+            }
+            // …then any printing for what is still needed.
+            for &i in &lines {
+                let card = &deck.cards[i];
+                any[i] += take(&name_key(&card.name), None, card.quantity - any[i]);
+            }
         }
 
         let mut out = DeckOwnership {
@@ -239,17 +297,11 @@ impl DeckOwnership {
             value: DeckPrice::default(),
             missing: DeckPrice::default(),
         };
-        for card in &deck.cards {
-            let exact = by_id.get(card.scryfall_id.as_str()).copied().unwrap_or(0);
-            let any = by_name
-                .get(&name_key(&card.name))
-                .copied()
-                .unwrap_or(0)
-                .max(exact);
+        for (i, card) in deck.cards.iter().enumerate() {
             let line = CardOwnership {
                 card: card.clone(),
-                exact,
-                any,
+                exact: exact[i],
+                any: any[i],
             };
             if card.board.counts() {
                 out.total += card.quantity;
@@ -401,16 +453,44 @@ mod tests {
                 Have::Missing
             ]
         );
-        assert_eq!(o.cards[1].any, 2);
+        // Bolt needs 1 and gets 1 of the 2 owned.
+        assert_eq!(o.cards[1].any, 1);
         assert_eq!(o.cards[2].missing(), 3);
         // Maybeboard is listed but not counted.
         assert_eq!((o.total, o.owned), (16, 3));
         assert_eq!(o.percent(), 18);
         assert_eq!(o.value.tcgplayer, 0.5 + 1.0 + 1.0);
-        assert_eq!(o.value.unpriced, 10);
+        assert_eq!(o.value.tcgplayer_unpriced, 10);
+        assert_eq!(o.value.cardkingdom_unpriced, 10);
         assert_eq!(o.missing.tcgplayer, 0.75);
         assert_eq!(o.missing.cardkingdom, 1.5);
-        assert_eq!(o.missing.unpriced, 10);
+        assert_eq!(o.missing.tcgplayer_unpriced, 10);
+    }
+
+    #[test]
+    fn copies_cover_one_deck_line_each() {
+        // Mountains from two sets, one Mountain owned (a third printing).
+        let deck = DeckView {
+            summary: summary(),
+            cards: vec![
+                card(Board::Main, 1, "mountain-iko", "Mountain", Some(0.1)),
+                card(Board::Main, 1, "mountain-m21", "Mountain", Some(0.1)),
+                card(Board::Maybe, 1, "mountain-dom", "Mountain", Some(0.1)),
+            ],
+            warning: None,
+        };
+        let o = DeckOwnership::of(&deck, &[owned("mountain-dom", "Mountain", 1)]);
+        let have: Vec<Have> = o.cards.iter().map(CardOwnership::have).collect();
+        // The counted lines get the copy before the maybeboard's exact match.
+        assert_eq!(have, [Have::OtherPrinting, Have::Missing, Have::Missing]);
+        assert_eq!((o.total, o.owned), (2, 1));
+        assert!((o.missing.tcgplayer - 0.1).abs() < 1e-9);
+
+        // An exact match is kept for the line that names that printing.
+        let o = DeckOwnership::of(&deck, &[owned("mountain-m21", "Mountain", 1)]);
+        let have: Vec<Have> = o.cards.iter().map(CardOwnership::have).collect();
+        assert_eq!(have, [Have::Missing, Have::Exact, Have::Missing]);
+        assert_eq!(o.owned, 1);
     }
 
     #[test]
