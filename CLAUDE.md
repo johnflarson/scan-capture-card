@@ -4,12 +4,28 @@ Guidance for Claude Code (and humans) working on **mtg-scan**: a Rust CLI and
 desktop tool that scans Magic: The Gathering cards with a webcam, tracks the
 collection, and prices cards via TCGplayer and Card Kingdom.
 
+## Development workflow (always follow)
+
+The full process is in [CONTRIBUTING.md](CONTRIBUTING.md). The rules that matter for every change:
+
+- **Never commit or push to `main`.** It's protected. Work on a branch named
+  `feature/<issue>-<slug>`, `fix/<issue>-<slug>` or `chore/<slug>`, then open a PR.
+- **The backlog is GitHub Issues** (labels `type:*`, `priority:P0-P3`, `area:*`) on the
+  "mtg-scan" GitHub Project board. Not this file. Create or link an issue for any new work;
+  the PR body says `Closes #N`.
+- **Every PR** adds a line under `## [Unreleased]` in `CHANGELOG.md`, fills in the PR template,
+  and needs green CI (`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  `cargo test`, PostgreSQL integration test). Squash-merge.
+- **Releases** are tags `vX.Y.Z` that match `Cargo.toml`; `.github/workflows/release.yml`
+  publishes the Windows zip. See CONTRIBUTING.md "Releasing".
+- **GitHub CLI:** `"C:\Program Files\GitHub CLI\gh.exe"` (not on the Git Bash PATH).
+
 ## Commands
 
 ```powershell
 cargo build --release            # binary: target\release\mtg-scan.exe
 cargo test                       # unit tests (no network, no camera)
-cargo clippy --release           # keep at zero warnings
+cargo clippy --all-targets -- -D warnings   # same as CI; must be clean
 cargo fmt
 $env:MTG_SCAN_DEBUG=1            # print raw OCR/LLM reads during recognition
 mtg-scan ocr-dump <image>        # hidden: raw Windows OCR lines with positions
@@ -57,8 +73,15 @@ the camera and `Windows.Media.Ocr` for OCR.
   `%APPDATA%\mtg-scan\.env`; real env vars win). The user doesn't want Windows environment
   variables. DB connection: `MTG_SCAN_DB_HOST/_PORT/_USER/_PASSWORD/_NAME/_SSLMODE` (no
   URL-encoding needed), or `MTG_SCAN_DATABASE_URL`. API keys (`OPENROUTER_API_KEY`) go there too.
-- Tables live in a configurable schema (default `mtg_scan`). Migrations run automatically on
-  connect, inside a transaction holding a lock on `schema_migrations`.
+- Tables live in a configurable schema (default `mtg_scan`). **Two logins:** the app runs as a
+  least-privilege role (`MTG_SCAN_DB_USER`, e.g. `mtg_scan_app`; rows only), and the schema owner
+  (`MTG_SCAN_DB_ADMIN_USER`) runs `db migrate` and `db setup-app-user`. `PostgresStore::connect`
+  never changes the schema; it refuses to run while migrations are pending. Migrations run in
+  `connect_admin`, inside a transaction holding a lock on `schema_migrations`.
+- Owner-created future tables are granted to the app role via `ALTER DEFAULT PRIVILEGES`, so new
+  migrations need no grant statements.
+- **Backups:** none yet. The user will design the backup process (a GitHub issue tracks it). Don't
+  add local dump files or backup jobs on your own.
 - Driver: sync `postgres` crate with native-tls. It uses prepared statements, so connect
   directly or through a *session*-mode pooler, not a transaction-mode one (Supabase port 6543).
 - Money is `numeric(10,2)`. The app reads and writes it as `float8` through SQL casts, and UUIDs
@@ -71,6 +94,16 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
 3. if still `NameOnly`, `printing::best_printing` (`Visual`).
 
 ## Hard-won facts (don't relearn these)
+
+- **The DB owner account can't create logins** on the user's server (no CREATEROLE).
+  `db setup-app-user` therefore prints a `CREATE ROLE ... PASSWORD 'SCRAM-SHA-256$...'` statement
+  for a superuser to run, keeps the generated password in `.env` as
+  `MTG_SCAN_DB_APP_PASSWORD_PENDING`, and finishes on the next run.
+- `CREATE SCHEMA IF NOT EXISTS` checks the CREATE privilege *before* the existence check, so a
+  least-privilege role can't run it. Only the admin path creates the schema.
+- **GitHub Actions `windows-latest`** ships PostgreSQL with the service stopped (superuser
+  `postgres`, password `root`). CI starts it for the integration test. There are no service
+  containers on Windows runners.
 
 - **`.env` values must stay literal.** dotenvy expands `$name` inside values, which broke a real
   password. `config::parse_env` does no substitution, escapes or inline comments; keep it that way.
@@ -107,49 +140,13 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
   watcher). Network and camera paths are verified manually with `--dry-run`.
 - `mtg-scan.toml` and `collection.md` are git-ignored (local settings and personal data).
 
-## Roadmap
+## Roadmap and iteration history
 
-Track every iteration here. When a feature lands, move it to the changelog with the date.
+Planned work lives in **GitHub Issues** and on the **mtg-scan Project board**; see
+CONTRIBUTING.md. Release-by-release detail is in [CHANGELOG.md](CHANGELOG.md).
 
-### Iteration 2: PostgreSQL storage (done)
-- [x] Schema `migrations/0001_init.sql`: `collection`, `price_history`, `collection_value` view.
-- [x] `store/postgres.rs` implementing `CollectionStore`, with auto-migration on connect.
-- [x] Config `[storage] backend`, `database_url_env` (default `MTG_SCAN_DATABASE_URL`), `schema`; `--storage` flag.
-- [x] `db migrate | status | import | export`, `history <card>`.
-- [x] Verified against a local Postgres 18 container (integration test + CLI end to end).
-- [x] `.env` support for the connection and secrets; the user's server (PostgreSQL on a LAN host,
-      port 5433, no SSL offered) is reachable.
-- [x] Connected to the user's database (`cardcollection`, schema `mtg_scan`) and imported `collection.md`.
-- [x] `[storage] backend = "postgres"` is the default in the user's `mtg-scan.toml`.
-
-### Backlog
-- [ ] On-screen text labels in the live window (bitmap font) instead of console-only names.
-- [ ] Classical card detection (contours of the black border) so `scan-all` works without an LLM.
-- [ ] Foil detection (sheen across frames), and language detection for non-English cards.
-- [ ] Condition tracking (NM/LP/MP) using Card Kingdom condition prices.
-- [ ] Price-change report after `reprice` (biggest movers).
-- [ ] Batch-confirm UI: review uncertain (orange) identifications before saving.
-- [ ] Linux/macOS: v4l/AVFoundation via nokhwa, Tesseract OCR fallback.
-
-## Changelog
-
-### Iteration 2, part 1 (2026-10-20)
-- PostgreSQL backend: `collection` (one row per Scryfall printing + finish) and daily
-  `price_history` (`price_tcg`, `price_ck`, `price_ck_buylist`); card data stays on Scryfall.
-- `collection_value` view with latest prices and values.
-- CLI: `--storage`, `db migrate/status/import/export`, `history`.
-- Scryfall batch lookup (`cards_by_id`); the Scryfall client is shared via `Rc` between App and store.
-- `.env` file support for DB connection fields and API keys; `.env.example` template.
-- Own literal `.env` parser (`config::parse_env`) replaced dotenvy, whose `$VAR` substitution
-  silently corrupted a password containing `$`.
-- Live on the user's PostgreSQL server; the 10 Hobbit cards were imported.
-
-### Iteration 1 (2026-10-20)
-- Rust CLI `mtg-scan` with live webcam window (Insta360 Link 2 Pro, 4K MJPEG).
-- Continuous hands-free scanning: still-scene detection, no duplicate adds, undo.
-- `scan` (single card + guide) and `scan-all` (whole table via LLM detection), `--once`, `--image`, `--dry-run`.
-- Recognition: Windows OCR, then vision LLM (Ollama / LM Studio / OpenRouter / OpenAI-compatible).
-- Scryfall resolution with name correction, printing selection and visual printing match.
-- Prices: TCGplayer market (live) and Card Kingdom retail + buylist (daily list).
-- Markdown collection store (`collection.md`) behind the `CollectionStore` trait.
-- First real test: 10 *The Hobbit* commons on a desk mat, 10/10 identified and priced.
+| Iteration | Version | Summary |
+|---|---|---|
+| 1 | v0.1.0 | Webcam scanning (single card + whole table), OCR + vision-LLM recognition, Scryfall resolution, TCGplayer + Card Kingdom prices, Markdown collection |
+| 2 | v0.2.0 | PostgreSQL storage (one row per printing + finish, daily price history), `.env` secrets, least-privilege app role, nightly reprice, CI/CD + GitHub process |
+| 3 | (next) | Pick from the board, ordered by `priority:*` |

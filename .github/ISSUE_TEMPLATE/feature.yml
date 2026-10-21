@@ -1,0 +1,28 @@
+name: Feature
+description: Something new mtg-scan should do
+title: "[Feature] "
+labels: [type:feature, status:triage]
+body:
+  - type: textarea
+    id: story
+    attributes:
+      label: User story
+      description: Who wants it, what they want, and why.
+      placeholder: As a collector, I want foil cards detected automatically so that I don't misprice them.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checkable conditions that mean "done".
+      placeholder: |
+        - [ ] Foil cards are flagged at least 90% of the time on a 20-photo test set
+        - [ ] Non-foil cards are never flagged as foil
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes, ideas, data or schema impact
+      description: Optional. Approach ideas, links, whether the database schema changes.

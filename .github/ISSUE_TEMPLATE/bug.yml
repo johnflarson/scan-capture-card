@@ -1,0 +1,38 @@
+name: Bug
+description: Something that doesn't work as it should
+title: "[Bug] "
+labels: [type:bug, status:triage]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the exact error text if there was one.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `mtg-scan scan-all`
+        2. Lay out ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `mtg-scan --version`
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Console output, or a file from logs\ for nightly-job problems. Remove passwords first.
+      render: text

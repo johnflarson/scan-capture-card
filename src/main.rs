@@ -162,10 +162,16 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DbCommand {
-    /// Create or upgrade the schema (also done automatically on connect)
+    /// Create or upgrade the schema (uses the admin / schema-owner account)
     Migrate,
     /// Test the connection and show row counts
     Status,
+    /// Create a least-privilege login for day-to-day use and switch .env to it
+    SetupAppUser {
+        /// Role name to create
+        #[arg(long, default_value = "mtg_scan_app")]
+        role: String,
+    },
     /// Copy a Markdown collection into the database (sets quantities)
     Import {
         /// Markdown file (default: the configured collection file)
@@ -534,21 +540,38 @@ fn history(
 }
 
 fn db(cfg: &Config, command: DbCommand) -> Result<()> {
+    use store::postgres::PostgresStore;
     let scryfall = std::rc::Rc::new(scryfall::Scryfall::new(app::http_client()?));
-    let store = app::connect_postgres(cfg, scryfall)?;
+    let schema = cfg.storage.schema.as_str();
     match command {
         DbCommand::Migrate => {
-            // `connect` already applied anything pending.
-            let status = store.status()?;
-            println!(
-                "{}: schema at version {}",
-                store.location(),
-                status.schema_version
-            );
+            let admin = cfg.storage.resolved_admin_connection()?;
+            let (store, applied) = PostgresStore::connect_admin(admin, schema, scryfall)?;
+            if applied.is_empty() {
+                println!(
+                    "{}: schema is up to date (version {})",
+                    store.location(),
+                    store.schema_version()?
+                );
+            } else {
+                println!("{}: applied migrations {applied:?}", store.location());
+            }
         }
         DbCommand::Status => {
+            // No version check here, so status works even when migrations are pending.
+            let store = PostgresStore::open(cfg.storage.resolved_connection()?, schema, scryfall)?;
             let s = store.status()?;
             println!("Connected to {}", store.location());
+            println!("  server           PostgreSQL {}", s.server_version);
+            println!(
+                "  logged in as     {}{}",
+                s.user,
+                if s.can_create_roles {
+                    " (can create roles)"
+                } else {
+                    ""
+                }
+            );
             println!("  schema version   {}", s.schema_version);
             println!("  printings        {}", s.printings);
             println!("  cards            {}", s.cards);
@@ -560,7 +583,9 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
                     .unwrap_or_default()
             );
         }
+        DbCommand::SetupAppUser { role } => setup_app_user(cfg, &role, scryfall)?,
         DbCommand::Import { file } => {
+            let store = app::connect_postgres(cfg, scryfall)?;
             let path = file.unwrap_or_else(|| cfg.collection.clone());
             let entries = store::markdown::MarkdownStore::open(&path)?.entries()?;
             let n = store.import(&entries)?;
@@ -571,6 +596,7 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
             );
         }
         DbCommand::Export { file } => {
+            let store = app::connect_postgres(cfg, scryfall)?;
             let path = file.unwrap_or_else(|| cfg.collection.clone());
             let entries = store.entries()?;
             std::fs::write(&path, store::markdown::render(&entries))
@@ -579,6 +605,102 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Create the least-privilege app role and move `.env` over to it, keeping
+/// the schema owner's login as MTG_SCAN_DB_ADMIN_*. If the owner may not
+/// create roles, print the one statement a superuser must run and stop; the
+/// generated password waits in `.env` until this command is run again.
+fn setup_app_user(
+    cfg: &Config,
+    role: &str,
+    scryfall: std::rc::Rc<scryfall::Scryfall>,
+) -> Result<()> {
+    use store::postgres::{PostgresStore, RoleSetup};
+    const PENDING: &str = "MTG_SCAN_DB_APP_PASSWORD_PENDING";
+    let env_file = std::path::Path::new(".env");
+    if !env_file.is_file() {
+        bail!("run this from the folder containing your .env file");
+    }
+    if std::env::var_os("MTG_SCAN_DATABASE_URL").is_some() {
+        bail!(
+            "setup-app-user works with the MTG_SCAN_DB_* settings; remove MTG_SCAN_DATABASE_URL from .env first"
+        );
+    }
+    let admin = cfg.storage.resolved_admin_connection()?;
+    let owner = admin.get_user().unwrap_or_default().to_string();
+    if owner == role {
+        bail!(
+            "the admin login is already '{role}': set MTG_SCAN_DB_ADMIN_USER / _ADMIN_PASSWORD to the schema owner"
+        );
+    }
+    let password = match std::env::var(PENDING) {
+        Ok(p) if !p.is_empty() => p,
+        _ => generate_password()?,
+    };
+    let (store, _) =
+        PostgresStore::connect_admin(admin.clone(), &cfg.storage.schema, scryfall.clone())?;
+    match store.setup_app_role(role, &password)? {
+        RoleSetup::NeedsSuperuser { sql } => {
+            config::update_env_file(env_file, &[(PENDING, Some(&password))])?;
+            println!(
+                "'{owner}' is not allowed to create logins, so a PostgreSQL superuser (e.g. 'postgres')"
+            );
+            println!(
+                "needs to run this one statement (it contains a password hash, not the password):\n"
+            );
+            println!("    {sql}\n");
+            println!(
+                "Then run `mtg-scan db setup-app-user` again to finish. The new password is saved in .env."
+            );
+        }
+        RoleSetup::Ready { created } => {
+            let mut app_conn = admin.clone();
+            app_conn.user(role).password(&password);
+            PostgresStore::connect(app_conn, &cfg.storage.schema, scryfall)
+                .with_context(|| format!("logging in as '{role}' failed; was it created with the statement printed earlier?"))?;
+            let owner_password =
+                String::from_utf8_lossy(admin.get_password().unwrap_or_default()).to_string();
+            let mut updates: Vec<(&str, Option<&str>)> = vec![
+                ("MTG_SCAN_DB_USER", Some(role)),
+                ("MTG_SCAN_DB_PASSWORD", Some(&password)),
+                (PENDING, None),
+            ];
+            if std::env::var_os("MTG_SCAN_DB_ADMIN_USER").is_none() {
+                updates.push(("MTG_SCAN_DB_ADMIN_USER", Some(&owner)));
+                updates.push(("MTG_SCAN_DB_ADMIN_PASSWORD", Some(&owner_password)));
+            }
+            config::update_env_file(env_file, &updates)?;
+            println!(
+                "{} role '{role}' with read/write access to rows in schema '{}' (no schema changes).",
+                if created { "Created" } else { "Configured" },
+                cfg.storage.schema
+            );
+            println!(
+                "Updated .env: the app now logs in as '{role}'; '{owner}' is kept as MTG_SCAN_DB_ADMIN_USER"
+            );
+            println!("for `db migrate` and future role changes.");
+        }
+    }
+    Ok(())
+}
+
+/// 32 random alphanumeric characters (unbiased, from the OS RNG).
+fn generate_password() -> Result<String> {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut out = String::new();
+    while out.len() < 32 {
+        let mut buf = [0u8; 64];
+        getrandom::fill(&mut buf).map_err(|e| anyhow::anyhow!("no secure random source: {e}"))?;
+        // Reject bytes >= 248 (= 62 * 4) so every character is equally likely.
+        out.extend(
+            buf.iter()
+                .filter(|b| **b < 248)
+                .map(|b| CHARS[(*b % 62) as usize] as char)
+                .take(32 - out.len()),
+        );
+    }
+    Ok(out)
 }
 
 fn reprice(cfg: &Config) -> Result<()> {

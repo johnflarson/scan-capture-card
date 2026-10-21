@@ -73,6 +73,35 @@ impl StorageConfig {
         self.connection_from(|key| std::env::var(key).ok())
     }
 
+    /// Connection for schema changes and role setup: the same
+    /// server and database, logged in as `MTG_SCAN_DB_ADMIN_USER` (the
+    /// schema owner) when set, otherwise the regular account.
+    pub fn resolved_admin_connection(&self) -> Result<postgres::Config> {
+        self.admin_connection_from(|key| std::env::var(key).ok())
+    }
+
+    fn admin_connection_from(
+        &self,
+        get: impl Fn(&str) -> Option<String>,
+    ) -> Result<postgres::Config> {
+        let mut config = self.connection_from(&get)?;
+        let get = |key: &str| {
+            get(key)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        if let Some(user) = get("MTG_SCAN_DB_ADMIN_USER") {
+            config.user(&user);
+            match get("MTG_SCAN_DB_ADMIN_PASSWORD") {
+                Some(password) => config.password(password),
+                None => {
+                    bail!("MTG_SCAN_DB_ADMIN_USER is set but MTG_SCAN_DB_ADMIN_PASSWORD is not")
+                }
+            };
+        }
+        Ok(config)
+    }
+
     fn connection_from(&self, get: impl Fn(&str) -> Option<String>) -> Result<postgres::Config> {
         let get = |key: &str| {
             get(key)
@@ -143,6 +172,40 @@ pub fn load_env_files() -> Vec<PathBuf> {
         }
     }
     loaded
+}
+
+/// Set (`Some`) or remove (`None`) keys in a `.env` file, keeping every
+/// other line (comments, ordering) intact. New keys are appended.
+pub fn update_env_file(path: &Path, updates: &[(&str, Option<&str>)]) -> Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut done = vec![false; updates.len()];
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let key = line
+            .trim()
+            .strip_prefix("export ")
+            .unwrap_or(line.trim())
+            .split_once('=')
+            .map(|(k, _)| k.trim());
+        match key.and_then(|k| updates.iter().position(|(u, _)| *u == k)) {
+            Some(i) => {
+                if let (false, Some(value)) = (done[i], updates[i].1) {
+                    lines.push(format!("{}={value}", updates[i].0));
+                }
+                done[i] = true;
+            }
+            None => lines.push(line.to_string()),
+        }
+    }
+    for (i, (key, value)) in updates.iter().enumerate() {
+        if let (false, Some(value)) = (done[i], value) {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    let tmp = path.with_extension("env.tmp");
+    std::fs::write(&tmp, lines.join("\n") + "\n")
+        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("failed to update {}", path.display()))
 }
 
 /// Minimal `.env` parser. Values are literal: everything after the first `=`
@@ -436,6 +499,43 @@ mod tests {
         assert_eq!(get("EMPTY"), Some(""));
         assert_eq!(get("EQUALS"), Some("a=b"));
         assert_eq!(parsed.len(), 6);
+    }
+
+    #[test]
+    fn admin_connection_overrides_only_the_login() {
+        let env = |key: &str| {
+            match key {
+                "MTG_SCAN_DB_HOST" => Some("db"),
+                "MTG_SCAN_DB_USER" => Some("app"),
+                "MTG_SCAN_DB_PASSWORD" => Some("app-pw"),
+                "MTG_SCAN_DB_NAME" => Some("cards"),
+                "MTG_SCAN_DB_ADMIN_USER" => Some("owner"),
+                "MTG_SCAN_DB_ADMIN_PASSWORD" => Some("owner-pw"),
+                _ => None,
+            }
+            .map(String::from)
+        };
+        let admin = StorageConfig::default().admin_connection_from(env).unwrap();
+        assert_eq!(admin.get_user(), Some("owner"));
+        assert_eq!(admin.get_password(), Some(&b"owner-pw"[..]));
+        assert_eq!(admin.get_dbname(), Some("cards"));
+        assert_eq!(admin.get_hosts().len(), 1);
+    }
+
+    #[test]
+    fn update_env_file_replaces_appends_and_removes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "# keep me\nA=1\nB=old$\nC=gone\n").unwrap();
+        update_env_file(
+            &path,
+            &[("B", Some("new$#")), ("C", None), ("D", Some("4"))],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, "# keep me\nA=1\nB=new$#\nD=4\n");
+        let parsed = parse_env(&text);
+        assert!(parsed.contains(&("B".into(), "new$#".into())));
     }
 
     #[test]

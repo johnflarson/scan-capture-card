@@ -126,7 +126,9 @@ Connection settings and the password live in a `.env` file next to
 ```powershell
 copy .env.example .env   # fill in MTG_SCAN_DB_HOST, _PORT, _USER, _PASSWORD, _NAME, _SSLMODE
 # then set [storage] backend = "postgres" in mtg-scan.toml, or pass --storage postgres
-mtg-scan db status                    # connect; creates/upgrades the schema
+mtg-scan db migrate                   # create/upgrade the schema (schema owner account)
+mtg-scan db setup-app-user            # create a least-privilege login for daily use
+mtg-scan db status                    # connection, server version, row counts
 mtg-scan db import collection.md      # move an existing Markdown collection over
 mtg-scan history "Lightning Bolt" --set m11
 mtg-scan db export backup.md          # Markdown snapshot of the database
@@ -147,6 +149,20 @@ foil and nonfoil copies. Scans, `add` and `reprice` record that day's prices.
 Price history is kept even after you remove a card. The schema is in
 [`migrations/`](migrations/).
 
-## Roadmap
+**Two database logins.** Day to day, the app uses a restricted login that can
+read and write rows but can't change or drop tables. The schema owner's login
+is kept separately in `.env` as `MTG_SCAN_DB_ADMIN_USER` / `_ADMIN_PASSWORD`,
+and is only used for `db migrate` and `db setup-app-user`.
 
-See [CLAUDE.md](CLAUDE.md#roadmap).
+**Nightly price refresh.** `scripts\install-nightly-task.ps1` registers a
+Windows scheduled task that runs `scripts
+ightly.ps1` (`mtg-scan reprice`)
+every day at 02:30. That adds a daily point to the price history. Logs go to
+`logs\`.
+
+## Development
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): how work is tracked, built, tested, reviewed
+  and released (GitHub Issues + Project board, branches and PRs, CI, tagged releases).
+- [CHANGELOG.md](CHANGELOG.md): what changed in each version.
+- [CLAUDE.md](CLAUDE.md): architecture, design decisions and lessons learned.
