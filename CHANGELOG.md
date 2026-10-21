@@ -11,6 +11,12 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 ## [Unreleased]
 
 ### Added
+- Table mode finds cards without an LLM (#5): by their black borders, at any position and up to
+  ~25° off upright or sideways, in under a second (the LLM took ~13 s). On the 10-card desk photo
+  it finds all 10 with no false boxes, including cards greyed by glare and a tilted one, on a
+  busy playmat. The vision LLM is used only when it finds nothing; `[recognition] detection`
+  (`auto` / `classical` / `llm`) chooses. `mtg-scan detect-dump <photo> --out boxes.png` (hidden)
+  shows what it found.
 - Settings page in the web UI (#40), opened with the cog at the top right:
   - **Startup:** auto-scan on or off, single-card or table mode, and the finish when
     `mtg-scan ui` starts. `--manual`, `--table` and `--finish` override them for one run,

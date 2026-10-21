@@ -461,9 +461,9 @@ fn run() -> Result<()> {
                 marked
                     .save(&out)
                     .with_context(|| format!("failed to write {}", out.display()))?;
-                let mask = out.with_extension("mask.png");
-                analysis.mask.save(&mask)?;
-                println!("saved {} and {}", out.display(), mask.display());
+                let edges = out.with_extension("edges.png");
+                analysis.debug.save(&edges)?;
+                println!("saved {} and {}", out.display(), edges.display());
             }
             Ok(())
         }

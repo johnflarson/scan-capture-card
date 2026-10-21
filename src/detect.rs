@@ -1,49 +1,86 @@
 //! Find cards on the table without a vision LLM.
 //!
-//! Magic cards have a thick black border. The detector:
-//! 1. marks *dark grey* pixels: dark outright, or (under glare) much darker
-//!    than their surroundings; coloured artwork and a coloured mat don't
-//!    count because the pixel must be grey;
-//! 2. removes thin dark lines (a playmat's line art, text) with a
-//!    morphological opening and bridges small gaps in borders with a closing;
-//! 3. scores every card-shaped rectangle (63:88, upright or sideways, many
-//!    sizes) on a coarse grid: along at least three of its sides most of the
-//!    length must run over dark pixels (a border), and its inside must not be
-//!    mostly dark (a mouse, a phone);
+//! A card's black border makes a long straight edge against the table on
+//! every side, dark on the card's side. The detector:
+//! 1. finds straight edges (a simplified LSD line-segment detector: pixels
+//!    with a strong brightness gradient, grown into regions of one gradient
+//!    direction, each fitted with a segment) and remembers which side of each
+//!    is dark;
+//! 2. pairs edges that face each other (parallel, dark sides towards each
+//!    other, side by side) a card's width or height apart, at any rotation,
+//!    and places a 63:88 rectangle on them;
+//! 3. checks the rectangle: along at least three sides the border just
+//!    inside must be clearly darker than the table just outside (glare can
+//!    wash out the fourth);
 //! 4. keeps the best rectangle where several overlap.
+//!
+//! Brightness is the brightest channel, so a red or blue mat counts as light
+//! and only a black border (or a dark line) as dark. Contrast is relative, so
+//! a border greyed by glare still counts. A playmat's line art is curved or
+//! thin, so it rarely gives two long facing edges with a border-wide dark band
+//! along three sides of a card-shaped rectangle.
 
-use image::{GrayImage, RgbImage, imageops};
+use std::ops::{Add, Mul, Sub};
+
+use image::{Rgb, RgbImage, imageops};
 
 use crate::llm::NormBox;
 
-/// The mask is made at this width (a card is then ~90-300 px wide)…
-const WORK_WIDTH: u32 = 1920;
-/// …and rectangles are searched on a grid this many times coarser.
-const STEP: u32 = 4;
-/// A pixel is dark when its brightest channel is below this…
-const DARK: u8 = 110;
-/// …or below `GLARE_DARK` and under `RELATIVE` times its neighbourhood…
-const GLARE_DARK: u8 = 170;
-const RELATIVE: f32 = 0.7;
-/// …(the neighbourhood: a square this many pixels from the centre)…
-const LOCAL_RADIUS: u32 = 12;
-/// …and it is grey rather than coloured (channel spread below this).
-const GREY: u8 = 45;
+/// The photo is analysed at this width (a card is then ~40-300 px wide).
+const WORK_WIDTH: u32 = 1280;
 const CARD_ASPECT: f32 = 63.0 / 88.0;
-/// Card widths tried, as a share of the frame's short side.
+/// Lengths tried for the sides along a pair of edges, relative to 63:88,
+/// nearest first.
+const STRETCH: [f32; 9] = [1.0, 0.98, 1.02, 0.96, 1.04, 0.94, 1.06, 0.92, 1.08];
+/// Card widths accepted, as a share of the frame's short side.
 const MIN_WIDTH: f32 = 0.05;
-const MAX_WIDTH: f32 = 0.35;
-/// A side counts when this share of its length runs over a border.
-const SIDE_HIT: f32 = 0.75;
-/// The inside may be at most this dark (dark artwork is fine, a solid
-/// object isn't).
-const MAX_INSIDE: f32 = 0.15;
+const MAX_WIDTH: f32 = 0.45;
+/// The black border's thickness as a share of the card's width.
+const BORDER: f32 = 0.045;
+/// Gradient (brightness levels per pixel) for a pixel to be on an edge.
+const MIN_GRADIENT: f32 = 6.0;
+/// A pixel joins an edge while its gradient points within this of the edge's.
+const ANGLE_TOLERANCE: f32 = 22.5 * std::f32::consts::PI / 180.0;
+/// Shortest edge kept, in work pixels.
+const MIN_EDGE: f32 = 12.0;
+/// Pieces of one edge are joined when parallel within this, this many work
+/// pixels off each other's line, and at most this far apart along it.
+const JOIN_ANGLE: f32 = 4.0 * std::f32::consts::PI / 180.0;
+const JOIN_OFFSET: f32 = 2.0;
+const JOIN_GAP: f32 = 12.0;
+/// Cards turned further than this from upright or sideways aren't looked for.
+const MAX_TILT: f32 = 25.0 * std::f32::consts::PI / 180.0;
+/// Opposite sides of a card are parallel within this.
+const PARALLEL: f32 = 6.0 * std::f32::consts::PI / 180.0;
+/// A point on a side shows a border when the table just outside is brighter
+/// than the border just inside by this many levels and this share.
+const MIN_CONTRAST: f32 = 18.0;
+const RELATIVE_CONTRAST: f32 = 0.2;
+/// The edge must lie within this many work pixels of a side…
+const EDGE_REACH: f32 = 2.0;
+/// …and be at least this sharp: its gradient a share of the contrast
+/// across it.
+const EDGE_SHARPNESS: f32 = 0.25;
+/// Points checked along each side (its middle 80%).
+const SAMPLES: usize = 20;
+/// Share of a side's points that must show a border, on three sides.
+const SIDE_HIT: f32 = 0.6;
+/// The inside is checked on a grid this many points across and down…
+const INSIDE_GRID: usize = 8;
+/// …where at least this share of points must be light: at least this share
+/// of the table's brightness.
+const MIN_LIGHT_INSIDE: f32 = 0.15;
+const LIGHT_INSIDE: f32 = 0.7;
+/// A rectangle inside one at least this many times its area is part of that
+/// card (its art window), not a card, when the larger one's score (sides'
+/// border shares added up, at most 4) is at most this much lower.
+const NESTED: f32 = 1.4;
+const NESTED_SCORE: f32 = 0.3;
+/// Cards in one photo are this close to the typical card's width.
+const SAME_SIZE: f32 = 0.12;
 
 /// Card boxes in `frame`, normalised 0..1, in reading order (rows, then left
-/// to right).
-// Not used by the table pipeline yet: it doesn't meet the desk-photo bar
-// (9 of 10 cards) — see issue #5. `mtg-scan detect-dump` exercises it.
-#[allow(dead_code)]
+/// to right). A tilted card's box is the upright box around it.
 pub fn find_cards(frame: &RgbImage) -> Vec<NormBox> {
     analyse(frame).boxes
 }
@@ -51,8 +88,9 @@ pub fn find_cards(frame: &RgbImage) -> Vec<NormBox> {
 /// What [`find_cards`] saw, for `mtg-scan detect-dump`.
 pub struct Analysis {
     pub boxes: Vec<NormBox>,
-    /// The border mask the rectangles were scored on.
-    pub mask: GrayImage,
+    /// The photo at working size with the straight edges (yellow) and the
+    /// cards (green) drawn on it.
+    pub debug: RgbImage,
 }
 
 pub fn analyse(frame: &RgbImage) -> Analysis {
@@ -60,7 +98,7 @@ pub fn analyse(frame: &RgbImage) -> Analysis {
     if w0 < 16 || h0 < 16 {
         return Analysis {
             boxes: Vec::new(),
-            mask: GrayImage::new(1, 1),
+            debug: RgbImage::new(1, 1),
         };
     }
     let scale = (WORK_WIDTH as f32 / w0 as f32).min(1.0);
@@ -69,360 +107,720 @@ pub fn analyse(frame: &RgbImage) -> Analysis {
         ((h0 as f32 * scale).round() as u32).max(1),
     );
     let small = imageops::resize(frame, w, h, imageops::FilterType::Triangle);
-    let mask = border_mask(&small);
-    let grid = max_pool(&mask, STEP);
-    let found = search(&grid);
-    let (gw, gh) = grid.dimensions();
-    let boxes = found
-        .into_iter()
-        .map(|r| NormBox {
-            x1: r.x as f32 / gw as f32,
-            y1: r.y as f32 / gh as f32,
-            x2: (r.x + r.w) as f32 / gw as f32,
-            y2: (r.y + r.h) as f32 / gh as f32,
-        })
-        .collect();
-    let mask = GrayImage::from_fn(w, h, |x, y| {
-        image::Luma([if mask.get_pixel(x, y).0[0] != 0 {
-            255
-        } else {
-            0
-        }])
-    });
-    Analysis { boxes, mask }
-}
-
-/// Dark grey pixels that survive removing thin lines; gaps bridged.
-fn border_mask(img: &RgbImage) -> GrayImage {
-    let (w, h) = img.dimensions();
-    let brightest = GrayImage::from_fn(w, h, |x, y| {
-        let p = img.get_pixel(x, y).0;
-        image::Luma([p[0].max(p[1]).max(p[2])])
-    });
-    let around = box_mean(&brightest, LOCAL_RADIUS);
-    let dark = GrayImage::from_fn(w, h, |x, y| {
-        let p = img.get_pixel(x, y).0;
-        let (hi, lo) = (p[0].max(p[1]).max(p[2]), p[0].min(p[1]).min(p[2]));
-        let local = around.get_pixel(x, y).0[0] as f32;
-        let dark = hi < DARK || (hi < GLARE_DARK && (hi as f32) < local * RELATIVE);
-        image::Luma([u8::from(dark && hi - lo < GREY)])
-    });
-    // Lines up to ~2 px wide go; borders (~4-8 px) stay; small gaps close.
-    erode(&dilate(&dilate(&erode(&dark, 1), 1), 2), 2)
+    let scene = Scene::new(&small);
+    let edges = joined(edges(&scene));
+    let cards = cards(&scene, &edges);
+    let boxes = cards.iter().map(|c| c.bounds(w, h)).collect();
+    let debug = draw_debug(small, &edges, &cards);
+    Analysis { boxes, debug }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Found {
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    score: f32,
+struct V {
+    x: f32,
+    y: f32,
 }
 
-impl Found {
-    fn intersection(&self, o: &Found) -> u32 {
-        let ix = (self.x + self.w)
-            .min(o.x + o.w)
-            .saturating_sub(self.x.max(o.x));
-        let iy = (self.y + self.h)
-            .min(o.y + o.h)
-            .saturating_sub(self.y.max(o.y));
-        ix * iy
+impl V {
+    fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
     }
-
-    /// Overlap as a share of the smaller box.
-    fn overlap(&self, o: &Found) -> f32 {
-        self.intersection(o) as f32 / (self.w * self.h).min(o.w * o.h) as f32
+    fn dot(self, o: V) -> f32 {
+        self.x * o.x + self.y * o.y
+    }
+    fn unit(self) -> V {
+        let len = self.dot(self).sqrt().max(f32::EPSILON);
+        V::new(self.x / len, self.y / len)
+    }
+    /// Turned a quarter: (x, y) -> (-y, x).
+    fn perp(self) -> V {
+        V::new(-self.y, self.x)
     }
 }
 
-/// Sum of set pixels in any rectangle in O(1).
-struct Integral {
+impl Add for V {
+    type Output = V;
+    fn add(self, o: V) -> V {
+        V::new(self.x + o.x, self.y + o.y)
+    }
+}
+
+impl Sub for V {
+    type Output = V;
+    fn sub(self, o: V) -> V {
+        V::new(self.x - o.x, self.y - o.y)
+    }
+}
+
+impl Mul<f32> for V {
+    type Output = V;
+    fn mul(self, k: f32) -> V {
+        V::new(self.x * k, self.y * k)
+    }
+}
+
+/// A one-channel float image.
+struct Plane {
     w: usize,
-    sum: Vec<u32>,
+    h: usize,
+    px: Vec<f32>,
 }
 
-impl Integral {
-    fn new(mask: &GrayImage) -> Self {
-        let (w, h) = (mask.width() as usize, mask.height() as usize);
-        let mut sum = vec![0u32; (w + 1) * (h + 1)];
-        for y in 0..h {
-            let mut row = 0;
-            for x in 0..w {
-                row += u32::from(mask.get_pixel(x as u32, y as u32).0[0] != 0);
-                sum[(y + 1) * (w + 1) + x + 1] = sum[y * (w + 1) + x + 1] + row;
+impl Plane {
+    /// Brightest channel, lightly blurred (1-2-1 in both directions).
+    fn brightness(img: &RgbImage) -> Self {
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let raw: Vec<f32> = img
+            .pixels()
+            .map(|p| p.0[0].max(p.0[1]).max(p.0[2]) as f32)
+            .collect();
+        let blur = |src: &[f32], dx: usize, dy: usize| -> Vec<f32> {
+            let mut out = src.to_vec();
+            for y in dy..h - dy {
+                for x in dx..w - dx {
+                    let i = y * w + x;
+                    let step = dy * w + dx;
+                    out[i] = (src[i - step] + 2.0 * src[i] + src[i + step]) / 4.0;
+                }
+            }
+            out
+        };
+        let px = blur(&blur(&raw, 1, 0), 0, 1);
+        Self { w, h, px }
+    }
+
+    fn at(&self, x: usize, y: usize) -> f32 {
+        self.px[y * self.w + x]
+    }
+
+    /// Bilinear sample, or `None` outside the image.
+    fn sample(&self, p: V) -> Option<f32> {
+        if p.x < 0.0 || p.y < 0.0 {
+            return None;
+        }
+        let (x0, y0) = (p.x.floor() as usize, p.y.floor() as usize);
+        if x0 + 1 >= self.w || y0 + 1 >= self.h {
+            return None;
+        }
+        let (fx, fy) = (p.x - x0 as f32, p.y - y0 as f32);
+        let top = self.at(x0, y0) * (1.0 - fx) + self.at(x0 + 1, y0) * fx;
+        let bottom = self.at(x0, y0 + 1) * (1.0 - fx) + self.at(x0 + 1, y0 + 1) * fx;
+        Some(top * (1.0 - fy) + bottom * fy)
+    }
+}
+
+/// The photo's brightness and its gradient (Sobel, in levels per pixel,
+/// pointing to the lighter side).
+struct Scene {
+    light: Plane,
+    gx: Plane,
+    gy: Plane,
+}
+
+impl Scene {
+    fn new(img: &RgbImage) -> Self {
+        let light = Plane::brightness(img);
+        let (w, h) = (light.w, light.h);
+        let mut gx = vec![0f32; w * h];
+        let mut gy = vec![0f32; w * h];
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let p = |dx: isize, dy: isize| {
+                    light.at((x as isize + dx) as usize, (y as isize + dy) as usize)
+                };
+                let i = y * w + x;
+                gx[i] =
+                    (p(1, -1) + 2.0 * p(1, 0) + p(1, 1) - p(-1, -1) - 2.0 * p(-1, 0) - p(-1, 1))
+                        / 8.0;
+                gy[i] =
+                    (p(-1, 1) + 2.0 * p(0, 1) + p(1, 1) - p(-1, -1) - 2.0 * p(0, -1) - p(1, -1))
+                        / 8.0;
             }
         }
-        Self { w, sum }
+        Self {
+            light,
+            gx: Plane { w, h, px: gx },
+            gy: Plane { w, h, px: gy },
+        }
     }
 
-    /// Set pixels in `[x0, x1) × [y0, y1)`.
-    fn count(&self, x0: u32, y0: u32, x1: u32, y1: u32) -> u32 {
-        let at = |x: u32, y: u32| self.sum[y as usize * (self.w + 1) + x as usize];
-        at(x1, y1) + at(x0, y0) - at(x1, y0) - at(x0, y1)
+    /// The strongest gradient towards `out` within `reach` pixels of `p`
+    /// along it: how sharply it gets lighter going out across an edge there.
+    fn edge_towards(&self, p: V, out: V, reach: f32) -> f32 {
+        let mut best = f32::MIN;
+        let mut d = -reach;
+        while d <= reach {
+            let q = p + out * d;
+            if let (Some(x), Some(y)) = (self.gx.sample(q), self.gy.sample(q)) {
+                best = best.max(x * out.x + y * out.y);
+            }
+            d += 0.5;
+        }
+        best
     }
 }
 
-/// Every card-shaped rectangle scored; the best non-overlapping ones kept,
-/// in reading order.
-fn search(grid: &GrayImage) -> Vec<Found> {
-    let (gw, gh) = grid.dimensions();
-    let ii = Integral::new(grid);
-    let short = gw.min(gh) as f32;
-    let mut candidates = Vec::new();
-    let mut width = (short * MIN_WIDTH).max(6.0);
-    while width <= short * MAX_WIDTH {
-        let cw = width.round() as u32;
-        let ch = (width / CARD_ASPECT).round() as u32;
-        for (rw, rh) in [(cw, ch), (ch, cw)] {
-            if rw >= gw || rh >= gh {
-                continue;
-            }
-            for y in 0..=gh - rh {
-                for x in 0..=gw - rw {
-                    if let Some(score) = score(&ii, x, y, rw, rh, gw, gh) {
-                        candidates.push(Found {
-                            x,
-                            y,
-                            w: rw,
-                            h: rh,
-                            score,
-                        });
+/// A straight edge: its middle, direction, half length, and the unit normal
+/// pointing to its light side.
+#[derive(Debug, Clone, Copy)]
+struct Edge {
+    c: V,
+    d: V,
+    n: V,
+    half: f32,
+}
+
+/// Difference between two angles, 0..=π.
+fn angle_diff(a: f32, b: f32) -> f32 {
+    let d = (a - b).rem_euclid(std::f32::consts::TAU);
+    d.min(std::f32::consts::TAU - d)
+}
+
+/// Straight edges: strong-gradient pixels grown into regions whose gradient
+/// points the same way, each kept when it fits a line closely.
+fn edges(scene: &Scene) -> Vec<Edge> {
+    let (w, h) = (scene.light.w, scene.light.h);
+    let (gx, gy) = (&scene.gx.px, &scene.gy.px);
+    let mag: Vec<f32> = gx.iter().zip(gy).map(|(x, y)| x.hypot(*y)).collect();
+    let ang: Vec<f32> = gx.iter().zip(gy).map(|(x, y)| y.atan2(*x)).collect();
+    // Strongest pixels seed regions first.
+    let mut order: Vec<u32> = (0..w * h)
+        .filter(|&i| mag[i] >= MIN_GRADIENT)
+        .map(|i| i as u32)
+        .collect();
+    order.sort_unstable_by(|&a, &b| mag[b as usize].total_cmp(&mag[a as usize]));
+
+    let mut used = vec![false; w * h];
+    let mut region: Vec<usize> = Vec::new();
+    let mut found = Vec::new();
+    for &seed in &order {
+        let seed = seed as usize;
+        if used[seed] {
+            continue;
+        }
+        used[seed] = true;
+        region.clear();
+        region.push(seed);
+        let (mut sx, mut sy) = (ang[seed].cos(), ang[seed].sin());
+        let mut theta = ang[seed];
+        let mut next = 0;
+        while next < region.len() {
+            let p = region[next];
+            next += 1;
+            let (px, py) = (p % w, p / w);
+            for ny in py - 1..=py + 1 {
+                for nx in px - 1..=px + 1 {
+                    if nx < 1 || ny < 1 || nx >= w - 1 || ny >= h - 1 {
+                        continue;
                     }
+                    let q = ny * w + nx;
+                    if used[q]
+                        || mag[q] < MIN_GRADIENT
+                        || angle_diff(ang[q], theta) > ANGLE_TOLERANCE
+                    {
+                        continue;
+                    }
+                    used[q] = true;
+                    region.push(q);
+                    sx += ang[q].cos();
+                    sy += ang[q].sin();
+                    theta = sy.atan2(sx);
                 }
             }
         }
-        width *= 1.04;
-    }
-    // Best first; between equal scores the larger box (the card's outline
-    // rather than its art frame).
-    candidates.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| (b.w * b.h).cmp(&(a.w * a.h)))
-    });
-    let mut kept: Vec<Found> = Vec::new();
-    for c in candidates {
-        if kept.iter().all(|k| k.overlap(&c) < 0.3) {
-            kept.push(c);
+        if region.len() as f32 >= MIN_EDGE
+            && let Some(e) = fit(&region, &mag, w, theta)
+        {
+            found.push(e);
         }
     }
-    // Reading order: rows (half a card's height apart), then left to right.
-    let row = kept.iter().map(|b| b.h).max().unwrap_or(1) as f32 * 0.5;
-    kept.sort_by_key(|b| ((b.y as f32 / row) as u32, b.x));
+    found
+}
+
+/// The edges plus, where the table's artwork or glare breaks a card's edge
+/// into pieces, the pieces joined up. The pieces stay too: two cards side by
+/// side have edges in line, and joining those would make an edge longer than
+/// either card.
+fn joined(mut edges: Vec<Edge>) -> Vec<Edge> {
+    edges.sort_by(|a, b| b.half.total_cmp(&a.half));
+    let parallel = JOIN_ANGLE.cos();
+    let mut merged = Vec::new();
+    let mut absorbed = vec![false; edges.len()];
+    for i in 0..edges.len() {
+        if absorbed[i] {
+            continue;
+        }
+        let e = edges[i];
+        // The joined edge's extent along `e`, relative to its middle.
+        let (mut lo, mut hi) = (-e.half, e.half);
+        let mut grew = true;
+        let mut any = false;
+        while grew {
+            grew = false;
+            for j in i + 1..edges.len() {
+                let f = edges[j];
+                if absorbed[j] || e.n.dot(f.n) < parallel {
+                    continue;
+                }
+                let off = f.c - e.c;
+                if off.dot(e.n).abs() > JOIN_OFFSET {
+                    continue;
+                }
+                let at = off.dot(e.d);
+                let (f0, f1) = (at - f.half, at + f.half);
+                let gap = (f0 - hi).max(lo - f1);
+                if gap <= JOIN_GAP {
+                    lo = lo.min(f0);
+                    hi = hi.max(f1);
+                    absorbed[j] = true;
+                    grew = true;
+                    any = true;
+                }
+            }
+        }
+        if any {
+            merged.push(Edge {
+                c: e.c + e.d * ((lo + hi) / 2.0),
+                d: e.d,
+                n: e.n,
+                half: (hi - lo) / 2.0,
+            });
+        }
+    }
+    edges.extend(merged);
+    edges
+}
+
+/// The segment through a region whose gradient points along `theta`, if the
+/// region is long and straight.
+fn fit(region: &[usize], mag: &[f32], w: usize, theta: f32) -> Option<Edge> {
+    let n = V::new(theta.cos(), theta.sin());
+    let d = n.perp();
+    let pos = |p: usize| V::new((p % w) as f32, (p / w) as f32);
+    let total: f32 = region.iter().map(|&p| mag[p]).sum();
+    let c = region
+        .iter()
+        .fold(V::new(0.0, 0.0), |acc, &p| acc + pos(p) * mag[p])
+        * (1.0 / total);
+    let (mut t0, mut t1, mut spread) = (f32::MAX, f32::MIN, 0.0);
+    for &p in region {
+        let q = pos(p) - c;
+        let t = q.dot(d);
+        t0 = t0.min(t);
+        t1 = t1.max(t);
+        spread += mag[p] * q.dot(n).powi(2);
+    }
+    let len = t1 - t0;
+    // A straight edge is a band ~2 px across; a curve spreads wider.
+    if len < MIN_EDGE || (spread / total).sqrt() > 1.0 + 0.01 * len {
+        return None;
+    }
+    Some(Edge {
+        c: c + d * ((t0 + t1) / 2.0),
+        d,
+        n,
+        half: len / 2.0,
+    })
+}
+
+/// A card-shaped rectangle: centre, unit axes along its width and height,
+/// size, and how well each side (top, bottom, left, right) shows a border.
+#[derive(Debug, Clone, Copy)]
+struct Card {
+    c: V,
+    ex: V,
+    ey: V,
+    w: f32,
+    h: f32,
+    sides: [f32; 4],
+    score: f32,
+}
+
+impl Card {
+    fn corners(&self) -> [V; 4] {
+        let (x, y) = (self.ex * (self.w / 2.0), self.ey * (self.h / 2.0));
+        [
+            self.c - x - y,
+            self.c + x - y,
+            self.c + x + y,
+            self.c - x + y,
+        ]
+    }
+
+    /// Upright bounding box, in `[x0, y0, x1, y1]` work pixels.
+    fn aabb(&self) -> [f32; 4] {
+        self.corners().iter().fold(
+            [f32::MAX, f32::MAX, f32::MIN, f32::MIN],
+            |[x0, y0, x1, y1], p| [x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y)],
+        )
+    }
+
+    fn bounds(&self, w: u32, h: u32) -> NormBox {
+        let [x0, y0, x1, y1] = self.aabb();
+        NormBox {
+            x1: (x0 / w as f32).clamp(0.0, 1.0),
+            y1: (y0 / h as f32).clamp(0.0, 1.0),
+            x2: (x1 / w as f32).clamp(0.0, 1.0),
+            y2: (y1 / h as f32).clamp(0.0, 1.0),
+        }
+    }
+
+    /// Overlap of the upright boxes, as a share of the smaller one.
+    fn overlap(&self, o: &Card) -> f32 {
+        let ([a0, a1, a2, a3], [b0, b1, b2, b3]) = (self.aabb(), o.aabb());
+        let ix = (a2.min(b2) - a0.max(b0)).max(0.0);
+        let iy = (a3.min(b3) - a1.max(b1)).max(0.0);
+        let area = ((a2 - a0) * (a3 - a1)).min((b2 - b0) * (b3 - b1));
+        ix * iy / area.max(f32::EPSILON)
+    }
+}
+
+/// Rectangles on pairs of facing edges, checked, best kept, reading order.
+fn cards(scene: &Scene, edges: &[Edge]) -> Vec<Card> {
+    let short = scene.light.w.min(scene.light.h) as f32;
+    let (min_w, max_w) = (short * MIN_WIDTH, short * MAX_WIDTH);
+    let max_h = max_w / CARD_ASPECT;
+    let parallel = PARALLEL.cos();
+    let mut found = Vec::new();
+    for (i, a) in edges.iter().enumerate() {
+        for b in &edges[i + 1..] {
+            // Antiparallel normals: the light sides face away from each other.
+            if a.n.dot(b.n) > -parallel {
+                continue;
+            }
+            // `u` runs across the pair from b to a; the dark band between
+            // them means a lies further along it.
+            let u = (a.n - b.n).unit();
+            // Cards laid out for a scan sit near upright or sideways; steep
+            // angles are mostly the table's artwork.
+            if u.x.abs().min(u.y.abs()) > MAX_TILT.sin() {
+                continue;
+            }
+            let gap = (a.c - b.c).dot(u);
+            if gap < min_w || gap > max_h {
+                continue;
+            }
+            let v = u.perp();
+            let (a0, a1) = (a.c.dot(v) - a.half, a.c.dot(v) + a.half);
+            let (b0, b1) = (b.c.dot(v) - b.half, b.c.dot(v) + b.half);
+            let shorter = a.half.min(b.half) * 2.0;
+            if a1.min(b1) - a0.max(b0) < 0.5 * shorter {
+                continue;
+            }
+            let (lo, hi) = (a0.min(b0), a1.max(b1));
+            let mid_u = (a.c.dot(u) + b.c.dot(u)) / 2.0;
+            // The pair is either the card's left and right sides (gap = its
+            // width) or its top and bottom (gap = its height).
+            for wide in [true, false] {
+                let (ex, ey) = if wide { (u, v) } else { (v, u) };
+                let mut best: Option<Card> = None;
+                // A camera at a slight angle squashes the card a little, so
+                // the paired sides' length may differ from 63:88; nearest
+                // to it wins a tie.
+                for stretch in STRETCH {
+                    let (cw, ch) = if wide {
+                        (gap, gap / CARD_ASPECT * stretch)
+                    } else {
+                        (gap * CARD_ASPECT * stretch, gap)
+                    };
+                    if cw < min_w || cw > max_w {
+                        continue;
+                    }
+                    // How long the paired sides are.
+                    let side = if wide { ch } else { cw };
+                    if hi - lo > side * 1.05 || shorter < 0.25 * side {
+                        continue;
+                    }
+                    // Slide the card along the pair (it must cover both
+                    // edges); keep the best place.
+                    let (first, last) = (hi - side / 2.0, lo + side / 2.0);
+                    let steps = ((last - first) / 2.0).ceil().max(0.0) as usize;
+                    for k in 0..=steps {
+                        let along = if steps == 0 {
+                            (first + last) / 2.0
+                        } else {
+                            first + (last - first) * k as f32 / steps as f32
+                        };
+                        let card = Card {
+                            c: u * mid_u + v * along,
+                            ex,
+                            ey,
+                            w: cw,
+                            h: ch,
+                            sides: [0.0; 4],
+                            score: 0.0,
+                        };
+                        if let Some(c) = check(scene, card)
+                            && best.is_none_or(|b| c.score > b.score)
+                        {
+                            best = Some(c);
+                        }
+                    }
+                }
+                found.extend(best);
+            }
+        }
+    }
+    keep_best(found)
+}
+
+/// The card with its side scores, if at least three sides show a border.
+fn check(scene: &Scene, mut card: Card) -> Option<Card> {
+    let border = (card.w * BORDER).max(1.5);
+    // Outward normal, direction along the side, distance from the centre,
+    // half length: top, bottom, left, right.
+    let sides = [
+        (card.ey * -1.0, card.ex, card.h / 2.0, card.w / 2.0),
+        (card.ey, card.ex, card.h / 2.0, card.w / 2.0),
+        (card.ex * -1.0, card.ey, card.w / 2.0, card.h / 2.0),
+        (card.ex, card.ey, card.w / 2.0, card.h / 2.0),
+    ];
+    let (mut table_sum, mut table_n) = (0.0, 0);
+    let mut weak = 0;
+    for (k, &(out, along, dist, half)) in sides.iter().enumerate() {
+        let mut hits = 0;
+        for i in 0..SAMPLES {
+            let t = -0.8 + 1.6 * (i as f32 + 0.5) / SAMPLES as f32;
+            let p = card.c + out * dist + along * (t * half);
+            let (Some(table), Some(rim)) = (
+                scene.light.sample(p + out * (0.7 * border)),
+                scene.light.sample(p - out * (0.5 * border)),
+            ) else {
+                continue;
+            };
+            // A border here: the table just outside clearly lighter than the
+            // border just inside, and the edge between them on the side, not
+            // just near it.
+            if table - rim >= MIN_CONTRAST.max(RELATIVE_CONTRAST * table)
+                && scene.edge_towards(p, out, EDGE_REACH)
+                    >= MIN_GRADIENT.max(EDGE_SHARPNESS * (table - rim))
+            {
+                hits += 1;
+                table_sum += table;
+                table_n += 1;
+            }
+        }
+        card.sides[k] = hits as f32 / SAMPLES as f32;
+        if card.sides[k] < SIDE_HIT {
+            weak += 1;
+            // Glare can wash out one side, not two.
+            if weak == 2 {
+                return None;
+            }
+        }
+    }
+    // Every card has light areas inside (title bar, text box); a solid dark
+    // object (a mouse, a phone) doesn't.
+    let table = table_sum / table_n.max(1) as f32;
+    let (mut light_inside, mut inside) = (0, 0);
+    for gy in 0..INSIDE_GRID {
+        for gx in 0..INSIDE_GRID {
+            let fx = -0.7 + 1.4 * (gx as f32 + 0.5) / INSIDE_GRID as f32;
+            let fy = -0.7 + 1.4 * (gy as f32 + 0.5) / INSIDE_GRID as f32;
+            let p = card.c + card.ex * (fx * card.w / 2.0) + card.ey * (fy * card.h / 2.0);
+            if let Some(v) = scene.light.sample(p) {
+                inside += 1;
+                light_inside += usize::from(v >= LIGHT_INSIDE * table);
+            }
+        }
+    }
+    if (light_inside as f32) < MIN_LIGHT_INSIDE * inside.max(1) as f32 {
+        return None;
+    }
+    card.score = card.sides.iter().sum();
+    Some(card)
+}
+
+/// The best card where several overlap, in reading order (rows half a card's
+/// height apart, then left to right).
+fn keep_best(found: Vec<Card>) -> Vec<Card> {
+    // A rectangle inside a clearly larger one that shows its border about
+    // as well is part of that card (its art window, or title and art).
+    let area = |c: &Card| c.w * c.h;
+    let mut found: Vec<Card> = found
+        .iter()
+        .filter(|c| {
+            !found.iter().any(|o| {
+                area(o) >= NESTED * area(c)
+                    && c.overlap(o) >= 0.8
+                    && o.score >= c.score - NESTED_SCORE
+            })
+        })
+        .copied()
+        .collect();
+    found.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| (b.w * b.h).total_cmp(&(a.w * a.h)))
+    });
+    let separate = |found: &[Card]| {
+        let mut kept: Vec<Card> = Vec::new();
+        for c in found {
+            if kept.iter().all(|k| k.overlap(c) < 0.3) {
+                kept.push(*c);
+            }
+        }
+        kept
+    };
+    // The camera is at one height, so every card on the table is about the
+    // same size; much smaller or larger rectangles are the table's artwork
+    // or a card plus part of its neighbour. Drop them before choosing
+    // between overlapping rectangles, so they can't hide a card.
+    if let Some(typical) = median(separate(&found).iter().map(|c| c.w).collect()) {
+        found.retain(|c| (c.w / typical - 1.0).abs() <= SAME_SIZE);
+    }
+    let mut kept = separate(&found);
+    let row = kept
+        .iter()
+        .map(|c| c.aabb()[3] - c.aabb()[1])
+        .fold(1.0, f32::max)
+        * 0.5;
+    kept.sort_by(|a, b| {
+        let (pa, pb) = (a.aabb(), b.aabb());
+        ((pa[1] / row) as u32)
+            .cmp(&((pb[1] / row) as u32))
+            .then(pa[0].total_cmp(&pb[0]))
+    });
     kept
 }
 
-/// How much the rectangle looks like a card border, or `None` if it doesn't.
-fn score(ii: &Integral, x: u32, y: u32, w: u32, h: u32, gw: u32, gh: u32) -> Option<f32> {
-    // Bands along each side, thick enough for a slight tilt.
-    let t = ((w.min(h) as f32 * 0.1).round() as u32).max(2);
-    let (x1, y1) = (x + w, y + h);
-    // An edge has table, not more border, just outside it. Share of dark
-    // pixels in the strip outside each side (1.0 at the frame's edge).
-    let outside = |horizontal: bool, before: bool| -> f32 {
-        let (x0, y0, x1o, y1o) = match (horizontal, before) {
-            (true, true) if y >= t => (x, y - t, x1, y),
-            (true, false) if y1 + t <= gh => (x, y1, x1, y1 + t),
-            (false, true) if x >= t => (x - t, y, x, y1),
-            (false, false) if x1 + t <= gw => (x1, y, x1 + t, y1),
-            _ => return 1.0,
-        };
-        ii.count(x0, y0, x1o, y1o) as f32 / ((x1o - x0) * (y1o - y0)) as f32
-    };
-    let clear = [
-        outside(true, true),
-        outside(true, false),
-        outside(false, true),
-        outside(false, false),
-    ]
-    .iter()
-    .filter(|&&d| d < 0.2)
-    .count();
-    if clear < 3 {
-        return None;
-    }
-    // A side's coverage: the share of short segments along it that contain
-    // about a line's worth of border pixels.
-    let line = (w.min(h) as f32 * 0.045 * 0.5).max(0.7);
-    let side = |horizontal: bool, at: u32| -> f32 {
-        let len = if horizontal { w } else { h };
-        let parts = 8;
-        let seg = (len / parts).max(1);
-        let hits = (0..parts)
-            .filter(|&i| {
-                let s0 = (i * seg).min(len - 1);
-                let s1 = if i == parts - 1 {
-                    len
-                } else {
-                    (s0 + seg).min(len)
-                };
-                let n = if horizontal {
-                    ii.count(x + s0, at, x + s1, at + t)
-                } else {
-                    ii.count(at, y + s0, at + t, y + s1)
-                };
-                // A border is ~4.5% of the card's width thick; at least
-                // half of that along the whole segment.
-                n as f32 >= (s1 - s0) as f32 * line
-            })
-            .count();
-        hits as f32 / parts as f32
-    };
-    let mut sides = [
-        side(true, y),
-        side(true, y1 - t),
-        side(false, x),
-        side(false, x1 - t),
-    ];
-    sides.sort_by(|a, b| b.total_cmp(a));
-    // Three solid sides (glare can wash out the fourth).
-    if sides[2] < SIDE_HIT {
-        return None;
-    }
-    let inside_area = ((w - 2 * t) * (h - 2 * t)).max(1) as f32;
-    let inside = ii.count(x + t, y + t, x1 - t, y1 - t) as f32 / inside_area;
-    if inside > MAX_INSIDE {
-        return None;
-    }
-    Some(sides[0] + sides[1] + sides[2] + 0.5 * sides[3] - inside)
+fn median(mut values: Vec<f32>) -> Option<f32> {
+    values.sort_by(f32::total_cmp);
+    values.get(values.len() / 2).copied()
 }
 
-/// Maximum over `step`×`step` blocks, so thin borders survive shrinking.
-fn max_pool(mask: &GrayImage, step: u32) -> GrayImage {
-    let (w, h) = mask.dimensions();
-    let (gw, gh) = (w.div_ceil(step), h.div_ceil(step));
-    GrayImage::from_fn(gw, gh, |gx, gy| {
-        let any = (gy * step..((gy + 1) * step).min(h))
-            .any(|y| (gx * step..((gx + 1) * step).min(w)).any(|x| mask.get_pixel(x, y).0[0] != 0));
-        image::Luma([u8::from(any)])
-    })
-}
-
-/// Mean over a (2r+1)² square (clamped at the edges), via an integral image.
-fn box_mean(img: &GrayImage, r: u32) -> GrayImage {
-    let (w, h) = img.dimensions();
-    let (wu, hu) = (w as usize, h as usize);
-    let mut sum = vec![0u64; (wu + 1) * (hu + 1)];
-    for y in 0..hu {
-        let mut row = 0u64;
-        for x in 0..wu {
-            row += img.get_pixel(x as u32, y as u32).0[0] as u64;
-            sum[(y + 1) * (wu + 1) + x + 1] = sum[y * (wu + 1) + x + 1] + row;
+fn draw_debug(mut img: RgbImage, edges: &[Edge], cards: &[Card]) -> RgbImage {
+    for e in edges {
+        line(
+            &mut img,
+            e.c - e.d * e.half,
+            e.c + e.d * e.half,
+            [250, 220, 40],
+        );
+    }
+    for c in cards {
+        let p = c.corners();
+        for i in 0..4 {
+            line(&mut img, p[i], p[(i + 1) % 4], [40, 220, 120]);
         }
     }
-    GrayImage::from_fn(w, h, |x, y| {
-        let (x0, y0) = (x.saturating_sub(r) as usize, y.saturating_sub(r) as usize);
-        let (x1, y1) = ((x + r + 1).min(w) as usize, (y + r + 1).min(h) as usize);
-        let total = sum[y1 * (wu + 1) + x1] + sum[y0 * (wu + 1) + x0]
-            - sum[y0 * (wu + 1) + x1]
-            - sum[y1 * (wu + 1) + x0];
-        image::Luma([(total / ((x1 - x0) * (y1 - y0)) as u64) as u8])
-    })
+    img
 }
 
-/// Minimum (`erode`) or maximum (`dilate`) over a (2r+1)² square, done as a
-/// horizontal then a vertical pass.
-fn morph(mask: &GrayImage, r: u32, keep: fn(bool, bool) -> bool, start: bool) -> GrayImage {
-    let (w, h) = mask.dimensions();
-    let get = |m: &GrayImage, x: u32, y: u32| m.get_pixel(x, y).0[0] != 0;
-    let pass = |src: &GrayImage, horizontal: bool| {
-        GrayImage::from_fn(w, h, |x, y| {
-            let mut v = start;
-            for d in -(r as i64)..=r as i64 {
-                let (nx, ny) = if horizontal {
-                    (x as i64 + d, y as i64)
-                } else {
-                    (x as i64, y as i64 + d)
-                };
-                // Outside the image counts as "not dark".
-                let p = nx >= 0
-                    && ny >= 0
-                    && nx < w as i64
-                    && ny < h as i64
-                    && get(src, nx as u32, ny as u32);
-                v = keep(v, p);
-            }
-            image::Luma([u8::from(v)])
-        })
-    };
-    pass(&pass(mask, true), false)
-}
-
-fn erode(mask: &GrayImage, r: u32) -> GrayImage {
-    morph(mask, r, |a, b| a && b, true)
-}
-
-fn dilate(mask: &GrayImage, r: u32) -> GrayImage {
-    morph(mask, r, |a, b| a || b, false)
+fn line(img: &mut RgbImage, from: V, to: V, color: [u8; 3]) {
+    let steps = (to - from).dot(to - from).sqrt().ceil().max(1.0) as usize;
+    for i in 0..=steps {
+        let p = from + (to - from) * (i as f32 / steps as f32);
+        let (x, y) = (p.x.round(), p.y.round());
+        if x >= 0.0 && y >= 0.0 && (x as u32) < img.width() && (y as u32) < img.height() {
+            img.put_pixel(x as u32, y as u32, Rgb(color));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::Rgb;
 
-    /// A light "table" with thin dark lines, a solid dark blob and cards
-    /// (black border, coloured inside) at given pixel boxes.
-    fn scene(cards: &[(u32, u32, u32, u32)]) -> RgbImage {
-        let mut img = RgbImage::from_pixel(1280, 720, Rgb([230, 225, 215]));
-        // Line art: 2 px dark lines across the table, touching the cards.
-        for x in 0..1280 {
+    const TABLE: Rgb<u8> = Rgb([230, 225, 215]);
+
+    /// A card centred at (cx, cy), `cw` x `ch` px, turned `deg` degrees:
+    /// a black border (`rim` colour) around a coloured inside.
+    fn draw_card(img: &mut RgbImage, cx: f32, cy: f32, cw: f32, ch: f32, deg: f32, rim: Rgb<u8>) {
+        let (s, c) = deg.to_radians().sin_cos();
+        let border = cw.min(ch) * 0.05;
+        for y in 0..img.height() {
+            for x in 0..img.width() {
+                let (dx, dy) = (x as f32 - cx, y as f32 - cy);
+                let (lx, ly) = (dx * c + dy * s, -dx * s + dy * c);
+                let (ax, ay) = (lx.abs(), ly.abs());
+                if ax > cw / 2.0 || ay > ch / 2.0 {
+                    continue;
+                }
+                let edge = ax > cw / 2.0 - border || ay > ch / 2.0 - border;
+                img.put_pixel(x, y, if edge { rim } else { Rgb([60, 110, 190]) });
+            }
+        }
+    }
+
+    /// A light table with line art (2 px lines, a wavy one too) and a solid
+    /// dark "mouse".
+    fn table() -> RgbImage {
+        let mut img = RgbImage::from_pixel(1280, 720, TABLE);
+        let ink = Rgb([20, 20, 20]);
+        for x in 0..1280u32 {
             for t in 0..2 {
-                img.put_pixel(x, 300 + t, Rgb([20, 20, 20]));
-                img.put_pixel(x, (x / 3 + 50 + t).min(719), Rgb([20, 20, 20]));
+                img.put_pixel(x, 300 + t, ink);
+                img.put_pixel(x, (x / 3 + 50 + t).min(719), ink);
+                let wave = 620.0 + 30.0 * (x as f32 / 40.0).sin();
+                img.put_pixel(x, wave as u32 + t, ink);
             }
         }
-        // A mouse: solid dark, roughly card-shaped.
-        for y in 500..640 {
+        for y in 500..600 {
             for x in 1100..1200 {
-                img.put_pixel(x, y, Rgb([15, 15, 15]));
-            }
-        }
-        for &(x0, y0, cw, ch) in cards {
-            let border = cw.min(ch) / 18;
-            for y in y0..y0 + ch {
-                for x in x0..x0 + cw {
-                    let edge = x < x0 + border
-                        || x >= x0 + cw - border
-                        || y < y0 + border
-                        || y >= y0 + ch - border;
-                    let c = if edge {
-                        Rgb([10, 10, 10])
-                    } else {
-                        Rgb([60, 110, 190])
-                    };
-                    img.put_pixel(x, y, c);
+                let (dx, dy) = (x as f32 - 1150.0, y as f32 - 550.0);
+                if dx * dx / 2500.0 + dy * dy / 2500.0 <= 1.0 {
+                    img.put_pixel(x, y, Rgb([15, 15, 15]));
                 }
             }
         }
         img
     }
 
+    fn assert_near(b: &NormBox, (x0, y0, x1, y1): (f32, f32, f32, f32)) {
+        let tol = 6.0;
+        let got = (b.x1 * 1280.0, b.y1 * 720.0, b.x2 * 1280.0, b.y2 * 720.0);
+        assert!(
+            (got.0 - x0).abs() <= tol
+                && (got.1 - y0).abs() <= tol
+                && (got.2 - x1).abs() <= tol
+                && (got.3 - y1).abs() <= tol,
+            "got {got:?}, expected {:?}",
+            (x0, y0, x1, y1)
+        );
+    }
+
     #[test]
     fn finds_bordered_cards_and_ignores_lines_and_blobs() {
-        let cards = [
-            (100, 100, 126, 176),
-            (300, 120, 126, 176),
-            (500, 380, 126, 176),
-            // Sideways.
-            (750, 400, 176, 126),
-        ];
-        let found = find_cards(&scene(&cards));
+        let mut img = table();
+        let black = Rgb([10, 10, 10]);
+        draw_card(&mut img, 163.0, 188.0, 126.0, 176.0, 0.0, black);
+        draw_card(&mut img, 363.0, 208.0, 126.0, 176.0, 0.0, black);
+        draw_card(&mut img, 563.0, 468.0, 126.0, 176.0, 0.0, black);
+        // Sideways.
+        draw_card(&mut img, 838.0, 463.0, 176.0, 126.0, 0.0, black);
+        let found = find_cards(&img);
         assert_eq!(found.len(), 4, "{found:?}");
-        for (b, &(x, y, cw, ch)) in found.iter().zip(&cards) {
-            // Within about a grid step.
-            let tol = STEP as f32 + 4.0;
-            assert!((b.x1 * 1280.0 - x as f32).abs() <= tol, "{b:?}");
-            assert!((b.y1 * 720.0 - y as f32).abs() <= tol, "{b:?}");
-            assert!((b.x2 * 1280.0 - (x + cw) as f32).abs() <= tol, "{b:?}");
-            assert!((b.y2 * 720.0 - (y + ch) as f32).abs() <= tol, "{b:?}");
-        }
+        assert_near(&found[0], (100.0, 100.0, 226.0, 276.0));
+        assert_near(&found[1], (300.0, 120.0, 426.0, 296.0));
+        assert_near(&found[2], (500.0, 380.0, 626.0, 556.0));
+        assert_near(&found[3], (750.0, 400.0, 926.0, 526.0));
+    }
+
+    #[test]
+    fn finds_tilted_and_glare_cards() {
+        let mut img = table();
+        draw_card(&mut img, 300.0, 200.0, 126.0, 176.0, 9.0, Rgb([10, 10, 10]));
+        // Under glare the border is grey, not black.
+        draw_card(
+            &mut img,
+            700.0,
+            450.0,
+            126.0,
+            176.0,
+            -4.0,
+            Rgb([165, 165, 170]),
+        );
+        let found = find_cards(&img);
+        assert_eq!(found.len(), 2, "{found:?}");
+        // The upright box around a card turned 9°.
+        let (s, c) = 9f32.to_radians().sin_cos();
+        let (hw, hh) = ((126.0 * c + 176.0 * s) / 2.0, (126.0 * s + 176.0 * c) / 2.0);
+        assert_near(&found[0], (300.0 - hw, 200.0 - hh, 300.0 + hw, 200.0 + hh));
     }
 
     #[test]
     fn empty_table_has_no_cards() {
-        assert!(find_cards(&scene(&[])).is_empty());
+        assert!(find_cards(&table()).is_empty());
     }
 }

@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use image::{DynamicImage, RgbImage};
 
 use crate::app::{App, describe_card, describe_prices};
-use crate::config::Config;
+use crate::config::{Config, Detection};
 use crate::llm::{NormBox, VisionLlm};
 use crate::model::{Card, CollectionEntry, Finish, Prices};
 use crate::printing::{correlation, signature};
@@ -162,6 +162,8 @@ struct Seen {
 pub struct Pipeline {
     pub app: App,
     pub recognizer: Recognizer,
+    /// How table passes find the cards (`[recognition] detection`).
+    detection: Detection,
     save_dir: Option<PathBuf>,
     save_counter: u32,
     seen: Vec<Seen>,
@@ -184,6 +186,7 @@ impl Pipeline {
         Ok(Self {
             app,
             recognizer,
+            detection: cfg.recognition.detection,
             save_dir: cfg.recognition.save_scans.clone(),
             save_counter: 0,
             seen: Vec::new(),
@@ -191,6 +194,22 @@ impl Pipeline {
             last_was_single: false,
             hold_uncertain: false,
         })
+    }
+
+    /// The cards in a table photo: found by their borders, or by the vision
+    /// LLM when `[recognition] detection` says so, or (in `auto`) when the
+    /// borders give none.
+    fn find_cards(&self, frame: &RgbImage, scene: &DynamicImage) -> Result<Vec<NormBox>> {
+        if self.detection != Detection::Llm {
+            let found = crate::detect::find_cards(frame);
+            if !found.is_empty()
+                || self.detection == Detection::Classical
+                || !self.recognizer.has_llm()
+            {
+                return Ok(found);
+            }
+        }
+        self.recognizer.detect_cards(scene)
     }
 
     fn save_debug(&mut self, img: &DynamicImage) {
@@ -296,7 +315,7 @@ impl Pipeline {
     ) -> Result<Vec<CardResult>> {
         let scene = DynamicImage::ImageRgb8(frame.clone());
         self.save_debug(&scene);
-        let boxes = self.recognizer.detect_cards(&scene)?;
+        let boxes = self.find_cards(frame, &scene)?;
         self.last_added.clear();
         self.last_was_single = false;
 
