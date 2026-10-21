@@ -15,6 +15,11 @@
 //! | `GET /api/decks[?refresh=true]` | the configured Moxfield user's public decks |
 //! | `GET /api/decks/{id}` | one of those decks with its cards |
 //! | everything else | the embedded UI |
+//!
+//! With `MTG_SCAN_UI_TOKEN` set, other computers must sign in first (see
+//! [`access`]); this computer never has to.
+
+mod access;
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -93,10 +98,26 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .with_context(|| format!("could not listen on {} (port in use?)", web.addr))?;
     let port = web.addr.port();
     let local = format!("http://localhost:{port}");
+    let token = access::configured_token();
     println!("\nWeb UI: {local}");
-    if web.addr.ip().is_unspecified() {
-        if let Some(ip) = lan_ip() {
+    if web.addr.ip().is_loopback() {
+        println!("   only on this computer (--bind {})", web.addr.ip());
+    } else {
+        if web.addr.ip().is_unspecified()
+            && let Some(ip) = lan_ip()
+        {
             println!("   on other computers: http://{ip}:{port}");
+        }
+        if token.is_some() {
+            println!(
+                "   other computers sign in with the access token ({} in .env)",
+                access::TOKEN_VAR
+            );
+        } else {
+            println!(
+                "   anyone on your network can use it; `mtg-scan ui-token` adds an access token,"
+            );
+            println!("   or use --bind 127.0.0.1 to allow only this computer");
         }
         println!(
             "   (Windows may ask whether to allow mtg-scan on the network: allow Private networks.)"
@@ -125,7 +146,11 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/decks", get(decks))
         .route("/api/decks/{id}", get(deck))
         .fallback(static_file)
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            access::Access::new(token),
+            access::guard,
+        ));
 
     let stop = async move {
         let mut check = tokio::time::interval(Duration::from_millis(500));
@@ -145,10 +170,14 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         }
         let _ = shutdown_tx.send(true);
     };
-    axum::serve(listener, app)
-        .with_graceful_shutdown(stop)
-        .await
-        .context("web server failed")
+    // The peer address tells this computer from the others (see `access`).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(stop)
+    .await
+    .context("web server failed")
 }
 
 /// Resolves once shutdown starts (for ending long-lived streams).

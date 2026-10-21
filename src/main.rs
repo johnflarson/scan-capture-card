@@ -179,6 +179,12 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         top: usize,
     },
+    /// Create (or show) the access token other computers need for `mtg-scan ui`
+    UiToken {
+        /// Show the current token instead of creating a new one
+        #[arg(long)]
+        show: bool,
+    },
     /// PostgreSQL database management
     Db {
         #[command(subcommand)]
@@ -392,6 +398,7 @@ fn run() -> Result<()> {
             finish,
         } => history(&cfg, &name, set, number, finish),
         Command::Movers { days, top } => movers(&cfg, days, top),
+        Command::UiToken { show } => ui_token(show),
         Command::Db { command } => db(&cfg, command),
         Command::List => list(&cfg),
         Command::Cameras => {
@@ -670,6 +677,32 @@ fn movers(cfg: &Config, days: u32, top: usize) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// Save a new web UI access token in `.env` (replacing any old one, which
+/// signs other computers out), or show the current one.
+fn ui_token(show: bool) -> Result<()> {
+    const VAR: &str = "MTG_SCAN_UI_TOKEN";
+    let token = if show {
+        std::env::var(VAR)
+            .ok()
+            .filter(|t| !t.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("no {VAR} yet; run `mtg-scan ui-token` to create one"))?
+    } else {
+        let env_file = std::path::Path::new(".env");
+        if !env_file.is_file() {
+            bail!("run this from the folder containing your .env file");
+        }
+        let token = generate_password()?;
+        config::update_env_file(env_file, &[(VAR, Some(&token))])?;
+        println!("Saved a new {VAR} in .env. Restart `mtg-scan ui` to use it.");
+        token
+    };
+    println!("Access token: {token}");
+    println!(
+        "On another computer, open http://<this computer>:8787/?token={token} once, or enter the token on the sign-in page."
+    );
     Ok(())
 }
 
