@@ -8,6 +8,8 @@ use mtg_scan_shared::{
     CollectionRow, CollectionView, ColorGroup, Facet, RowFilter, Totals, UNKNOWN, usd,
 };
 
+use crate::mana::{ManaSymbols, group_symbol};
+
 /// The Collection page's search, picks, grouping and collapsed groups.
 /// Lives in `App` so they survive switching tabs.
 #[derive(Clone, Copy)]
@@ -97,15 +99,20 @@ pub fn items(
     }
 }
 
-/// The small marker before a value: a mana-colored dot or a rarity diamond.
-fn marker(facet: Facet, value: &str) -> AnyView {
+/// How a value is shown: a color as its mana symbol alone (named on hover),
+/// a rarity as a diamond and its name, a type (or Unknown) as its name.
+fn facet_label(facet: Facet, value: &str) -> AnyView {
     match facet {
         Facet::Color => match ColorGroup::ALL.into_iter().find(|g| g.label() == value) {
-            Some(g) => view! { <span class=format!("swatch {}", g.class())></span> }.into_any(),
-            None => ().into_any(),
+            Some(g) => group_symbol(g),
+            None => value.to_string().into_any(),
         },
-        Facet::Rarity => view! { <span class=rarity_class(value)></span> }.into_any(),
-        Facet::Type => ().into_any(),
+        Facet::Rarity => view! {
+            <span class=rarity_class(value)></span>
+            {value.to_string()}
+        }
+        .into_any(),
+        Facet::Type => value.to_string().into_any(),
     }
 }
 
@@ -138,8 +145,7 @@ pub fn GroupHead(
                     on:click=move |_| prefs.toggle_group(facet, &toggle)
                 >
                     <span class="chevron" aria-hidden="true"></span>
-                    {marker(facet, &label)}
-                    <span class="group-label">{label.clone()}</span>
+                    <span class="group-label">{facet_label(facet, &label)}</span>
                     <span class="muted">
                         {format!(
                             "{} · {} · {}",
@@ -171,32 +177,16 @@ pub fn RarityCell(row: CollectionRow) -> impl IntoView {
     }
 }
 
-/// One pip per color, then the color group; the letters on hover.
+/// One mana symbol per color (the colorless symbol when there are none).
 #[component]
 pub fn ColorCell(row: CollectionRow) -> impl IntoView {
     let Some(group) = row.color_group() else {
         return view! { <td class="muted" title="Card details unavailable">{UNKNOWN}</td> }
             .into_any();
     };
-    let title = if row.colors.is_empty() {
-        group.label().to_string()
-    } else {
-        format!("{} ({})", group.label(), row.colors.join(""))
-    };
-    let pips: Vec<String> = if row.colors.is_empty() {
-        vec!["c".into()]
-    } else {
-        row.colors.iter().map(|c| c.to_lowercase()).collect()
-    };
     view! {
-        <td title=title>
-            <span class="pips">
-                {pips
-                    .into_iter()
-                    .map(|c| view! { <span class=format!("swatch {c}")></span> })
-                    .collect_view()}
-            </span>
-            {group.label()}
+        <td class="color-cell" aria-label=group.label()>
+            <ManaSymbols colors=row.colors.clone() />
         </td>
     }
     .into_any()
@@ -243,8 +233,7 @@ pub fn FilterBar(
                             aria-pressed=move || selected.get().to_string()
                             on:click=move |_| filter.update(|f| f.toggle(facet, &toggle))
                         >
-                            {marker(facet, &value)}
-                            {value.clone()}
+                            {facet_label(facet, &value)}
                             <span class="count">{copies}</span>
                         </button>
                     }

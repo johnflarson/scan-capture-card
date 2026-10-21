@@ -8,6 +8,7 @@ use mtg_scan_shared::{
 
 use crate::app::{CollectionCache, Metric, Tab};
 use crate::decks::{DeckCache, DeckStatsBlock, ownership};
+use crate::mana::group_symbol;
 use crate::preview::CardLink;
 
 #[component]
@@ -273,8 +274,7 @@ pub fn ColorBreakdown(
         .map(|(g, s)| {
             view! {
                 <li class:none=s.cards == 0>
-                    <span class=format!("swatch {}", g.class())></span>
-                    <span class="legend-label">{s.label.clone()}</span>
+                    <span class="legend-label">{group_symbol(*g)}</span>
                     <span class="legend-count">{s.cards}</span>
                     <span class="legend-pct">{format!("{:.0}%", pct(s.cards))}</span>
                 </li>

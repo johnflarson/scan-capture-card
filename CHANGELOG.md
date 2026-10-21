@@ -60,6 +60,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 - `[camera] table_width` / `table_height` settings for table mode (default 3840x2160).
 
 ### Changed
+- Colors are shown as MTG mana symbols (Scryfall's symbol SVGs) instead of a colored dot and the
+  color's name (#39): the Collection color column, filter chips and group headers, the Home color
+  breakdown and deck colors. Multicolor is a gold coin; each symbol is named on hover.
 - The camera loop, auto-scan and scan worker are now a shared scanning engine that the desktop
   window and the web UI both drive.
 - Table detection is more robust on messy scenes: capped model output, recovery of boxes from a
