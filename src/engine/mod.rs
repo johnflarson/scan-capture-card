@@ -633,12 +633,16 @@ fn worker_loop(cfg: Config, ctx: Ctx, dry_run: bool, jobs: Receiver<Job>) -> Res
                 force_llm,
                 auto,
             } => match pipeline.scan_single(&image, finish, force_llm, dry_run) {
-                Ok(r) => {
-                    if force_llm {
-                        // The retry replaced the previous add.
+                Ok((r, replaced)) => {
+                    if replaced {
+                        // The retry replaced the previous single-card add.
                         mark_undone(&ctx, &last_scan);
                     }
-                    last_scan = record_card(&ctx, &r).into_iter().collect();
+                    let seq = record_card(&ctx, &r);
+                    // A failed retry keeps the previous scan undoable.
+                    if !(force_llm && matches!(r.outcome, Outcome::Failed(_))) {
+                        last_scan = seq.into_iter().collect();
+                    }
                     finish_scan(&ctx, vec![r], auto, Mode::Single);
                 }
                 Err(e) => fail(&ctx, e),

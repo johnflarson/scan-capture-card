@@ -25,7 +25,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   truncated reply, a card-shape filter, and skipping a second overlapping detection of the same card.
 
 ### Fixed
-- "Retry with LLM" now replaces the card the previous scan added instead of adding a second copy.
+- "Retry with LLM" now replaces the card the previous single-card scan added instead of adding a
+  second copy. The original is removed only once the retry has identified the card, and a retry
+  never removes cards from a table pass.
 - The startup header showed `collection.md` even when saving to PostgreSQL; it now shows the real location.
 
 ## [0.2.0] - 2026-10-20
