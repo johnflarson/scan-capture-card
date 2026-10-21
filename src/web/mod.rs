@@ -11,6 +11,7 @@
 //! | `GET /api/collection` | the whole collection with prices and totals |
 //! | `GET /api/printing?q=` | a printing from a Scryfall link or ID (edit dialog) |
 //! | `POST /api/collection/edit` | `RowEdit` JSON: set quantity, remove, change printing/finish |
+//! | `POST /api/collection/add` | `AddCard` JSON: add copies of a printing by hand |
 //! | `GET /api/decks[?refresh=true]` | the configured Moxfield user's public decks |
 //! | `GET /api/decks/{id}` | one of those decks with its cards |
 //! | everything else | the embedded UI |
@@ -30,8 +31,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{Stream, StreamExt};
 use mtg_scan_shared::{
-    ClientCommand, CollectionRow, CollectionView, DecksView, EditResult, PrintingView, RowEdit,
-    ServerEvent, SessionView, Totals, ValueChange,
+    AddCard, ClientCommand, CollectionRow, CollectionView, DecksView, EditResult, PrintingView,
+    RowEdit, ServerEvent, SessionView, Totals, ValueChange,
 };
 use tokio::sync::watch;
 use tokio_stream::wrappers::BroadcastStream;
@@ -119,6 +120,7 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/command", post(command))
         .route("/api/collection", get(collection))
         .route("/api/collection/edit", post(edit))
+        .route("/api/collection/add", post(add))
         .route("/api/printing", get(printing))
         .route("/api/decks", get(decks))
         .route("/api/decks/{id}", get(deck))
@@ -272,16 +274,64 @@ async fn printing(Query(query): Query<PrintingQuery>) -> Response {
     blocking(StatusCode::BAD_REQUEST, move || find_printing(&query.q)).await
 }
 
+const DRY_RUN: &str =
+    "Dry run: the collection can't be changed. Restart without --dry-run to edit it.";
+
 async fn edit(State(st): State<Arc<AppState>>, Json(edit): Json<RowEdit>) -> Response {
     if st.engine.view().dry_run {
-        return (
-            StatusCode::CONFLICT,
-            "Dry run: the collection can't be changed. Restart without --dry-run to edit it.",
-        )
-            .into_response();
+        return (StatusCode::CONFLICT, DRY_RUN).into_response();
     }
     let cfg = st.cfg.clone();
     blocking(StatusCode::BAD_REQUEST, move || edit_row(&cfg, edit)).await
+}
+
+async fn add(State(st): State<Arc<AppState>>, Json(add): Json<AddCard>) -> Response {
+    if st.engine.view().dry_run {
+        return (StatusCode::CONFLICT, DRY_RUN).into_response();
+    }
+    let cfg = st.cfg.clone();
+    blocking(StatusCode::BAD_REQUEST, move || add_card(&cfg, add)).await
+}
+
+/// Add copies of a printing by hand, priced now; merged into the row for
+/// that printing and finish when there is one.
+fn add_card(cfg: &Config, add: AddCard) -> Result<EditResult> {
+    if add.quantity == 0 {
+        bail!("Add at least one copy");
+    }
+    let mut app = App::new(cfg)?;
+    let finish: Finish = add.finish.into();
+    let card = app
+        .scryfall
+        .by_id(&add.scryfall_id)?
+        .ok_or_else(|| anyhow!("Scryfall doesn't know the printing {}", add.scryfall_id))?;
+    if !card.finishes.is_empty() && !card.finishes.contains(&finish) {
+        bail!(
+            "{} ({} #{}) isn't printed in {finish}",
+            card.name,
+            card.set_code.to_uppercase(),
+            card.collector_number
+        );
+    }
+    let prices = app.prices.price(&card, finish);
+    let row = app.store.add(CollectionEntry::from_card(
+        &card,
+        finish,
+        add.quantity,
+        prices,
+    ))?;
+    let now = if row.quantity > add.quantity {
+        format!(" ({} owned now)", row.quantity)
+    } else {
+        String::new()
+    };
+    Ok(EditResult {
+        message: format!(
+            "Added {}× {} ({} #{}, {finish}){now}",
+            add.quantity, row.name, row.set_code, row.collector_number
+        ),
+        row: Some(row_with_details(&app, row)),
+    })
 }
 
 #[derive(serde::Deserialize)]

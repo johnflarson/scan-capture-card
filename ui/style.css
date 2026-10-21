@@ -243,6 +243,8 @@ td a { color: var(--md-on-surface); }
 td.tcg a { color: var(--md-primary); }
 td.ck a { color: var(--md-secondary); }
 td.row-actions { width: 1%; padding: 4px 8px; }
+.btn.add-btn { display: inline-flex; align-items: center; gap: 6px; padding-left: 14px; }
+.btn.add-btn svg { width: 18px; height: 18px; fill: currentColor; }
 .pips { display: inline-flex; gap: 3px; vertical-align: middle; margin-right: 8px; }
 .pips .swatch { width: 10px; height: 10px; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35); }
 .rarity-dot { display: inline-block; width: 10px; height: 10px; margin-right: 8px; vertical-align: middle; border-radius: 2px; transform: rotate(45deg); background: var(--rarity); }

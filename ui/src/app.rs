@@ -8,6 +8,7 @@ use mtg_scan_shared::{
     PrintingView, RowEdit, ServerEvent, StateView, Totals, usd,
 };
 
+use crate::add::AddDialog;
 use crate::decks::{DeckCache, DecksPage};
 use crate::filters::{
     CollectionPrefs, ColorCell, FilterBar, GroupHead, Item, RarityCell, TypeCell, items,
@@ -499,40 +500,49 @@ fn CollectionPage(
     let filter = prefs.filter;
     let group_by = prefs.group_by;
     let editing = RwSignal::new(None::<CollectionRow>);
+    let adding = RwSignal::new(false);
     let dry_run = Signal::derive(move || state.get().is_some_and(|s| s.dry_run));
 
     let on_edit = Callback::new(move |row: CollectionRow| editing.set(Some(row)));
-    let on_close = Callback::new(move |()| editing.set(None));
-    // Patch the table in place rather than reloading the whole collection.
-    let on_saved = Callback::new(move |(original, result): (CollectionRow, EditResult)| {
-        data.update(|d| {
-            let Some(d) = d else { return };
-            d.rows.retain(|r| {
-                !(r.scryfall_id == original.scryfall_id && r.finish == original.finish)
-            });
-            if let Some(row) = result.row {
-                // Moved onto a row that already existed: that row now holds both.
-                d.rows
-                    .retain(|r| !(r.scryfall_id == row.scryfall_id && r.finish == row.finish));
-                d.rows.push(row);
-                d.rows.sort_by(|a, b| {
-                    a.name
-                        .to_lowercase()
-                        .cmp(&b.name.to_lowercase())
-                        .then_with(|| a.set_code.cmp(&b.set_code))
-                        .then_with(|| a.number.cmp(&b.number))
-                });
-            }
-            d.totals = Totals::of(&d.rows);
-            // The 7-day change depends on quantities and prices; only the server
-            // can recompute it, so reload in the background.
-            if d.value_change.is_some() {
-                cache.mark_stale();
-            }
-        });
+    let on_close = Callback::new(move |()| {
         editing.set(None);
-        notify.run((result.message, false));
+        adding.set(false);
     });
+    // Patch the table in place rather than reloading the whole collection.
+    // `original` is the edited row (`None` when a card was added).
+    let on_saved = Callback::new(
+        move |(original, result): (Option<CollectionRow>, EditResult)| {
+            data.update(|d| {
+                let Some(d) = d else { return };
+                if let Some(o) = original {
+                    d.rows
+                        .retain(|r| !(r.scryfall_id == o.scryfall_id && r.finish == o.finish));
+                }
+                if let Some(row) = result.row {
+                    // Moved or added onto a row that already existed: it now holds both.
+                    d.rows
+                        .retain(|r| !(r.scryfall_id == row.scryfall_id && r.finish == row.finish));
+                    d.rows.push(row);
+                    d.rows.sort_by(|a, b| {
+                        a.name
+                            .to_lowercase()
+                            .cmp(&b.name.to_lowercase())
+                            .then_with(|| a.set_code.cmp(&b.set_code))
+                            .then_with(|| a.number.cmp(&b.number))
+                    });
+                }
+                d.totals = Totals::of(&d.rows);
+                // The 7-day change depends on quantities and prices; only the server
+                // can recompute it, so reload in the background.
+                if d.value_change.is_some() {
+                    cache.mark_stale();
+                }
+            });
+            editing.set(None);
+            adding.set(false);
+            notify.run((result.message, false));
+        },
+    );
 
     let load = move || cache.load(notify);
 
@@ -563,6 +573,21 @@ fn CollectionPage(
             />
             <button class="btn tonal" disabled=move || loading.get() on:click=move |_| load()>
                 {move || if loading.get() { "Loading…" } else { "Refresh" }}
+            </button>
+            <button
+                class="btn filled add-btn"
+                disabled=move || dry_run.get()
+                title=move || {
+                    if dry_run.get() {
+                        "Dry run: the collection can't be changed"
+                    } else {
+                        "Add a card from a Scryfall link"
+                    }
+                }
+                on:click=move |_| adding.set(true)
+            >
+                <PlusIcon />
+                "Add card"
             </button>
         </div>
         {move || {
@@ -628,6 +653,9 @@ fn CollectionPage(
             </Show>
         </section>
         {move || editing.get().map(|row| view! { <EditDialog row on_close on_saved /> })}
+        <Show when=move || adding.get()>
+            <AddDialog on_close on_saved />
+        </Show>
     }
 }
 
@@ -697,6 +725,15 @@ fn Row(
 }
 
 #[component]
+fn PlusIcon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+        </svg>
+    }
+}
+
+#[component]
 fn PencilIcon() -> impl IntoView {
     view! {
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -711,7 +748,7 @@ fn PencilIcon() -> impl IntoView {
 fn EditDialog(
     row: CollectionRow,
     on_close: Callback<()>,
-    on_saved: Callback<(CollectionRow, EditResult)>,
+    on_saved: Callback<(Option<CollectionRow>, EditResult)>,
 ) -> impl IntoView {
     let original = StoredValue::new(row.clone());
     let quantity = RwSignal::new(row.quantity);
@@ -794,7 +831,7 @@ fn EditDialog(
             match api::edit(&edit).await {
                 Ok(result) => {
                     let _ = saving.try_set(false);
-                    on_saved.run((o, result));
+                    on_saved.run((Some(o), result));
                 }
                 Err(e) => {
                     let _ = saving.try_set(false);

@@ -5,7 +5,7 @@ use gloo_net::eventsource::futures::EventSource;
 use gloo_net::http::{Request, Response};
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    ClientCommand, CollectionView, DeckView, DecksView, EditResult, PrintingView, RowEdit,
+    AddCard, ClientCommand, CollectionView, DeckView, DecksView, EditResult, PrintingView, RowEdit,
     ServerEvent, SessionView,
 };
 use serde::de::DeserializeOwned;
@@ -53,6 +53,16 @@ pub async fn printing(link: &str) -> Result<PrintingView, String> {
 pub async fn edit(edit: &RowEdit) -> Result<EditResult, String> {
     let resp = Request::post("/api/collection/edit")
         .json(edit)
+        .map_err(err)?
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn add(add: &AddCard) -> Result<EditResult, String> {
+    let resp = Request::post("/api/collection/add")
+        .json(add)
         .map_err(err)?
         .send()
         .await

@@ -28,6 +28,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   with picks); group by type, rarity or color with per-group count and value; the search also
   matches type line, rarity and color; totals follow the filter. Filters and grouping are kept
   when switching tabs.
+- Add a card by hand on the Collection page (#26): **Add card** opens a dialog for a Scryfall link
+  (card page, localized link or ID) with quantity and finish (only finishes the printing exists
+  in). The card is priced and added, merging into the row you already own.
 - Moxfield decks (#20): set `MTG_SCAN_MOXFIELD_USER` in `.env` to a Moxfield user name or profile
   link. The Decks page lists that user's public decks with how much of each is already in the
   collection (any printing counts) and the TCGplayer cost to finish it; open a deck for each card's
