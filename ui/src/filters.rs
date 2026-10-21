@@ -2,7 +2,9 @@
 //! rarity and color cells.
 
 use leptos::prelude::*;
-use mtg_scan_shared::{CollectionRow, CollectionView, ColorGroup, Facet, RowFilter, Totals, usd};
+use mtg_scan_shared::{
+    CollectionRow, CollectionView, ColorGroup, Facet, RowFilter, Totals, UNKNOWN, usd,
+};
 
 /// The Collection page's search, picks and grouping. Lives in `App` so they
 /// survive switching tabs.
@@ -70,13 +72,10 @@ pub fn items(rows: Vec<CollectionRow>, group_by: Option<Facet>) -> Vec<Item> {
 /// The small marker before a value: a mana-colored dot or a rarity diamond.
 fn marker(facet: Facet, value: &str) -> AnyView {
     match facet {
-        Facet::Color => {
-            let class = ColorGroup::ALL
-                .into_iter()
-                .find(|g| g.label() == value)
-                .map_or("c", |g| g.class());
-            view! { <span class=format!("swatch {class}")></span> }.into_any()
-        }
+        Facet::Color => match ColorGroup::ALL.into_iter().find(|g| g.label() == value) {
+            Some(g) => view! { <span class=format!("swatch {}", g.class())></span> }.into_any(),
+            None => ().into_any(),
+        },
         Facet::Rarity => view! { <span class=rarity_class(value)></span> }.into_any(),
         Facet::Type => ().into_any(),
     }
@@ -131,7 +130,10 @@ pub fn RarityCell(row: CollectionRow) -> impl IntoView {
 /// One pip per color, then the color group; the letters on hover.
 #[component]
 pub fn ColorCell(row: CollectionRow) -> impl IntoView {
-    let group = row.color_group();
+    let Some(group) = row.color_group() else {
+        return view! { <td class="muted" title="Card details unavailable">{UNKNOWN}</td> }
+            .into_any();
+    };
     let title = if row.colors.is_empty() {
         group.label().to_string()
     } else {
@@ -153,6 +155,7 @@ pub fn ColorCell(row: CollectionRow) -> impl IntoView {
             {group.label()}
         </td>
     }
+    .into_any()
 }
 
 /// Chips for each column's values (OR within a column, AND across columns),

@@ -194,12 +194,26 @@ impl Totals {
 }
 
 impl CollectionRow {
-    pub fn color_group(&self) -> ColorGroup {
-        ColorGroup::of(&self.colors)
+    /// Whether Scryfall's card details (type line, colors) were loaded. Every
+    /// card has a type line, so an empty one means they are missing (e.g.
+    /// Scryfall was unreachable), and empty colors then mean "unknown", not
+    /// colorless.
+    pub fn details_known(&self) -> bool {
+        !self.type_line.trim().is_empty()
     }
 
+    /// `None` when the card details are missing.
+    pub fn color_group(&self) -> Option<ColorGroup> {
+        self.details_known().then(|| ColorGroup::of(&self.colors))
+    }
+
+    /// The main type, or "Unknown" when the card details are missing.
     pub fn main_type(&self) -> &'static str {
-        main_type(&self.type_line)
+        if self.details_known() {
+            main_type(&self.type_line)
+        } else {
+            UNKNOWN
+        }
     }
 
     /// TCGplayer value of all copies.
@@ -352,18 +366,15 @@ impl Facet {
 
     /// Every value, in display order.
     pub fn values(self) -> Vec<String> {
-        match self {
+        let known: Vec<String> = match self {
             Facet::Type => CARD_TYPES.iter().map(|t| t.to_string()).collect(),
-            Facet::Rarity => RARITIES
-                .iter()
-                .map(|r| capitalize(r))
-                .chain([UNKNOWN_RARITY.to_string()])
-                .collect(),
+            Facet::Rarity => RARITIES.iter().map(|r| capitalize(r)).collect(),
             Facet::Color => ColorGroup::ALL
                 .iter()
                 .map(|g| g.label().to_string())
                 .collect(),
-        }
+        };
+        known.into_iter().chain([UNKNOWN.to_string()]).collect()
     }
 
     /// Where `value` sorts; values this list doesn't know go last.
@@ -398,14 +409,14 @@ impl Facet {
     }
 }
 
-/// Rarity shown for rows without one.
-pub const UNKNOWN_RARITY: &str = "Unknown";
+/// Type, rarity or color of a row whose card details couldn't be loaded.
+pub const UNKNOWN: &str = "Unknown";
 
 impl CollectionRow {
     /// "Mythic", or "Unknown" when the row has none.
     pub fn rarity_label(&self) -> String {
         match self.rarity.trim() {
-            "" => UNKNOWN_RARITY.to_string(),
+            "" => UNKNOWN.to_string(),
             r => capitalize(&r.to_lowercase()),
         }
     }
@@ -415,7 +426,10 @@ impl CollectionRow {
         match facet {
             Facet::Type => self.main_type().to_string(),
             Facet::Rarity => self.rarity_label(),
-            Facet::Color => self.color_group().label().to_string(),
+            Facet::Color => self
+                .color_group()
+                .map_or(UNKNOWN, ColorGroup::label)
+                .to_string(),
         }
     }
 
@@ -427,7 +441,7 @@ impl CollectionRow {
         if text.iter().any(|t| t.to_lowercase().contains(word)) {
             return true;
         }
-        let mut terms = vec![self.rarity_label(), self.color_group().label().to_string()];
+        let mut terms = vec![self.rarity_label(), self.facet(Facet::Color)];
         terms.extend(
             self.colors
                 .iter()
@@ -499,7 +513,8 @@ pub struct Slice {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stats {
     pub totals: Totals,
-    /// Every color group, in WUBRG + multicolor + colorless order.
+    /// Every color group, in WUBRG + multicolor + colorless order. Rows whose
+    /// colors are unknown are left out.
     pub by_color: Vec<(ColorGroup, Slice)>,
     /// Types present, most copies first.
     pub by_type: Vec<Slice>,
@@ -538,7 +553,7 @@ impl Stats {
         let by_color = ColorGroup::ALL
             .into_iter()
             .map(|g| {
-                let t = colors.get(&g).copied().unwrap_or_default();
+                let t = colors.get(&Some(g)).copied().unwrap_or_default();
                 (g, slice(g.label().to_string(), t))
             })
             .collect();
@@ -879,6 +894,42 @@ mod tests {
         f.toggle(Facet::Color, "Multicolor");
         assert!(!f.is_active());
         assert_eq!(names(&rows, &f).len(), 4);
+    }
+
+    #[test]
+    fn missing_card_details_are_unknown_not_colorless() {
+        let mut unresolved = row(3, Some(1.0));
+        unresolved.name = "Mystery".into();
+        unresolved.rarity = "rare".into();
+        let mut rows = sample();
+        rows.push(unresolved.clone());
+
+        assert!(!unresolved.details_known());
+        assert_eq!(unresolved.color_group(), None);
+        assert_eq!(unresolved.facet(Facet::Type), "Unknown");
+        assert_eq!(unresolved.facet(Facet::Color), "Unknown");
+        let search = |text: &str| {
+            names(
+                &rows,
+                &RowFilter {
+                    text: text.into(),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(search("colorless"), ["Sol Ring"]);
+        assert_eq!(search("unknown"), ["Sol Ring", "Mystery"]); // Sol Ring: no rarity
+        let mut f = RowFilter::default();
+        f.toggle(Facet::Color, "Colorless");
+        assert_eq!(names(&rows, &f), ["Sol Ring"]);
+        // Unknown sorts last and keeps its own group.
+        let (last, _) = Facet::Color.present(&rows).pop().unwrap();
+        assert_eq!(last, "Unknown");
+        assert_eq!(Facet::Type.group(&rows).last().unwrap().0, "Unknown");
+        // Statistics don't count it as colorless.
+        let s = Stats::of(&rows);
+        let colorless = s.by_color.iter().find(|(g, _)| *g == ColorGroup::Colorless);
+        assert_eq!(colorless.unwrap().1.cards, 2);
     }
 
     #[test]
