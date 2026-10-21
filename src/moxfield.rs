@@ -33,9 +33,32 @@ const PAGE_SIZE: u32 = 100;
 /// One request at a time across the whole process, a second apart.
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// The configured user, from `MTG_SCAN_MOXFIELD_USER`.
-pub fn configured_user() -> Option<String> {
-    std::env::var(USER_VAR).ok().and_then(|v| parse_user(&v))
+/// Where the Moxfield account setting comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// `[decks] moxfield_user` in the settings file.
+    Settings,
+    /// `MTG_SCAN_MOXFIELD_USER` (normally from `.env`).
+    Env,
+}
+
+/// The Moxfield setting as entered, and its source. The settings file wins
+/// over the environment; an empty value there means no account.
+pub fn configured(setting: Option<&str>) -> Option<(String, Source)> {
+    choose(setting, std::env::var(USER_VAR).ok())
+}
+
+fn choose(setting: Option<&str>, env: Option<String>) -> Option<(String, Source)> {
+    let set = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty());
+    match setting {
+        Some(v) => set(v).map(|v| (v, Source::Settings)),
+        None => env.as_deref().and_then(set).map(|v| (v, Source::Env)),
+    }
+}
+
+/// The configured user name (see [`configured`]).
+pub fn configured_user(setting: Option<&str>) -> Option<String> {
+    configured(setting).and_then(|(v, _)| parse_user(&v))
 }
 
 /// A user name from `Johnfredone` or `https://moxfield.com/users/Johnfredone`.
@@ -52,7 +75,7 @@ pub fn parse_user(input: &str) -> Option<String> {
 
 /// User names and deck IDs: letters, digits, `-`, `_`, `.`. Checked before
 /// they go into a URL or a cache file name.
-fn valid_id(s: &str) -> bool {
+pub fn valid_id(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
         && s.chars()
@@ -402,6 +425,20 @@ fn wubrg(colors: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_file_wins_over_env() {
+        let env = || Some("FromEnv".to_string());
+        assert_eq!(choose(None, env()), Some(("FromEnv".into(), Source::Env)));
+        assert_eq!(
+            choose(Some(" Mine "), env()),
+            Some(("Mine".into(), Source::Settings))
+        );
+        // Cleared on the Settings page: no account, even with .env set.
+        assert_eq!(choose(Some(""), env()), None);
+        assert_eq!(choose(None, Some("  ".into())), None);
+        assert_eq!(choose(None, None), None);
+    }
 
     #[test]
     fn parses_user_names_and_profile_links() {

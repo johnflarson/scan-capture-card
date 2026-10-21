@@ -13,14 +13,17 @@
 //! | `GET /api/printings?name=` | every paper printing of a card (review: pick another printing) |
 //! | `POST /api/collection/edit` | `RowEdit` JSON: set quantity, remove, change printing/finish |
 //! | `POST /api/collection/add` | `AddCard` JSON: add copies of a printing by hand |
-//! | `GET /api/decks[?refresh=true]` | the configured Moxfield user's public decks |
+//! | `GET /api/decks[?refresh=true][&all=true]` | the configured Moxfield user's public decks, without hidden ones unless `all` |
 //! | `GET /api/decks/{id}` | one of those decks with its cards |
+//! | `GET`/`POST /api/settings` | Settings page: startup options, Moxfield account, hidden decks (`SettingsChange` JSON) |
+//! | `GET /api/settings/database` | where the collection is stored, with live status (no passwords) |
 //! | everything else | the embedded UI |
 //!
 //! With `MTG_SCAN_UI_TOKEN` set, other computers must sign in first (see
 //! [`access`]); this computer never has to.
 
 mod access;
+mod settings;
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -48,7 +51,7 @@ use crate::config::Config;
 use crate::engine::{self, Engine, EngineEvent, EngineOptions};
 use crate::live;
 use crate::model::{Card, CollectionEntry, Finish};
-use crate::moxfield::{self, Moxfield};
+use crate::moxfield::Moxfield;
 use crate::scryfall::{self, Scryfall};
 
 /// Cap the preview stream at ~15 frames per second per viewer.
@@ -57,6 +60,8 @@ const STREAM_FRAME_INTERVAL: Duration = Duration::from_millis(66);
 pub struct WebOptions {
     pub addr: SocketAddr,
     pub open_browser: bool,
+    /// Flags that overrode a saved startup setting (shown on Settings).
+    pub overridden: Vec<String>,
 }
 
 /// The UI files built by `trunk build --release` in `ui/`.
@@ -67,6 +72,10 @@ struct Assets;
 struct AppState {
     engine: Arc<Engine>,
     cfg: Config,
+    /// What the Settings page changes while running.
+    settings: std::sync::Mutex<settings::Settings>,
+    /// The address the server listens on.
+    addr: SocketAddr,
     /// Flips to true on shutdown so long-lived streams end.
     shutdown: watch::Receiver<bool>,
 }
@@ -132,7 +141,9 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Arc::new(AppState {
         engine: engine.clone(),
+        settings: settings::Settings::new(&cfg, web.overridden),
         cfg,
+        addr: web.addr,
         shutdown: shutdown_rx,
     });
     let app = Router::new()
@@ -147,6 +158,8 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/printings", get(printings))
         .route("/api/decks", get(decks))
         .route("/api/decks/{id}", get(deck))
+        .route("/api/settings", get(settings::get).post(settings::change))
+        .route("/api/settings/database", get(settings::database))
         .fallback(static_file)
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
@@ -370,29 +383,39 @@ struct DecksQuery {
     /// Ask Moxfield now instead of using the list fetched in the last minutes.
     #[serde(default)]
     refresh: bool,
+    /// Include decks hidden on the Settings page (for that page's list).
+    #[serde(default)]
+    all: bool,
 }
 
-async fn decks(Query(query): Query<DecksQuery>) -> Response {
+async fn decks(State(st): State<Arc<AppState>>, Query(query): Query<DecksQuery>) -> Response {
+    let user = settings::lock(&st.settings).moxfield_user();
+    let state = st.clone();
     blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
-        Ok(match moxfield::configured_user() {
-            Some(user) => Moxfield::new(app::http_client()?).decks(&user, query.refresh),
-            None => DecksView {
+        let Some(user) = user else {
+            return Ok(DecksView {
                 user: None,
                 profile_url: None,
                 decks: Vec::new(),
                 warning: None,
-            },
-        })
+            });
+        };
+        let mut view = Moxfield::new(app::http_client()?).decks(&user, query.refresh);
+        if !query.all {
+            let settings = settings::lock(&state.settings);
+            view.decks.retain(|d| !settings.is_hidden(&d.id));
+        }
+        Ok(view)
     })
     .await
 }
 
 /// Only decks of the configured user are served, so this isn't a general
 /// Moxfield proxy.
-async fn deck(Path(id): Path<String>) -> Response {
+async fn deck(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let user = settings::lock(&st.settings).moxfield_user();
     blocking(StatusCode::NOT_FOUND, move || {
-        let user = moxfield::configured_user()
-            .ok_or_else(|| anyhow!("No Moxfield user is set ({}).", moxfield::USER_VAR))?;
+        let user = user.ok_or_else(|| anyhow!("No Moxfield account is set (see Settings)."))?;
         let client = Moxfield::new(app::http_client()?);
         let summary = client
             .decks(&user, false)

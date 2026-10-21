@@ -10,6 +10,7 @@ mod home;
 mod mana;
 mod preview;
 mod review;
+mod settings;
 
 fn main() {
     console_error_panic_hook::set_once();

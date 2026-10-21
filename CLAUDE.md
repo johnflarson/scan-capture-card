@@ -51,11 +51,11 @@ the camera and `Windows.Media.Ocr` for OCR.
 |---|---|
 | `main.rs` | clap CLI; config overrides; small commands (add/remove/price/list/reprice/history/movers/db) |
 | `movers.rs` | `mtg-scan movers`: ranks `CollectionStore::price_moves` (price then vs now per row) by change for the copies owned |
-| `config.rs` | `mtg-scan.toml` (`Config`, `StorageConfig`, `RecognitionMode`, `LlmProvider`), provider defaults |
+| `config.rs` | `mtg-scan.toml` (`Config`, `StorageConfig`, `RecognitionMode`, `LlmProvider`, `UiConfig` / `DecksConfig` for the Settings page), provider defaults; `save_settings` rewrites only `[ui]` and `[decks]` via `toml_edit` (comments kept) |
 | `camera.rs` | nokhwa/Media Foundation capture; picks the camera mode itself; MJPEG/NV12/YUYV decode |
 | `engine/` | Scanning engine shared by both front ends: capture thread (camera, `Watcher` auto-scan trigger, preview frames via `draw`) and worker thread (`Pipeline`, background reprice); `Command`s in, `EngineEvent` broadcast + `StateView` out |
 | `live.rs` | Desktop front end (minifb window, keys), console logger, `scan_table_once` |
-| `web/` | Web front end: Axum server for `mtg-scan ui` (MJPEG preview, SSE events, JSON API, embedded `ui/dist` via rust-embed); `access.rs` guards other computers with `MTG_SCAN_UI_TOKEN` (cookie / Bearer / `?token=` link, loopback exempt) |
+| `web/` | Web front end: Axum server for `mtg-scan ui` (MJPEG preview, SSE events, JSON API, embedded `ui/dist` via rust-embed); `access.rs` guards other computers with `MTG_SCAN_UI_TOKEN` (cookie / Bearer / `?token=` link, loopback exempt); `settings.rs` serves the Settings page (startup options, Moxfield account, hidden decks, read-only database and connection details) |
 | `../shared/` | `mtg-scan-shared`: serde types exchanged by server and UI (`StateView`, `CardView`, `ServerEvent`, `ClientCommand`, `CollectionRow`, …) and logic both sides use: `Stats::of` (landing statistics), `ColorGroup`, `main_type`, `Totals::of`, `RowFilter` + `Facet` (Collection search, filter chips, group-by). Statistics and filtering are computed in the browser from `/api/collection` |
 | `../ui/` | `mtg-scan-ui`: Leptos 0.8 CSR app (`app.rs` components, `home.rs` landing page, `filters.rs` Collection filters, `mana.rs` mana symbols, `api.rs` fetch + EventSource), `style.css` Material 3 tokens |
 | `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo; with `hold_uncertain` (web UI, `[recognition] review_uncertain`) uncertain matches become `Outcome::Held`, which the engine saves on `Command::Accept` or drops on `Discard` |
@@ -66,7 +66,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs |
 | `pricing/` | `tcgplayer.rs` (mpapi pricepoints, Scryfall fallback), `cardkingdom.rs` (daily price list, then a compact index), `PriceService` |
 | `store/` | `CollectionStore` trait (add, remove, `set_quantity`, `relocate` to another printing/finish, prices); `markdown.rs` (parse, render, atomic write); `postgres.rs` (migrations, upserts, Scryfall hydration, price history) |
-| `moxfield.rs` | Moxfield decks of `MTG_SCAN_MOXFIELD_USER` (`.env`): deck list and deck contents, cached, 1 req/s |
+| `moxfield.rs` | Moxfield decks of `[decks] moxfield_user` (Settings page), else `MTG_SCAN_MOXFIELD_USER` (`.env`): deck list and deck contents, cached, 1 req/s |
 | `cache.rs` | JSON cache in `%LOCALAPPDATA%\mtg-scan` |
 | `model.rs` | `Card`, `Finish`, `Prices`, `CollectionEntry`, `PricePoint` |
 | `migrations/` | Numbered SQL files embedded via `include_str!` and listed in `store::postgres::MIGRATIONS` |

@@ -11,7 +11,7 @@ use mtg_scan_shared::{
 };
 
 use crate::api;
-use crate::app::{CollectionCache, Metric};
+use crate::app::{CollectionCache, Metric, Tab};
 use crate::filters::count;
 use crate::home::DecksIcon;
 use crate::mana::ManaSymbols;
@@ -195,11 +195,15 @@ fn SetupHelp() -> impl IntoView {
             <div class="launch-icon big"><DecksIcon /></div>
             <h1>"Decks"</h1>
             <p>"Connect a Moxfield account to see its public decks, which cards you own and what each deck costs to finish."</p>
-            <p>
-                "Add this line to the " <code>".env"</code>
-                " file next to mtg-scan.toml, then restart mtg-scan:"
-            </p>
-            <pre class="code">"MTG_SCAN_MOXFIELD_USER=https://moxfield.com/users/YourName"</pre>
+            <p>"Enter your Moxfield profile link (like https://moxfield.com/users/YourName) on the Settings page."</p>
+            {use_context::<RwSignal<Tab>>()
+                .map(|tab| {
+                    view! {
+                        <button class="btn filled" on:click=move |_| tab.set(Tab::Settings)>
+                            "Open Settings"
+                        </button>
+                    }
+                })}
         </section>
     }
 }

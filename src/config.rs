@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::model::Finish;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -17,6 +19,12 @@ pub struct Config {
     pub camera: CameraConfig,
     pub recognition: RecognitionConfig,
     pub llm: LlmConfig,
+    /// How `mtg-scan ui` starts (set on the web UI's Settings page).
+    pub ui: UiConfig,
+    pub decks: DecksConfig,
+    /// The file these settings came from, if any; the Settings page saves there.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -27,8 +35,92 @@ impl Default for Config {
             camera: CameraConfig::default(),
             recognition: RecognitionConfig::default(),
             llm: LlmConfig::default(),
+            ui: UiConfig::default(),
+            decks: DecksConfig::default(),
+            file: None,
         }
     }
+}
+
+impl Config {
+    /// Where the Settings page saves: the file the settings came from, else
+    /// `mtg-scan.toml` in the current folder.
+    pub fn settings_file(&self) -> PathBuf {
+        self.file
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("mtg-scan.toml"))
+    }
+}
+
+/// `[ui]`: how `mtg-scan ui` starts. `--manual`, `--table` and `--finish`
+/// override these for one run.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct UiConfig {
+    pub auto_scan: bool,
+    pub table_mode: bool,
+    pub finish: Finish,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            auto_scan: true,
+            table_mode: false,
+            finish: Finish::Nonfoil,
+        }
+    }
+}
+
+/// `[decks]`: the Moxfield account and the decks hidden on the Decks page.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct DecksConfig {
+    /// Moxfield user name or profile link. Wins over `MTG_SCAN_MOXFIELD_USER`
+    /// when present; an empty string means no account.
+    pub moxfield_user: Option<String>,
+    /// Moxfield deck IDs left off the Decks page and out of deck statistics.
+    pub hidden: Vec<String>,
+}
+
+/// Save the Settings page's sections into `path`, keeping everything else in
+/// the file (other sections, comments, ordering) as it is.
+pub fn save_settings(path: &Path, ui: &UiConfig, decks: &DecksConfig) -> Result<()> {
+    use toml_edit::{Array, DocumentMut, Item, Table, value};
+
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
+    };
+    let mut doc: DocumentMut = text
+        .parse()
+        .with_context(|| format!("invalid config in {}", path.display()))?;
+    fn section<'a>(doc: &'a mut DocumentMut, name: &str, path: &Path) -> Result<&'a mut Table> {
+        doc.entry(name)
+            .or_insert(Item::Table(Table::new()))
+            .as_table_mut()
+            .with_context(|| format!("[{name}] in {} isn't a table", path.display()))
+    }
+
+    let t = section(&mut doc, "ui", path)?;
+    t["auto_scan"] = value(ui.auto_scan);
+    t["table_mode"] = value(ui.table_mode);
+    t["finish"] = value(ui.finish.as_str());
+
+    let t = section(&mut doc, "decks", path)?;
+    match &decks.moxfield_user {
+        Some(user) => t["moxfield_user"] = value(user.as_str()),
+        None => {
+            t.remove("moxfield_user");
+        }
+    }
+    t["hidden"] = value(decks.hidden.iter().map(String::as_str).collect::<Array>());
+
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, doc.to_string())
+        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("failed to update {}", path.display()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
@@ -403,8 +495,10 @@ impl Config {
             if path.exists() {
                 let text = std::fs::read_to_string(&path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
-                return toml::from_str(&text)
-                    .with_context(|| format!("invalid config in {}", path.display()));
+                let mut cfg: Config = toml::from_str(&text)
+                    .with_context(|| format!("invalid config in {}", path.display()))?;
+                cfg.file = Some(path);
+                return Ok(cfg);
             }
         }
         if let Some(p) = explicit {
@@ -556,6 +650,76 @@ mod tests {
         assert_eq!(text, "# keep me\nA=1\nB=new$#\nD=4\n");
         let parsed = parse_env(&text);
         assert!(parsed.contains(&("B".into(), "new$#".into())));
+    }
+
+    #[test]
+    fn ui_and_decks_sections_default_and_parse() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.ui, UiConfig::default());
+        assert!(cfg.ui.auto_scan);
+        assert_eq!(cfg.decks, DecksConfig::default());
+
+        let cfg: Config = toml::from_str(
+            "[ui]\nauto_scan = false\nfinish = \"foil\"\n[decks]\nmoxfield_user = \"\"\nhidden = [\"a1\"]",
+        )
+        .unwrap();
+        assert!(!cfg.ui.auto_scan && !cfg.ui.table_mode);
+        assert_eq!(cfg.ui.finish, Finish::Foil);
+        assert_eq!(cfg.decks.moxfield_user.as_deref(), Some(""));
+        assert_eq!(cfg.decks.hidden, ["a1"]);
+    }
+
+    #[test]
+    fn save_settings_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mtg-scan.toml");
+        let original = "# my settings\ncollection = \"cards.md\"\n\n[llm]\n# local model\nprovider = \"ollama\"\n\n[ui]\nauto_scan = true # was on\n";
+        std::fs::write(&path, original).unwrap();
+        let ui = UiConfig {
+            auto_scan: false,
+            table_mode: true,
+            finish: Finish::Etched,
+        };
+        let decks = DecksConfig {
+            moxfield_user: Some("https://moxfield.com/users/Someone".into()),
+            hidden: vec!["abc".into(), "d-e_f".into()],
+        };
+        save_settings(&path, &ui, &decks).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        for kept in [
+            "# my settings",
+            "collection = \"cards.md\"",
+            "# local model",
+        ] {
+            assert!(text.contains(kept), "{kept} lost:\n{text}");
+        }
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.collection, PathBuf::from("cards.md"));
+        assert_eq!(cfg.llm.provider, LlmProvider::Ollama);
+        assert_eq!(cfg.ui, ui);
+        assert_eq!(cfg.decks, decks);
+
+        // Clearing the user removes the key, so .env applies again.
+        save_settings(&path, &ui, &DecksConfig::default()).unwrap();
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(cfg.decks, DecksConfig::default());
+    }
+
+    #[test]
+    fn example_config_parses() {
+        let cfg: Config = toml::from_str(include_str!("../mtg-scan.example.toml")).unwrap();
+        assert_eq!(cfg.ui, UiConfig::default());
+        assert_eq!(cfg.decks, DecksConfig::default());
+    }
+
+    #[test]
+    fn save_settings_creates_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.toml");
+        save_settings(&path, &UiConfig::default(), &DecksConfig::default()).unwrap();
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(cfg.ui, UiConfig::default());
     }
 
     #[test]

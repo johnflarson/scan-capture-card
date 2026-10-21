@@ -43,7 +43,7 @@ impl Access {
     }
 }
 
-fn is_local(ip: IpAddr) -> bool {
+pub(super) fn is_local(ip: IpAddr) -> bool {
     ip.to_canonical().is_loopback()
 }
 

@@ -106,8 +106,9 @@ enum Command {
         /// Start in table mode (every card in view) instead of single-card mode
         #[arg(long)]
         table: bool,
-        #[arg(long, value_enum, default_value_t = Finish::Nonfoil)]
-        finish: Finish,
+        /// Finish for scanned cards (default: the Settings page's, else nonfoil)
+        #[arg(long, value_enum)]
+        finish: Option<Finish>,
         /// Only scan when "Scan now" is pressed (auto-scan off)
         #[arg(long)]
         manual: bool,
@@ -338,20 +339,37 @@ fn run() -> Result<()> {
             port,
             no_open,
         } => {
-            let mode = if table { Mode::Table } else { Mode::Single };
+            // The Settings page's startup choices, unless a flag overrides them.
+            let saved = cfg.ui.clone();
+            let mut overridden = Vec::new();
+            if manual && saved.auto_scan {
+                overridden.push("--manual: auto-scan started off".to_string());
+            }
+            if table && !saved.table_mode {
+                overridden.push("--table: started in table mode".to_string());
+            }
+            if let Some(f) = finish.filter(|f| *f != saved.finish) {
+                overridden.push(format!("--finish {f}: new cards start as {f}"));
+            }
+            let mode = if table || saved.table_mode {
+                Mode::Table
+            } else {
+                Mode::Single
+            };
             apply_camera(&mut cfg, &camera, mode);
             web::run(
                 &cfg,
                 EngineOptions {
                     mode,
-                    finish,
-                    auto: !manual,
+                    finish: finish.unwrap_or(saved.finish),
+                    auto: saved.auto_scan && !manual,
                     dry_run,
                     review_uncertain: cfg.recognition.review_uncertain,
                 },
                 web::WebOptions {
                     addr: std::net::SocketAddr::new(bind, port),
                     open_browser: !no_open,
+                    overridden,
                 },
             )
         }

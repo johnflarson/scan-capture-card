@@ -6,7 +6,9 @@
 use serde::{Deserialize, Serialize};
 
 mod decks;
+mod settings;
 pub use decks::*;
+pub use settings::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
