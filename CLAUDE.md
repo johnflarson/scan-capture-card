@@ -80,6 +80,10 @@ the camera and `Windows.Media.Ocr` for OCR.
   `connect_admin`, inside a transaction holding a lock on `schema_migrations`.
 - Owner-created future tables are granted to the app role via `ALTER DEFAULT PRIVILEGES`, so new
   migrations need no grant statements.
+- **No OS dependencies for app behaviour.** The user doesn't want the app to rely on OS
+  features such as Task Scheduler or Windows env vars. Periodic work (e.g. repricing) runs
+  inside the app: `reprice::Repricer` steps through cards not priced today on the live
+  worker thread whenever no scan job is waiting.
 - **Backups:** none yet. The user will design the backup process (a GitHub issue tracks it). Don't
   add local dump files or backup jobs on your own.
 - Driver: sync `postgres` crate with native-tls. It uses prepared statements, so connect
@@ -148,5 +152,5 @@ CONTRIBUTING.md. Release-by-release detail is in [CHANGELOG.md](CHANGELOG.md).
 | Iteration | Version | Summary |
 |---|---|---|
 | 1 | v0.1.0 | Webcam scanning (single card + whole table), OCR + vision-LLM recognition, Scryfall resolution, TCGplayer + Card Kingdom prices, Markdown collection |
-| 2 | v0.2.0 | PostgreSQL storage (one row per printing + finish, daily price history), `.env` secrets, least-privilege app role, nightly reprice, CI/CD + GitHub process |
+| 2 | v0.2.0 | PostgreSQL storage (one row per printing + finish, daily price history), `.env` secrets, least-privilege app role, background daily reprice, CI/CD + GitHub process |
 | 3 | (next) | Pick from the board, ordered by `priority:*` |

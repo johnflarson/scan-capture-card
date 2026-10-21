@@ -34,5 +34,5 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Console output, or a file from logs\ for nightly-job problems. Remove passwords first.
+      description: Console output (set MTG_SCAN_DEBUG=1 for recognition details). Remove passwords first.
       render: text

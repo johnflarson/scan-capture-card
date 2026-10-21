@@ -108,10 +108,10 @@ then release a PATCH version straight away.
 
 ## 6. Operate
 
-- **Nightly job.** `scripts/nightly.ps1` runs `mtg-scan reprice` at 02:30
-  through Task Scheduler (`scripts/install-nightly-task.ps1`), which builds up
-  price history. Each run writes a log to `logs\`, and the newest 30 are kept.
-  Task Scheduler's "Last Run Result" is non-zero if a run failed.
+- **Price refresh.** The app reprices cards not yet priced today in the
+  background whenever the live scanner runs. It doesn't depend on any OS
+  feature such as Task Scheduler or cron. `mtg-scan reprice` forces a full
+  refresh.
 - **Database accounts.** The app logs in as the least-privilege role
   (`MTG_SCAN_DB_USER`). Migrations and role changes use the schema owner
   (`MTG_SCAN_DB_ADMIN_USER`). Set this up with `mtg-scan db setup-app-user`.

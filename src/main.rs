@@ -10,6 +10,7 @@ mod pipeline;
 mod pricing;
 mod printing;
 mod recognize;
+mod reprice;
 mod scryfall;
 mod store;
 
@@ -710,25 +711,21 @@ fn reprice(cfg: &Config) -> Result<()> {
         .force_refresh()
         .context("failed to refresh Card Kingdom prices")?;
     let entries = app.store.entries()?;
-    println!("Repricing {} printings…", entries.len());
-    for e in &entries {
-        let Some(card) = app.scryfall.by_id(&e.scryfall_id)? else {
-            println!("  ? {} — no longer on Scryfall, skipped", e.name);
-            continue;
-        };
-        let prices = app.prices.price(&card, e.finish);
-        println!(
-            "  {} ({} #{}, {}): TCG {} → {} · CK {} → {}",
-            e.name,
-            e.set_code,
-            e.collector_number,
-            e.finish,
-            format_usd(e.prices.tcgplayer),
-            format_usd(prices.tcgplayer),
-            format_usd(e.prices.cardkingdom),
-            format_usd(prices.cardkingdom)
-        );
-        app.store.update_prices(&e.scryfall_id, e.finish, prices)?;
+    let today = chrono::Local::now().date_naive();
+    let mut repricer = reprice::Repricer::plan(&entries, today, true);
+    println!("Repricing {} printings…", repricer.total());
+    while let Some(r) = repricer.step(&mut app)? {
+        match r.new {
+            None => println!("  ? {} — no longer on Scryfall, skipped", r.label),
+            Some(new) => println!(
+                "  {}: TCG {} → {} · CK {} → {}",
+                r.label,
+                format_usd(r.old.tcgplayer),
+                format_usd(new.tcgplayer),
+                format_usd(r.old.cardkingdom),
+                format_usd(new.cardkingdom)
+            ),
+        }
     }
     print_totals(&app.store.entries()?);
     Ok(())

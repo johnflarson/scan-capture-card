@@ -50,9 +50,8 @@ jobs:
         shell: pwsh
         run: |
           $name = "mtg-scan-${{ github.ref_name }}-windows-x64"
-          New-Item -ItemType Directory -Path "$name/scripts" | Out-Null
+          New-Item -ItemType Directory -Path $name | Out-Null
           Copy-Item target/release/mtg-scan.exe, README.md, CHANGELOG.md, mtg-scan.example.toml, .env.example -Destination $name
-          Copy-Item scripts/*.ps1 -Destination "$name/scripts"
           Compress-Archive -Path $name -DestinationPath "$name.zip"
           $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
           "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"

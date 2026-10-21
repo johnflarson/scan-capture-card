@@ -22,8 +22,8 @@ Iteration 2: PostgreSQL storage, plus the development foundation.
   and the `--storage` flag.
 - Least-privilege database login (`db setup-app-user`): the app reads and writes rows only;
   schema changes use the owner account (`MTG_SCAN_DB_ADMIN_*`).
-- `scripts/nightly.ps1` + `scripts/install-nightly-task.ps1`: a nightly `reprice` via
-  Windows Task Scheduler, so price history builds itself.
+- Background price refresh: `scan` / `scan-all` reprice cards not yet priced today while
+  idle, so price history builds itself without any OS scheduler.
 - `.env` file for the database connection and API keys (`.env.example` template).
 - CI (format, lint, unit and PostgreSQL integration tests), tag-driven releases,
   Dependabot, issue and PR templates, CONTRIBUTING.md.

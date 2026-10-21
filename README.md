@@ -154,11 +154,11 @@ read and write rows but can't change or drop tables. The schema owner's login
 is kept separately in `.env` as `MTG_SCAN_DB_ADMIN_USER` / `_ADMIN_PASSWORD`,
 and is only used for `db migrate` and `db setup-app-user`.
 
-**Nightly price refresh.** `scripts\install-nightly-task.ps1` registers a
-Windows scheduled task that runs `scripts
-ightly.ps1` (`mtg-scan reprice`)
-every day at 02:30. That adds a daily point to the price history. Logs go to
-`logs\`.
+**Automatic price refresh.** When `scan` or `scan-all` starts, mtg-scan reprices
+any card not yet priced today in the background, one card at a time while it
+waits for scans. No OS scheduler is involved. That adds a daily point to the
+price history whenever you use the app. `mtg-scan reprice` refreshes everything
+on demand.
 
 ## Development
 
