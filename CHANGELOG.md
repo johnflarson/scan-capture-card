@@ -18,6 +18,11 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 - Collection editing in the web UI (#19): each row's Edit button opens a dialog to change the
   quantity, switch finish (only finishes the printing exists in), move the row to another printing
   by pasting a Scryfall link (priced afresh, merged into a row you already own), or remove it.
+- Home page (#22), the web UI's start page: large Scan / Collection / Decks buttons beside
+  collection statistics (cards, printings, value, 7-day value change from PostgreSQL price
+  history, breakdowns by color, type, rarity, finish and set, most valuable and recently added
+  cards). Decks is a placeholder until Moxfield support (#20).
+- Collection rows carry each card's colors and type line from Scryfall (not stored).
 - Single-card / table mode switch while running (`M` key in the desktop window, toggle in the UI).
 - `[camera] table_width` / `table_height` settings for table mode (default 3840x2160).
 

@@ -403,6 +403,8 @@ pub fn parse(text: &str) -> Result<Vec<CollectionEntry>> {
             set_name: unescape(&cells[3]),
             collector_number: unescape(&cells[4]),
             rarity: unescape(&cells[5]),
+            colors: Vec::new(),
+            type_line: String::new(),
             finish: cells[6].parse().with_context(row)?,
             prices: Prices {
                 tcgplayer: parse_usd(&tcg),
@@ -431,6 +433,8 @@ mod tests {
             set_name: "Dominaria United".into(),
             collector_number: "107".into(),
             rarity: "mythic".into(),
+            colors: Vec::new(),
+            type_line: String::new(),
             finish,
             quantity: qty,
             prices: Prices {

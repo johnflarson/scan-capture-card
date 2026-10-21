@@ -52,6 +52,10 @@ struct ApiCard {
     set_name: String,
     collector_number: String,
     rarity: String,
+    /// Absent on double-faced cards; their faces carry colors.
+    colors: Option<Vec<String>>,
+    #[serde(default)]
+    type_line: String,
     #[serde(default)]
     finishes: Vec<String>,
     tcgplayer_id: Option<u64>,
@@ -64,6 +68,8 @@ struct ApiCard {
 #[derive(Deserialize)]
 struct ApiFace {
     image_uris: Option<ImageUris>,
+    #[serde(default)]
+    colors: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -96,9 +102,19 @@ struct SetEntry {
 impl From<ApiCard> for Card {
     fn from(c: ApiCard) -> Self {
         let parse = |s: Option<String>| s.and_then(|v| v.parse::<f64>().ok());
+        let faces = c.card_faces.unwrap_or_default();
+        // Double-faced cards keep colors per face: a card is every color of its faces.
+        let mut colors = c.colors.unwrap_or_else(|| {
+            faces
+                .iter()
+                .flat_map(|f| f.colors.iter().cloned())
+                .collect()
+        });
+        colors.sort_by_key(|c| "WUBRG".find(c.as_str()).unwrap_or(usize::MAX));
+        colors.dedup();
         // Double-faced cards keep images per face; use the front.
         let image_small = c.image_uris.and_then(|i| i.small).or_else(|| {
-            c.card_faces?
+            faces
                 .into_iter()
                 .find_map(|f| f.image_uris.and_then(|i| i.small))
         });
@@ -109,6 +125,8 @@ impl From<ApiCard> for Card {
             set_name: c.set_name,
             collector_number: c.collector_number,
             rarity: c.rarity,
+            colors,
+            type_line: c.type_line,
             finishes: c
                 .finishes
                 .iter()

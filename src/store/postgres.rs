@@ -15,7 +15,7 @@ use chrono::{DateTime, Local, NaiveDate, Utc};
 use postgres::{Client, GenericClient, Row};
 use postgres_native_tls::MakeTlsConnector;
 
-use super::CollectionStore;
+use super::{CollectionStore, ValueChange};
 use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
 use crate::scryfall::Scryfall;
 
@@ -318,6 +318,8 @@ impl PostgresStore {
                     set_name: card.map(|c| c.set_name.clone()).unwrap_or_default(),
                     collector_number: card.map(|c| c.collector_number.clone()).unwrap_or_default(),
                     rarity: card.map(|c| c.rarity.clone()).unwrap_or_default(),
+                    colors: card.map(|c| c.colors.clone()).unwrap_or_default(),
+                    type_line: card.map(|c| c.type_line.clone()).unwrap_or_default(),
                     scryfall_id: r.scryfall_id,
                     finish: r.finish,
                     quantity: r.quantity,
@@ -438,6 +440,11 @@ impl CollectionStore for PostgresStore {
                 .map(|c| c.collector_number.clone())
                 .unwrap_or_default(),
             rarity: card.as_ref().map(|c| c.rarity.clone()).unwrap_or_default(),
+            colors: card.as_ref().map(|c| c.colors.clone()).unwrap_or_default(),
+            type_line: card
+                .as_ref()
+                .map(|c| c.type_line.clone())
+                .unwrap_or_default(),
             finish,
             quantity: 0,
             prices: Prices::default(),
@@ -546,6 +553,34 @@ impl CollectionStore for PostgresStore {
                 cardkingdom_buylist: r.get(3),
             })
             .collect())
+    }
+
+    fn value_change(&self, since: NaiveDate) -> Result<Option<ValueChange>> {
+        let row = self.client.borrow_mut().query_one(
+            "select coalesce(sum(c.quantity * old.price_tcg), 0)::float8,
+                    coalesce(sum(c.quantity * cur.price_tcg), 0)::float8,
+                    count(*)
+             from collection c
+             join lateral (
+               select ph.price_tcg from price_history ph
+               where ph.scryfall_id = c.scryfall_id and ph.finish = c.finish
+                 and ph.price_date <= $1 and ph.price_tcg is not null
+               order by ph.price_date desc limit 1
+             ) old on true
+             join lateral (
+               select ph.price_tcg from price_history ph
+               where ph.scryfall_id = c.scryfall_id and ph.finish = c.finish
+                 and ph.price_tcg is not null
+               order by ph.price_date desc limit 1
+             ) cur on true",
+            &[&since],
+        )?;
+        let rows: i64 = row.get(2);
+        Ok((rows > 0).then(|| ValueChange {
+            before: row.get(0),
+            now: row.get(1),
+            rows: rows as u32,
+        }))
     }
 
     fn location(&self) -> String {
@@ -722,6 +757,8 @@ mod tests {
             set_name: "X".into(),
             collector_number: "1".into(),
             rarity: "common".into(),
+            colors: Vec::new(),
+            type_line: String::new(),
             finish,
             quantity: qty,
             prices: Prices {
@@ -800,6 +837,30 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+
+        // Value change: the 6 copies were $1.00 ten days ago and $1.50 now.
+        assert!(store.value_change(today).unwrap().is_some());
+        let ten_days_ago = today - chrono::Days::new(10);
+        assert!(
+            store.value_change(ten_days_ago).unwrap().is_none(),
+            "nothing was priced back then"
+        );
+        record_price(
+            &mut *store.client.borrow_mut(),
+            m11,
+            Finish::Nonfoil,
+            ten_days_ago,
+            &Prices {
+                tcgplayer: Some(1.0),
+                ..Prices::default()
+            },
+        )
+        .unwrap();
+        let change = store
+            .value_change(today - chrono::Days::new(7))
+            .unwrap()
+            .unwrap();
+        assert_eq!((change.before, change.now, change.rows), (6.0, 9.0, 1));
 
         let status = store.status().unwrap();
         assert_eq!(status.schema_version, 1);
