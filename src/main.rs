@@ -2,6 +2,7 @@ mod app;
 mod cache;
 mod camera;
 mod config;
+mod detect;
 mod engine;
 mod live;
 mod llm;
@@ -198,6 +199,14 @@ enum Command {
     /// Print raw OCR lines for an image (debugging recognition)
     #[command(hide = true)]
     OcrDump { image: PathBuf },
+    /// Find cards in a table photo without the LLM (debugging detection)
+    #[command(hide = true)]
+    DetectDump {
+        image: PathBuf,
+        /// Also save the photo with the boxes drawn on it
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Save a single camera frame to a file (to check framing / focus)
     Snapshot {
         #[arg(default_value = "snapshot.jpg")]
@@ -426,6 +435,35 @@ fn run() -> Result<()> {
         Command::Cameras => {
             for c in camera::list_cameras()? {
                 println!("{}: {}", c.index(), c.human_name());
+            }
+            Ok(())
+        }
+        Command::DetectDump { image, out } => {
+            let img = image::open(&image)
+                .with_context(|| format!("failed to open {}", image.display()))?
+                .to_rgb8();
+            let started = std::time::Instant::now();
+            let analysis = detect::analyse(&img);
+            let boxes = analysis.boxes;
+            println!(
+                "{} card(s) in {} ms",
+                boxes.len(),
+                started.elapsed().as_millis()
+            );
+            let (w, h) = img.dimensions();
+            let mut marked = img.clone();
+            for b in &boxes {
+                let r = pipeline::Rect::from_norm(*b, w, h, 0.0);
+                println!("  x={:<5} y={:<5} {}x{}", r.x, r.y, r.w, r.h);
+                engine::draw::outline(&mut marked, r, (w / 600).max(2), [40, 220, 120]);
+            }
+            if let Some(out) = out {
+                marked
+                    .save(&out)
+                    .with_context(|| format!("failed to write {}", out.display()))?;
+                let mask = out.with_extension("mask.png");
+                analysis.mask.save(&mask)?;
+                println!("saved {} and {}", out.display(), mask.display());
             }
             Ok(())
         }
