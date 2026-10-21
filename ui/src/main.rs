@@ -8,6 +8,7 @@ mod decks;
 mod filters;
 mod home;
 mod preview;
+mod review;
 
 fn main() {
     console_error_panic_hook::set_once();

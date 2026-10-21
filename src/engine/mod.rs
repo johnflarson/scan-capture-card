@@ -41,6 +41,9 @@ pub struct EngineOptions {
     pub finish: Finish,
     pub auto: bool,
     pub dry_run: bool,
+    /// Hold uncertain matches for review instead of saving them. Only for
+    /// front ends that show a review list (the web UI).
+    pub review_uncertain: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +57,14 @@ pub enum Command {
     SetFinish(Finish),
     SetAuto(bool),
     SetMode(Mode),
+    /// Save a held card as this printing and finish.
+    Accept {
+        seq: u64,
+        scryfall_id: String,
+        finish: Finish,
+    },
+    /// Drop a held card.
+    Discard(u64),
     Shutdown,
 }
 
@@ -68,6 +79,16 @@ impl From<mtg_scan_shared::ClientCommand> for Command {
             C::SetFinish { finish } => Command::SetFinish(finish.into()),
             C::SetAuto { auto } => Command::SetAuto(auto),
             C::SetMode { mode } => Command::SetMode(mode),
+            C::Accept {
+                seq,
+                scryfall_id,
+                finish,
+            } => Command::Accept {
+                seq,
+                scryfall_id,
+                finish: finish.into(),
+            },
+            C::Discard { seq } => Command::Discard(seq),
         }
     }
 }
@@ -105,7 +126,9 @@ pub enum EngineEvent {
         auto: bool,
         mode: Mode,
     },
-    /// A card was added (or priced, in a dry run). Boxed: events are cloned per subscriber.
+    /// A card was added, priced (dry run) or held for review, or a held card
+    /// was reviewed (same `seq`: replaces it). Boxed: events are cloned per
+    /// subscriber.
     Card(Box<CardView>),
     /// Undo removed these session cards.
     Undone {
@@ -188,6 +211,12 @@ enum Job {
     },
     Undo,
     Reset,
+    Accept {
+        seq: u64,
+        scryfall_id: String,
+        finish: Finish,
+    },
+    Discard(u64),
 }
 
 pub struct Engine {
@@ -242,10 +271,9 @@ impl Engine {
 
         let worker = {
             let (cfg, ctx) = (cfg.clone(), ctx.clone());
-            let dry_run = opts.dry_run;
             thread::Builder::new()
                 .name("worker".into())
-                .spawn(move || worker_loop(cfg, ctx, dry_run, job_rx))?
+                .spawn(move || worker_loop(cfg, ctx, opts, job_rx))?
         };
         Ok(Self {
             ctx,
@@ -411,6 +439,21 @@ fn capture_loop(
                     });
                     let _ = jobs.send(Job::Reset);
                 }
+                // Reviews queue behind any running scan.
+                Ok(Command::Accept {
+                    seq,
+                    scryfall_id,
+                    finish,
+                }) => {
+                    let _ = jobs.send(Job::Accept {
+                        seq,
+                        scryfall_id,
+                        finish,
+                    });
+                }
+                Ok(Command::Discard(seq)) => {
+                    let _ = jobs.send(Job::Discard(seq));
+                }
                 Ok(Command::SetFinish(f)) => ctx.update(|s| s.finish = f),
                 Ok(Command::SetAuto(a)) => ctx.update(|s| {
                     s.auto = a;
@@ -543,7 +586,8 @@ fn capture_loop(
 
 // ------------------------------------------------------------------ worker --
 
-fn worker_loop(cfg: Config, ctx: Ctx, dry_run: bool, jobs: Receiver<Job>) -> Result<()> {
+fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) -> Result<()> {
+    let dry_run = opts.dry_run;
     let mut pipeline = match Pipeline::new(&cfg) {
         Ok(p) => p,
         Err(e) => {
@@ -553,6 +597,7 @@ fn worker_loop(cfg: Config, ctx: Ctx, dry_run: bool, jobs: Receiver<Job>) -> Res
             return Err(e);
         }
     };
+    pipeline.hold_uncertain = opts.review_uncertain && !dry_run;
     // Warm the Card Kingdom cache now rather than during the first scan.
     let _ = pipeline.app.prices.cardkingdom.price("", Finish::Nonfoil);
     let recognizer = pipeline.recognizer.describe();
@@ -687,6 +732,56 @@ fn worker_loop(cfg: Config, ctx: Ctx, dry_run: bool, jobs: Receiver<Job>) -> Res
                 }
                 Err(e) => fail(&ctx, e.context("undo failed")),
             },
+            Job::Accept {
+                seq,
+                scryfall_id,
+                finish,
+            } => {
+                let Some(mut view) = held_card(&ctx, seq) else {
+                    ctx.emit(EngineEvent::Info("That card was already reviewed.".into()));
+                    continue;
+                };
+                match accept(&mut pipeline, &scryfall_id, finish) {
+                    Ok((card, entry)) => {
+                        let other = card.scryfall_id != view.scryfall_id;
+                        fill_card(&mut view, &card);
+                        view.outcome = CardOutcome::Added;
+                        view.finish = entry.finish.into();
+                        view.quantity = Some(entry.quantity);
+                        view.tcgplayer = entry.prices.tcgplayer;
+                        view.cardkingdom = entry.prices.cardkingdom;
+                        view.cardkingdom_buylist = entry.prices.cardkingdom_buylist;
+                        view.tcgplayer_url = entry.prices.tcgplayer_url.clone();
+                        view.cardkingdom_url = entry.prices.cardkingdom_url.clone();
+                        view.needs_review = false;
+                        view.note = Some(
+                            if other {
+                                "accepted as another printing"
+                            } else {
+                                "accepted after review"
+                            }
+                            .into(),
+                        );
+                        replace_card(&ctx, view);
+                        ctx.emit(EngineEvent::Info(format!(
+                            "Added {} ({} #{}, {}) · now x{}",
+                            entry.name,
+                            entry.set_code,
+                            entry.collector_number,
+                            entry.finish,
+                            entry.quantity
+                        )));
+                    }
+                    Err(e) => ctx.emit(EngineEvent::Error(format!("could not add it: {e:#}"))),
+                }
+            }
+            Job::Discard(seq) => match held_card(&ctx, seq) {
+                Some(mut view) => {
+                    view.outcome = CardOutcome::Discarded;
+                    replace_card(&ctx, view);
+                }
+                None => ctx.emit(EngineEvent::Info("That card was already reviewed.".into())),
+            },
             Job::Reset => {
                 pipeline.reset_memory();
                 let message = "memory cleared — every card will be added on the next pass";
@@ -714,6 +809,40 @@ fn record_card(ctx: &Ctx, r: &CardResult) -> Option<u64> {
     drop(s);
     ctx.emit(EngineEvent::Card(Box::new(view)));
     Some(seq)
+}
+
+/// The session card `seq` if it is still waiting for review.
+fn held_card(ctx: &Ctx, seq: u64) -> Option<CardView> {
+    ctx.lock()
+        .cards
+        .iter()
+        .find(|c| c.seq == seq && c.outcome == CardOutcome::Held && !c.undone)
+        .cloned()
+}
+
+/// Replace a session card (same seq) and tell the front ends.
+fn replace_card(ctx: &Ctx, view: CardView) {
+    let mut s = ctx.lock();
+    if let Some(c) = s.cards.iter_mut().find(|c| c.seq == view.seq) {
+        *c = view.clone();
+    }
+    drop(s);
+    ctx.emit(EngineEvent::Card(Box::new(view)));
+}
+
+/// Save a reviewed card as printing `scryfall_id` (priced now).
+fn accept(
+    pipeline: &mut Pipeline,
+    scryfall_id: &str,
+    finish: Finish,
+) -> Result<(crate::model::Card, crate::model::CollectionEntry)> {
+    let card = pipeline
+        .app
+        .scryfall
+        .by_id(scryfall_id)?
+        .ok_or_else(|| anyhow!("Scryfall doesn't know the printing {scryfall_id}"))?;
+    let entry = pipeline.app.add_card(&card, finish, 1)?;
+    Ok((card, entry))
 }
 
 fn mark_undone(ctx: &Ctx, seqs: &[u64]) {
@@ -769,6 +898,7 @@ pub fn outcome_color(o: &Outcome) -> Color {
     match o {
         Outcome::Added { id, .. } if id.quality.needs_review() => draw::REVIEW,
         Outcome::Added { .. } => draw::ADDED,
+        Outcome::Held { .. } => draw::REVIEW,
         Outcome::Priced { .. } => draw::PRICED,
         Outcome::Unchanged { .. } => draw::UNCHANGED,
         Outcome::Failed(_) => draw::FAILED,
@@ -789,7 +919,7 @@ pub fn summarize(results: &[CardResult], mode: Mode, auto: bool) -> String {
             None => "nothing scanned".into(),
         };
     }
-    let (mut new, mut same, mut failed) = (0, 0, 0);
+    let (mut new, mut same, mut failed, mut held) = (0, 0, 0, 0);
     let (mut tcg, mut ck) = (0.0, 0.0);
     for r in results {
         match &r.outcome {
@@ -803,12 +933,18 @@ pub fn summarize(results: &[CardResult], mode: Mode, auto: bool) -> String {
                 tcg += prices.tcgplayer.unwrap_or(0.0);
                 ck += prices.cardkingdom.unwrap_or(0.0);
             }
+            Outcome::Held { .. } => held += 1,
             Outcome::Unchanged { .. } => same += 1,
             Outcome::Failed(_) => failed += 1,
         }
     }
+    let review = if held > 0 {
+        format!(", {held} to review")
+    } else {
+        String::new()
+    };
     format!(
-        "{} cards: {new} new (TCG ${tcg:.2} · CK ${ck:.2}), {same} unchanged, {failed} unrecognised",
+        "{} cards: {new} new (TCG ${tcg:.2} · CK ${ck:.2}){review}, {same} unchanged, {failed} unrecognised",
         results.len()
     )
 }
@@ -824,18 +960,19 @@ fn card_view(r: &CardResult, seq: u64) -> Option<CardView> {
             &entry.prices,
         ),
         Outcome::Priced { id, finish, prices } => (id, CardOutcome::Priced, *finish, None, prices),
+        Outcome::Held { id, finish, prices } => (id, CardOutcome::Held, *finish, None, prices),
         Outcome::Unchanged { .. } | Outcome::Failed(_) => return None,
     };
-    let c = &id.card;
-    Some(CardView {
+    let mut view = CardView {
         seq,
         time: chrono::Local::now().format("%H:%M:%S").to_string(),
         outcome,
-        name: c.name.clone(),
-        set_code: c.set_code.to_uppercase(),
-        set_name: c.set_name.clone(),
-        number: c.collector_number.clone(),
-        rarity: c.rarity.clone(),
+        scryfall_id: String::new(),
+        name: String::new(),
+        set_code: String::new(),
+        set_name: String::new(),
+        number: String::new(),
+        rarity: String::new(),
         finish: finish.into(),
         quantity,
         tcgplayer: prices.tcgplayer,
@@ -843,22 +980,36 @@ fn card_view(r: &CardResult, seq: u64) -> Option<CardView> {
         cardkingdom_buylist: prices.cardkingdom_buylist,
         tcgplayer_url: prices.tcgplayer_url.clone(),
         cardkingdom_url: prices.cardkingdom_url.clone(),
-        scryfall_url: format!(
-            "https://scryfall.com/card/{}/{}",
-            c.set_code.to_lowercase(),
-            c.collector_number
-        ),
-        // Scryfall's "normal" size (488x680) is sharper than "small" in the UI.
-        image_url: c
-            .image_small
-            .as_ref()
-            .map(|u| u.replacen("/small/", "/normal/", 1)),
+        scryfall_url: String::new(),
+        image_url: None,
         method: id.method.to_string(),
         quality: id.quality.label().to_string(),
         needs_review: id.quality.needs_review(),
         note: id.note.clone(),
         undone: false,
-    })
+    };
+    fill_card(&mut view, &id.card);
+    Some(view)
+}
+
+/// The printing's details in a session card.
+fn fill_card(view: &mut CardView, c: &crate::model::Card) {
+    view.scryfall_id = c.scryfall_id.clone();
+    view.name = c.name.clone();
+    view.set_code = c.set_code.to_uppercase();
+    view.set_name = c.set_name.clone();
+    view.number = c.collector_number.clone();
+    view.rarity = c.rarity.clone();
+    view.scryfall_url = format!(
+        "https://scryfall.com/card/{}/{}",
+        c.set_code.to_lowercase(),
+        c.collector_number
+    );
+    // Scryfall's "normal" size (488x680) is sharper than "small" in the UI.
+    view.image_url = c
+        .image_small
+        .as_ref()
+        .map(|u| u.replacen("/small/", "/normal/", 1));
 }
 
 /// Start the engine with a friendlier error for the most common problem.

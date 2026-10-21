@@ -50,6 +50,16 @@ pub async fn printing(link: &str) -> Result<PrintingView, String> {
     json_or_message(resp).await
 }
 
+/// Every paper printing of a card, by exact name.
+pub async fn printings(name: &str) -> Result<Vec<PrintingView>, String> {
+    let resp = Request::get("/api/printings")
+        .query([("name", name)])
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
 pub async fn edit(edit: &RowEdit) -> Result<EditResult, String> {
     let resp = Request::post("/api/collection/edit")
         .json(edit)

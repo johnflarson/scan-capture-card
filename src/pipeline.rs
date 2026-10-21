@@ -82,6 +82,13 @@ pub enum Outcome {
         id: Box<Identification>,
         entry: Box<CollectionEntry>,
     },
+    /// Identified, but the printing is uncertain: priced and held for the
+    /// user to accept, correct or discard (see [`Pipeline::hold_uncertain`]).
+    Held {
+        id: Box<Identification>,
+        finish: Finish,
+        prices: Prices,
+    },
     /// Identified and priced only (dry run).
     Priced {
         id: Box<Identification>,
@@ -121,6 +128,13 @@ impl CardResult {
                 }
                 s
             }
+            Outcome::Held { id, finish, prices } => format!(
+                "? {}\n      {} · via {} ({}) — printing uncertain, waiting for review (not saved yet)",
+                describe_card(&id.card, *finish),
+                describe_prices(prices),
+                id.method,
+                id.quality.label(),
+            ),
             Outcome::Priced { id, finish, prices } => format!(
                 "• {}\n      {} · via {} ({}){}",
                 describe_card(&id.card, *finish),
@@ -156,6 +170,10 @@ pub struct Pipeline {
     /// The most recent scan was a single-card scan, so "Retry with LLM" may
     /// replace what it added (never a whole table pass).
     last_was_single: bool,
+    /// Hold matches whose printing is uncertain for review instead of saving
+    /// them (`[recognition] review_uncertain`; only front ends with a review
+    /// list turn it on).
+    pub hold_uncertain: bool,
 }
 
 impl Pipeline {
@@ -171,6 +189,7 @@ impl Pipeline {
             seen: Vec::new(),
             last_added: Vec::new(),
             last_was_single: false,
+            hold_uncertain: false,
         })
     }
 
@@ -192,6 +211,15 @@ impl Pipeline {
             let f = id.card.best_finish(finish);
             let prices = self.app.prices.price(&id.card, f);
             return Ok(Outcome::Priced {
+                id: Box::new(id),
+                finish: f,
+                prices,
+            });
+        }
+        if self.hold_uncertain && id.quality.needs_review() {
+            let f = id.card.best_finish(finish);
+            let prices = self.app.prices.price(&id.card, f);
+            return Ok(Outcome::Held {
                 id: Box::new(id),
                 finish: f,
                 prices,

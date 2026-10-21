@@ -63,6 +63,11 @@ pub enum CardOutcome {
     Added,
     /// Identified and priced only (dry run).
     Priced,
+    /// The printing is uncertain: waiting for the user to accept (possibly
+    /// another printing) or discard it. Not saved yet.
+    Held,
+    /// Held, then discarded by the user. Never saved.
+    Discarded,
 }
 
 /// A card identified during this session.
@@ -73,6 +78,8 @@ pub struct CardView {
     /// Local time, `HH:MM:SS`.
     pub time: String,
     pub outcome: CardOutcome,
+    /// The identified printing.
+    pub scryfall_id: String,
     pub name: String,
     pub set_code: String,
     pub set_name: String,
@@ -144,6 +151,17 @@ pub enum ClientCommand {
     },
     SetMode {
         mode: Mode,
+    },
+    /// Save a held card (seq from its [`CardView`]) as this printing and finish:
+    /// the identified one, or another the user picked.
+    Accept {
+        seq: u64,
+        scryfall_id: String,
+        finish: Finish,
+    },
+    /// Drop a held card without saving it.
+    Discard {
+        seq: u64,
     },
 }
 
@@ -706,6 +724,26 @@ mod tests {
         let m: ClientCommand =
             serde_json::from_str(r#"{"type":"set_mode","mode":"table"}"#).unwrap();
         assert_eq!(m, ClientCommand::SetMode { mode: Mode::Table });
+        let a: ClientCommand = serde_json::from_str(
+            r#"{"type":"accept","seq":7,"scryfall_id":"abc","finish":"foil"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            a,
+            ClientCommand::Accept {
+                seq: 7,
+                scryfall_id: "abc".into(),
+                finish: Finish::Foil
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&ClientCommand::Discard { seq: 3 }).unwrap(),
+            r#"{"type":"discard","seq":3}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&CardOutcome::Held).unwrap(),
+            r#""held""#
+        );
     }
 
     fn row(quantity: u32, tcg: Option<f64>) -> CollectionRow {

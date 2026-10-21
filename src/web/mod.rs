@@ -10,6 +10,7 @@
 //! | `POST /api/command` | `ClientCommand` JSON: scan now, undo, set mode, … |
 //! | `GET /api/collection` | the whole collection with prices and totals |
 //! | `GET /api/printing?q=` | a printing from a Scryfall link or ID (edit dialog) |
+//! | `GET /api/printings?name=` | every paper printing of a card (review: pick another printing) |
 //! | `POST /api/collection/edit` | `RowEdit` JSON: set quantity, remove, change printing/finish |
 //! | `POST /api/collection/add` | `AddCard` JSON: add copies of a printing by hand |
 //! | `GET /api/decks[?refresh=true]` | the configured Moxfield user's public decks |
@@ -143,6 +144,7 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/collection/edit", post(edit))
         .route("/api/collection/add", post(add))
         .route("/api/printing", get(printing))
+        .route("/api/printings", get(printings))
         .route("/api/decks", get(decks))
         .route("/api/decks/{id}", get(deck))
         .fallback(static_file)
@@ -399,6 +401,23 @@ async fn deck(Path(id): Path<String>) -> Response {
             .find(|d| d.id == id)
             .ok_or_else(|| anyhow!("{user} has no public deck {id}"))?;
         client.deck(&summary)
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+struct PrintingsQuery {
+    name: String,
+}
+
+async fn printings(Query(query): Query<PrintingsQuery>) -> Response {
+    blocking(StatusCode::BAD_REQUEST, move || {
+        let scryfall = Scryfall::new(app::http_client()?);
+        let cards = scryfall.printings(&query.name)?;
+        if cards.is_empty() {
+            bail!("Scryfall has no printings of {}", query.name);
+        }
+        Ok(cards.iter().map(printing_view).collect::<Vec<_>>())
     })
     .await
 }
