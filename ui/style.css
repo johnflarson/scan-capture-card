@@ -87,7 +87,8 @@ button, input { font: inherit; color: inherit; }
 }
 .tab:hover { background: var(--md-surface-container-high); }
 .tab.active { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
-.bar-end { margin-left: auto; display: flex; align-items: center; gap: 12px; color: var(--md-on-surface-variant); font-size: 13px; }
+.bar-end { margin-left: auto; display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--md-on-surface-variant); font-size: 13px; }
+.bar-location { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--md-error); display: inline-block; }
 .dot.on { background: var(--md-success); }
 
@@ -491,6 +492,57 @@ button.brand { cursor: pointer; font-size: 14px; }
   .card-list { max-height: none; }
   .metrics-row, .deck-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .deck-stats { grid-template-columns: 1fr; }
+}
+
+/* Phones (360-430 px): two-row app bar, one column, full-width controls.
+   Wide tables scroll inside their card; the page itself never scrolls sideways. */
+@media (max-width: 640px) {
+  .top-bar { flex-wrap: wrap; gap: 8px 12px; padding: 8px 12px; }
+  .tabs { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .tab { flex: 1 0 auto; padding: 8px 12px; }
+  .bar-location { display: none; }
+  .bar-end .chip { white-space: normal; }
+  main { padding: 12px 12px 32px; }
+  .card-header { padding: 12px 14px; flex-wrap: wrap; }
+  .card-header .chip { white-space: normal; }
+
+  .collection-head { gap: 8px; }
+  .collection-head h1 { font-size: 20px; }
+  .collection-head .location { flex-basis: 100%; overflow-wrap: anywhere; }
+  .search { min-width: 0; width: 100%; margin-left: 0; order: 5; }
+  .metrics-row, .deck-metrics, .home-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric .value { font-size: 17px; }
+  .filters { padding: 12px; }
+  .filter-label { width: 100%; }
+  th, td { padding: 8px 10px; }
+
+  .launch { grid-template-columns: 1fr; }
+  .launch-btn { flex-direction: row; align-items: center; padding: 16px; gap: 14px; }
+  .launch-icon { width: 48px; height: 48px; border-radius: 14px; }
+  .launch-title { font-size: 20px; }
+  .stats-grid { grid-template-columns: 1fr; padding: 12px; }
+  .stat-block.wide { grid-column: auto; }
+  .deck-home-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .deck-grid { grid-template-columns: minmax(0, 1fr); }
+  .deck-tile { min-width: 0; }
+  .segmented button { min-height: 40px; }
+
+  /* Scan page: camera on top, controls in thumb reach, then the cards. */
+  .controls { padding: 12px 14px; gap: 10px 14px; }
+  .actions { width: 100%; margin-left: 0; }
+  .actions .btn { flex: 1 1 auto; min-height: 44px; }
+  .summary { padding: 12px 14px; gap: 6px; }
+  .summary .metric .value { font-size: 16px; }
+  .tile { grid-template-columns: 60px minmax(0, 1fr); gap: 10px; }
+  .tile img, .tile .noimg { width: 60px; }
+  .prices { flex-wrap: wrap; gap: 4px 12px; }
+
+  .dialog { padding: 18px; border-radius: 20px; }
+  .dialog-card { grid-template-columns: 80px minmax(0, 1fr); }
+  .dialog-card img, .dialog-card .noimg { width: 80px; }
+  .field { grid-template-columns: 1fr; gap: 6px; }
+  .field .hint { grid-column: 1; margin-top: 0; }
+  .snackbar { left: 12px; right: 12px; bottom: 12px; max-width: none; }
 }
 
 /* Future light theme: override the role tokens only. */

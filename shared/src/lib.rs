@@ -679,7 +679,9 @@ pub struct EditResult {
 
 /// `$1.23`, or an em dash when unknown.
 pub fn usd(v: Option<f64>) -> String {
-    v.map(|p| format!("${p:.2}")).unwrap_or_else(|| "—".into())
+    // `+ 0.0` turns -0.0 (an empty f64 sum) into 0.0, so it isn't shown as "$-0.00".
+    v.map(|p| format!("${:.2}", p + 0.0))
+        .unwrap_or_else(|| "—".into())
 }
 
 #[cfg(test)]
@@ -990,5 +992,7 @@ mod tests {
     fn usd_formats_prices() {
         assert_eq!(usd(Some(1.5)), "$1.50");
         assert_eq!(usd(None), "—");
+        let empty: f64 = std::iter::empty::<f64>().sum();
+        assert_eq!(usd(Some(empty)), "$0.00");
     }
 }
