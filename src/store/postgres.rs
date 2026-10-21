@@ -3,7 +3,8 @@
 //! Only what isn't available online is stored: Scryfall ID, finish,
 //! quantity and dated prices. Names, sets, numbers and rarities are fetched
 //! from Scryfall in batches whenever rows are listed. Schema:
-//! `migrations/*.sql`, applied automatically on connect.
+//! `migrations/*.sql`, applied by `mtg-scan db migrate` with the admin
+//! (schema owner) account; the app itself runs as a least-privilege role.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -18,6 +19,10 @@ use super::CollectionStore;
 use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
 use crate::scryfall::Scryfall;
 
+fn latest_migration() -> i32 {
+    MIGRATIONS.iter().map(|m| m.0).max().unwrap_or(0)
+}
+
 /// (version, name, sql). Append new migrations; never edit applied ones.
 const MIGRATIONS: &[(i32, &str, &str)] =
     &[(1, "init", include_str!("../../migrations/0001_init.sql"))];
@@ -25,11 +30,25 @@ const MIGRATIONS: &[(i32, &str, &str)] =
 pub struct PostgresStore {
     client: RefCell<Client>,
     scryfall: Rc<Scryfall>,
+    schema: String,
     location: String,
+}
+
+/// Result of [`PostgresStore::setup_app_role`].
+pub enum RoleSetup {
+    /// Role exists (created now or before) and has been granted access.
+    Ready { created: bool },
+    /// The admin account may not create roles; a superuser must run `sql`
+    /// (it contains only a SCRAM verifier, never the password).
+    NeedsSuperuser { sql: String },
 }
 
 #[derive(Debug)]
 pub struct DbStatus {
+    pub server_version: String,
+    pub user: String,
+    /// Can create roles (needed by `db setup-app-user`).
+    pub can_create_roles: bool,
     pub schema_version: i32,
     pub printings: i64,
     pub cards: i64,
@@ -48,8 +67,47 @@ struct StoredRow {
 }
 
 impl PostgresStore {
-    /// Connect, select the schema and apply any pending migrations.
+    /// Day-to-day connection (normally the least-privilege app account).
+    /// Never changes the schema: fails if migrations are pending so they are
+    /// applied deliberately with `mtg-scan db migrate`.
     pub fn connect(config: postgres::Config, schema: &str, scryfall: Rc<Scryfall>) -> Result<Self> {
+        let store = Self::open(config, schema, scryfall)?;
+        let version = store.schema_version()?;
+        let latest = latest_migration();
+        if version < latest {
+            bail!(
+                "the database schema is at version {version} but this mtg-scan needs version \
+                 {latest}: run `mtg-scan db migrate`"
+            );
+        }
+        if version > latest {
+            bail!(
+                "the database schema (version {version}) is newer than this mtg-scan supports \
+                 (version {latest}): update mtg-scan"
+            );
+        }
+        Ok(store)
+    }
+
+    /// Admin connection (the schema owner): creates the schema and applies
+    /// pending migrations. Returns the store and the versions applied.
+    pub fn connect_admin(
+        config: postgres::Config,
+        schema: &str,
+        scryfall: Rc<Scryfall>,
+    ) -> Result<(Self, Vec<i32>)> {
+        let store = Self::open(config, schema, scryfall)?;
+        store
+            .client
+            .borrow_mut()
+            .batch_execute(&format!("create schema if not exists {schema}"))
+            .context("could not create the schema (is this the schema owner account?)")?;
+        let applied = store.migrate()?;
+        Ok((store, applied))
+    }
+
+    /// Connect and select the schema without any version checks.
+    pub fn open(config: postgres::Config, schema: &str, scryfall: Rc<Scryfall>) -> Result<Self> {
         validate_identifier(schema)?;
         let location = describe(&config, schema);
         let tls =
@@ -57,16 +115,76 @@ impl PostgresStore {
         let mut client = config
             .connect(tls)
             .with_context(|| format!("failed to connect to {location}"))?;
-        client.batch_execute(&format!(
-            "create schema if not exists {schema}; set search_path to {schema}"
-        ))?;
-        let store = Self {
+        client.batch_execute(&format!("set search_path to {schema}"))?;
+        Ok(Self {
             client: RefCell::new(client),
             scryfall,
+            schema: schema.to_string(),
             location,
-        };
-        store.migrate()?;
-        Ok(store)
+        })
+    }
+
+    /// Highest applied migration, or 0 for an empty schema.
+    pub fn schema_version(&self) -> Result<i32> {
+        let mut client = self.client.borrow_mut();
+        let exists: bool = client
+            .query_one("select to_regclass('schema_migrations') is not null", &[])?
+            .get(0);
+        if !exists {
+            return Ok(0);
+        }
+        Ok(client
+            .query_one(
+                "select coalesce(max(version), 0) from schema_migrations",
+                &[],
+            )?
+            .get(0))
+    }
+
+    /// Create (if allowed) a login role with only row-level access to this
+    /// schema: it can read and write cards and prices but not change tables.
+    /// Default privileges cover tables added by future migrations.
+    pub fn setup_app_role(&self, role: &str, password: &str) -> Result<RoleSetup> {
+        validate_identifier(role)?;
+        let schema = &self.schema;
+        let mut client = self.client.borrow_mut();
+        let row = client.query_one(
+            "select exists(select 1 from pg_roles where rolname = $1),
+                    (select rolsuper or rolcreaterole from pg_roles where rolname = current_user),
+                    quote_ident(current_database())",
+            &[&role],
+        )?;
+        let (exists, can_create, database): (bool, bool, String) =
+            (row.get(0), row.get(1), row.get(2));
+        // Send a SCRAM verifier rather than the password, so the password
+        // never appears in server logs or in the SQL shown to a superuser.
+        let verifier = postgres_protocol::password::scram_sha_256(password.as_bytes());
+        let create = format!(
+            "create role {role} login password '{}';",
+            verifier.replace('\'', "''")
+        );
+        let mut created = false;
+        if !exists {
+            if !can_create {
+                return Ok(RoleSetup::NeedsSuperuser { sql: create });
+            }
+            client.batch_execute(&create)?;
+            created = true;
+        }
+        client
+            .batch_execute(&format!(
+                "grant connect on database {database} to {role};
+                 grant usage on schema {schema} to {role};
+                 grant select, insert, update, delete on all tables in schema {schema} to {role};
+                 grant usage, select on all sequences in schema {schema} to {role};
+                 revoke insert, update, delete on {schema}.schema_migrations from {role};
+                 alter default privileges in schema {schema}
+                   grant select, insert, update, delete on tables to {role};
+                 alter default privileges in schema {schema}
+                   grant usage, select on sequences to {role};"
+            ))
+            .context("granting privileges failed (run this with the schema owner account)")?;
+        Ok(RoleSetup::Ready { created })
     }
 
     /// Apply pending migrations; returns the versions applied.
@@ -107,6 +225,9 @@ impl PostgresStore {
         let mut client = self.client.borrow_mut();
         let row = client.query_one(
             "select
+               current_setting('server_version'),
+               current_user::text,
+               (select rolsuper or rolcreaterole from pg_roles where rolname = current_user),
                (select coalesce(max(version), 0) from schema_migrations),
                (select count(*) from collection),
                (select coalesce(sum(quantity), 0)::bigint from collection),
@@ -115,11 +236,14 @@ impl PostgresStore {
             &[],
         )?;
         Ok(DbStatus {
-            schema_version: row.get(0),
-            printings: row.get(1),
-            cards: row.get(2),
-            price_points: row.get(3),
-            first_price_date: row.get(4),
+            server_version: row.get(0),
+            user: row.get(1),
+            can_create_roles: row.get(2),
+            schema_version: row.get(3),
+            printings: row.get(4),
+            cards: row.get(5),
+            price_points: row.get(6),
+            first_price_date: row.get(7),
         })
     }
 
@@ -491,9 +615,33 @@ mod tests {
             std::env::var("MTG_SCAN_TEST_DATABASE_URL").expect("set MTG_SCAN_TEST_DATABASE_URL");
         let scryfall = Rc::new(Scryfall::new(crate::app::http_client().unwrap()));
         let schema = format!("mtg_scan_test_{}", std::process::id());
-        let mut store = PostgresStore::connect(url.parse().unwrap(), &schema, scryfall).unwrap();
+        let config: postgres::Config = url.parse().unwrap();
+        // A fresh schema refuses day-to-day connections until migrated.
+        let err = PostgresStore::connect(config.clone(), &schema, scryfall.clone())
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("db migrate"));
+        let (admin, applied) =
+            PostgresStore::connect_admin(config.clone(), &schema, scryfall.clone()).unwrap();
+        assert_eq!(applied, vec![1]);
         // Applying again is a no-op.
-        assert!(store.migrate().unwrap().is_empty());
+        assert!(admin.migrate().unwrap().is_empty());
+
+        // Least-privilege app role: can write rows, cannot change the schema.
+        let role = format!("mtg_scan_test_app_{}", std::process::id());
+        let password = "test-Pa$$word#1";
+        assert!(matches!(
+            admin.setup_app_role(&role, password).unwrap(),
+            RoleSetup::Ready { created: true }
+        ));
+        let mut app_config = config.clone();
+        app_config.user(&role).password(password);
+        let mut store = PostgresStore::connect(app_config, &schema, scryfall).unwrap();
+        let ddl = store
+            .client
+            .borrow_mut()
+            .batch_execute("drop table price_history");
+        assert!(ddl.is_err(), "app role must not be able to drop tables");
 
         let today = Local::now().date_naive();
         let entry = |id: &str, finish, qty, tcg| CollectionEntry {
@@ -546,10 +694,13 @@ mod tests {
         assert_eq!(status.schema_version, 1);
         assert_eq!(status.cards, 4);
 
-        store
+        drop(store);
+        admin
             .client
             .borrow_mut()
-            .batch_execute(&format!("drop schema {schema} cascade"))
+            .batch_execute(&format!(
+                "drop schema {schema} cascade; drop owned by {role}; drop role {role};"
+            ))
             .unwrap();
     }
 }

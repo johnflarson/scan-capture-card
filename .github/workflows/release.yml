@@ -1,0 +1,63 @@
+# Continuous delivery: pushing a version tag (e.g. `git tag v0.3.0 && git push
+# origin v0.3.0`) builds the Windows release and publishes it on GitHub with
+# the matching CHANGELOG.md section as release notes.
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tag must match Cargo.toml version
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match Cargo.toml version $version"
+          }
+
+      - name: Release notes from CHANGELOG.md
+        shell: pwsh
+        run: |
+          $v = '${{ github.ref_name }}'.TrimStart('v')
+          $text = Get-Content CHANGELOG.md -Raw
+          $m = [regex]::Match($text, "(?ms)^## \[$([regex]::Escape($v))\][^\n]*\n(.*?)(?=^## \[|\z)")
+          if (-not $m.Success) { throw "CHANGELOG.md has no '## [$v]' section" }
+          $m.Groups[1].Value.Trim() | Out-File -Encoding utf8 notes.md
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "mtg-scan-${{ github.ref_name }}-windows-x64"
+          New-Item -ItemType Directory -Path $name | Out-Null
+          Copy-Item target/release/mtg-scan.exe, README.md, CHANGELOG.md, mtg-scan.example.toml, .env.example -Destination $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii "$name.zip.sha256"
+          "ASSET=$name" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --title "mtg-scan ${{ github.ref_name }}" --notes-file notes.md "${{ env.ASSET }}.zip" "${{ env.ASSET }}.zip.sha256"

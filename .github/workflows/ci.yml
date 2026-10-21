@@ -1,0 +1,61 @@
+# Continuous integration: every pull request (and every push to main) must
+# pass formatting, lint, unit tests and the PostgreSQL integration test.
+# Branch protection on `main` requires both jobs to succeed before merging.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the run in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, lint, unit tests
+    # Windows: the app uses Media Foundation and Windows OCR.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Lint (warnings are errors)
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Unit tests
+        run: cargo test --locked
+
+  integration:
+    name: PostgreSQL integration test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # GitHub's Windows runners ship PostgreSQL with the service stopped
+      # (superuser postgres / password root).
+      - name: Start PostgreSQL
+        shell: pwsh
+        run: |
+          $svc = Get-Service -Name 'postgresql*'
+          Set-Service -InputObject $svc -StartupType Automatic -Status Running
+          & "$env:PGBIN\pg_isready.exe" -h localhost -p 5432 -t 60
+      - name: Integration tests (ignored tests)
+        run: cargo test --locked -- --ignored
+        env:
+          MTG_SCAN_TEST_DATABASE_URL: postgres://postgres:root@localhost:5432/postgres

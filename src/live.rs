@@ -24,6 +24,7 @@ use crate::camera::{self, Webcam};
 use crate::config::Config;
 use crate::model::{Finish, format_usd};
 use crate::pipeline::{CardResult, Outcome, Pipeline, Rect};
+use crate::reprice::Repricer;
 use crate::store::totals;
 
 const CARD_ASPECT: f32 = 63.0 / 88.0;
@@ -72,6 +73,8 @@ enum Event {
         auto: bool,
     },
     Message(String),
+    /// Background progress (e.g. repricing): printed, doesn't touch the UI state.
+    Info(String),
     Failed(String),
 }
 
@@ -315,6 +318,7 @@ pub fn run(cfg: &Config, opts: LiveOptions) -> Result<()> {
                     status = msg.clone();
                     println!("{msg}");
                 }
+                Ok(Event::Info(msg)) => println!("{msg}"),
                 Ok(Event::Failed(msg)) => {
                     busy = false;
                     guide_color = COLOR_FAILED;
@@ -554,7 +558,57 @@ fn worker(cfg: Config, dry_run: bool, jobs: Receiver<Job>, events: Sender<Event>
         pipeline.recognizer.describe()
     )));
 
-    for job in jobs {
+    // Background reprice of rows not yet priced today, one row whenever no
+    // scan is waiting, so price history builds up while the app runs.
+    let today = chrono::Local::now().date_naive();
+    let mut repricer = match (dry_run, pipeline.app.store.entries()) {
+        (false, Ok(entries)) => Repricer::plan(&entries, today, false),
+        (true, _) => Repricer::plan(&[], today, false),
+        (false, Err(e)) => {
+            let _ = events.send(Event::Info(format!(
+                "  ! background reprice skipped: {e:#}"
+            )));
+            Repricer::plan(&[], today, false)
+        }
+    };
+    if !repricer.is_done() {
+        let _ = events.send(Event::Info(format!(
+            "Refreshing prices in the background: {} card(s) not priced today.",
+            repricer.total()
+        )));
+    }
+
+    loop {
+        let job = if repricer.is_done() {
+            match jobs.recv() {
+                Ok(job) => job,
+                Err(_) => break,
+            }
+        } else {
+            match jobs.try_recv() {
+                Ok(job) => job,
+                Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => {
+                    match repricer.step(&mut pipeline.app) {
+                        Ok(_) if repricer.is_done() => {
+                            let _ = events.send(Event::Info(format!(
+                                "Background price refresh finished ({} card(s)).",
+                                repricer.total()
+                            )));
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            let _ = events.send(Event::Info(format!(
+                                "  ! background price refresh stopped ({} left): {e:#}",
+                                repricer.remaining()
+                            )));
+                            repricer.abandon();
+                        }
+                    }
+                    continue;
+                }
+            }
+        };
         let event = match job {
             Job::Single {
                 image,
