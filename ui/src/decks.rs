@@ -14,6 +14,7 @@ use crate::api;
 use crate::app::{CollectionCache, Metric};
 use crate::filters::count;
 use crate::home::DecksIcon;
+use crate::preview::CardLink;
 
 /// The deck list and each deck's cards, shared by Home and Decks. After the
 /// list loads, every deck's cards are fetched one after another in the
@@ -696,7 +697,7 @@ fn DeckRow(line: CardOwnership) -> impl IntoView {
         <tr class:counted=c.board.counts()>
             <td class="num">{c.quantity}</td>
             <td>
-                <a href=c.scryfall_url() target="_blank" rel="noopener">{c.name.clone()}</a>
+                <CardLink id=c.scryfall_id.clone() name=c.name.clone() href=c.scryfall_url() />
             </td>
             <td title=c.type_line.clone()>{c.main_type()}</td>
             <td title=c.set_name.clone()>{c.set_code.clone()}</td>

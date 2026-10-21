@@ -8,6 +8,7 @@ use mtg_scan_shared::{
 
 use crate::app::{CollectionCache, Metric, Tab};
 use crate::decks::{DeckCache, DeckStatsBlock, ownership};
+use crate::preview::CardLink;
 
 #[component]
 pub fn HomePage(
@@ -343,9 +344,11 @@ fn CardList(rows: Vec<CollectionRow>, show_price: bool) -> impl IntoView {
                 <div class="mini">
                     <img src=thumb alt="" loading="lazy" />
                     <div class="mini-text">
-                        <a href=r.scryfall_url.clone() target="_blank" rel="noopener">
-                            {r.name.clone()}
-                        </a>
+                        <CardLink
+                            id=r.scryfall_id.clone()
+                            name=r.name.clone()
+                            href=r.scryfall_url.clone()
+                        />
                         <span class="muted">
                             {format!("{} #{}", r.set_code, r.number)}
                             {(r.finish != Finish::Nonfoil)

@@ -33,6 +33,7 @@ Edits to `src/*.rs` or `style.css` rebuild and reload the page.
 | `src/filters.rs` | Collection page filter chips, group-by and the type / rarity / color cells (matching and grouping live in `mtg_scan_shared::RowFilter` and `Facet`) |
 | `src/add.rs` | Collection page "Add card" dialog (Scryfall link, quantity, finish) |
 | `src/decks.rs` | Decks page (deck list, deck detail with ownership) and the shared `DeckCache`; ownership is `mtg_scan_shared::DeckOwnership` |
+| `src/preview.rs` | Card image on hovering a card name: `CardLink`, the `Preview` context and `PreviewLayer` |
 | `src/home.rs` | Home (landing) page: launch buttons and statistics (computed by `mtg_scan_shared::Stats`), Decks placeholder |
 | `src/api.rs` | JSON requests and the Server-Sent Events subscription |
 | `style.css` | Material 3 role tokens with the luminaldata palette (dark by default) |

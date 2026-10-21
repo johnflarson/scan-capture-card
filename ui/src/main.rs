@@ -7,6 +7,7 @@ mod app;
 mod decks;
 mod filters;
 mod home;
+mod preview;
 
 fn main() {
     console_error_panic_hook::set_once();

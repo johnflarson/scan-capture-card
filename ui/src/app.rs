@@ -14,6 +14,7 @@ use crate::filters::{
     CollectionPrefs, ColorCell, FilterBar, GroupHead, Item, RarityCell, TypeCell, items,
 };
 use crate::home::HomePage;
+use crate::preview::{CardLink, Preview, PreviewLayer};
 
 use crate::api;
 
@@ -97,6 +98,8 @@ pub fn App() -> impl IntoView {
     let epoch = RwSignal::new(0u32);
     let tab = RwSignal::new(Tab::Home);
     let cache = CollectionCache::new();
+    let preview = Preview::new();
+    provide_context(preview);
     let prefs = CollectionPrefs::new();
     let decks = DeckCache::new();
     let snack = RwSignal::new(None::<(String, bool, u64)>);
@@ -184,6 +187,7 @@ pub fn App() -> impl IntoView {
     }
 
     view! {
+        <PreviewLayer preview />
         <header class="top-bar">
             <button class="brand" title="Home" on:click=move |_| tab.set(Tab::Home)>
                 "MTG" <small>"scan"</small>
@@ -696,7 +700,7 @@ fn Row(
         <tr>
             <td class="num">{r.quantity}</td>
             <td>
-                <a href=r.scryfall_url.clone() target="_blank" rel="noopener">{r.name.clone()}</a>
+                <CardLink id=r.scryfall_id.clone() name=r.name.clone() href=r.scryfall_url.clone() />
             </td>
             <TypeCell row=r.clone() />
             <RarityCell row=r.clone() />
