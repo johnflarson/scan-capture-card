@@ -20,6 +20,10 @@ use crate::settings::SettingsPage;
 
 use crate::api;
 
+/// The Shuffling Tome icon, shown in the top bar; `index.html` also uses it
+/// as the favicon.
+const LOGO: &str = include_str!("../logo.svg");
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Home,
@@ -197,7 +201,8 @@ pub fn App() -> impl IntoView {
         <PreviewLayer preview />
         <header class="top-bar">
             <button class="brand" title="Home" on:click=move |_| tab.set(Tab::Home)>
-                "MTG" <small>"scan"</small>
+                <span class="brand-logo" aria-hidden="true" inner_html=LOGO></span>
+                <span class="brand-name">"The Shuffling " <b>"Tome"</b></span>
             </button>
             <nav class="tabs">
                 {Tab::ALL

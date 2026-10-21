@@ -76,6 +76,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 - Colors are shown as MTG mana symbols (Scryfall's symbol SVGs) instead of a colored dot and the
   color's name (#39): the Collection color column, filter chips and group headers, the Home color
   breakdown and deck colors. Multicolor is a gold coin; each symbol is named on hover.
+- The web UI is now "The Shuffling Tome" (#43): a new icon (an open book with three cards fanning
+  out of it) and wordmark replace the "MTG scan" text logo, and the icon is the browser-tab
+  favicon. The CLI keeps the name `mtg-scan`.
 - The camera loop, auto-scan and scan worker are now a shared scanning engine that the desktop
   window and the web UI both drive.
 - Table detection is more robust on messy scenes: capped model output, recovery of boxes from a

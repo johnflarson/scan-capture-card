@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#241812"/>
+  <g transform="translate(32 44)" stroke="#241812" stroke-width="1.5">
+    <g transform="rotate(-28)"><rect x="-8" y="-31" width="16" height="23" rx="2.5" fill="#4cbfbf"/><rect x="-5.5" y="-28.5" width="11" height="9" rx="1" fill="#1d4747" stroke="none"/></g>
+    <g transform="rotate(28)"><rect x="-8" y="-31" width="16" height="23" rx="2.5" fill="#e8961e"/><rect x="-5.5" y="-28.5" width="11" height="9" rx="1" fill="#5c3a08" stroke="none"/></g>
+    <g><rect x="-8" y="-33" width="16" height="23" rx="2.5" fill="#f5e6c8"/><rect x="-5.5" y="-30.5" width="11" height="9" rx="1" fill="#cdb99a" stroke="none"/></g>
+  </g>
+  <path d="M6 43C15 40 25 41 32 45C39 41 49 40 58 43V55C49 52 39 53 32 57C25 53 15 52 6 55Z" fill="#4cbfbf"/>
+  <path d="M9 40C17 37 26 38 32 42C38 38 47 37 55 40V52C47 49 38 50 32 54C26 50 17 49 9 52Z" fill="#f5e6c8"/>
+  <path d="M32 42V54" stroke="#6f5a48" stroke-width="1.2"/>
+  <path d="M13 44C19 42 25 43 29 45M13 48C19 46 25 47 29 49M35 45C39 43 45 42 51 44M35 49C39 47 45 46 51 48" fill="none" stroke="#cdb99a" stroke-width="1"/>
+</svg>
