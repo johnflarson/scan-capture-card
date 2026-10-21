@@ -24,6 +24,26 @@ pub trait CollectionStore {
         quantity: u32,
     ) -> Result<Option<CollectionEntry>>;
 
+    /// Set the number of copies of a row; 0 deletes it. Returns the row as
+    /// it now stands (quantity 0 when deleted), or `None` if it wasn't present.
+    fn set_quantity(
+        &mut self,
+        scryfall_id: &str,
+        finish: Finish,
+        quantity: u32,
+    ) -> Result<Option<CollectionEntry>>;
+
+    /// Move a row to another printing and/or finish: the row is replaced by
+    /// `to` (its quantity, prices and card details), merging into an existing
+    /// row for that printing + finish. Returns the resulting row, or `None`
+    /// if the original row wasn't present (then nothing changes).
+    fn relocate(
+        &mut self,
+        scryfall_id: &str,
+        finish: Finish,
+        to: CollectionEntry,
+    ) -> Result<Option<CollectionEntry>>;
+
     /// Record current prices for a printing + finish.
     fn update_prices(&mut self, scryfall_id: &str, finish: Finish, prices: Prices) -> Result<()>;
 

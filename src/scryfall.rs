@@ -238,6 +238,31 @@ impl Scryfall {
         self.get_card(&format!("/cards/{}", urlencode(id)), &[])
     }
 
+    /// The printing a pasted Scryfall link (or ID) points at.
+    pub fn by_ref(&self, card: &CardRef) -> Result<Option<Card>> {
+        match card {
+            CardRef::Id(id) => self.by_id(id),
+            CardRef::SetNumber {
+                set,
+                number,
+                lang: None,
+            } => self.by_set_number(set, number),
+            CardRef::SetNumber {
+                set,
+                number,
+                lang: Some(lang),
+            } => {
+                let path = format!(
+                    "/cards/{}/{}/{}",
+                    urlencode(set),
+                    urlencode(number),
+                    urlencode(lang)
+                );
+                self.get_card(&path, &[])
+            }
+        }
+    }
+
     /// Fuzzy name lookup, optionally restricted to a set.
     pub fn named_fuzzy(&self, name: &str, set: Option<&str>) -> Result<Option<Card>> {
         let mut query = vec![("fuzzy", name)];
@@ -332,6 +357,91 @@ impl Scryfall {
     }
 }
 
+/// A printing as written in a Scryfall link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardRef {
+    Id(String),
+    SetNumber {
+        set: String,
+        number: String,
+        lang: Option<String>,
+    },
+}
+
+/// Scryfall's language codes, as they appear in non-English card links.
+const LANGS: [&str; 17] = [
+    "en", "es", "fr", "de", "it", "pt", "ja", "ko", "ru", "zhs", "zht", "he", "la", "grc", "ar",
+    "sa", "ph",
+];
+
+/// Understand a pasted Scryfall link: a card page
+/// (`scryfall.com/card/{set}/{number}[/{lang}]/{name}`), an API link, an
+/// image link, or a bare Scryfall ID.
+pub fn parse_card_ref(text: &str) -> Option<CardRef> {
+    let text = text.trim();
+    // Any Scryfall ID in the text (API and image links carry one).
+    let uuid =
+        regex::Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+            .expect("valid regex");
+    if let Some(m) = uuid.find(text) {
+        return Some(CardRef::Id(m.as_str().to_lowercase()));
+    }
+    let path = text.split(['?', '#']).next().unwrap_or_default();
+    let path = path.split_once("://").map(|(_, rest)| rest).unwrap_or(path);
+    let (host, path) = path.split_once('/')?;
+    if !host.to_lowercase().ends_with("scryfall.com") {
+        return None;
+    }
+    let parts: Vec<String> = path
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(percent_decode)
+        .collect();
+    // scryfall.com/card/… or api.scryfall.com/cards/…
+    let rest = match parts.first().map(String::as_str) {
+        Some("card" | "cards") => &parts[1..],
+        _ => return None,
+    };
+    let [set, number, more @ ..] = rest else {
+        return None;
+    };
+    let lang = match more {
+        [lang, _name, ..] => Some(lang.to_lowercase()),
+        [only] if LANGS.contains(&only.to_lowercase().as_str()) => Some(only.to_lowercase()),
+        _ => None,
+    }
+    .filter(|l| l != "en");
+    Some(CardRef::SetNumber {
+        set: set.to_lowercase(),
+        number: number.clone(),
+        lang,
+    })
+}
+
+/// Decode `%XX` escapes (collector numbers can contain e.g. `★`).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -341,4 +451,74 @@ fn urlencode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set_number(set: &str, number: &str, lang: Option<&str>) -> Option<CardRef> {
+        Some(CardRef::SetNumber {
+            set: set.into(),
+            number: number.into(),
+            lang: lang.map(Into::into),
+        })
+    }
+
+    #[test]
+    fn parses_card_page_links() {
+        assert_eq!(
+            parse_card_ref("https://scryfall.com/card/fdn/123/llanowar-elves"),
+            set_number("fdn", "123", None)
+        );
+        assert_eq!(
+            parse_card_ref("  scryfall.com/card/FDN/123/llanowar-elves?utm=x#top "),
+            set_number("fdn", "123", None)
+        );
+        // Collector numbers with symbols are percent-encoded in links.
+        assert_eq!(
+            parse_card_ref("https://scryfall.com/card/sld/1%E2%98%85/sol-ring"),
+            set_number("sld", "1★", None)
+        );
+        assert_eq!(
+            parse_card_ref("https://scryfall.com/card/war/1/ja/karn-the-great-creator"),
+            set_number("war", "1", Some("ja"))
+        );
+        assert_eq!(
+            parse_card_ref("https://scryfall.com/card/war/1/en/karn"),
+            set_number("war", "1", None)
+        );
+        assert_eq!(
+            parse_card_ref("https://api.scryfall.com/cards/neo/12"),
+            set_number("neo", "12", None)
+        );
+    }
+
+    #[test]
+    fn parses_ids_and_id_links() {
+        let id = "0000579f-7b35-4ed3-b44c-db2a538066fe";
+        assert_eq!(parse_card_ref(id), Some(CardRef::Id(id.into())));
+        assert_eq!(
+            parse_card_ref(&format!(
+                "https://api.scryfall.com/cards/{}",
+                id.to_uppercase()
+            )),
+            Some(CardRef::Id(id.into()))
+        );
+        assert_eq!(
+            parse_card_ref(&format!(
+                "https://cards.scryfall.io/normal/front/0/0/{id}.jpg?1562894979"
+            )),
+            Some(CardRef::Id(id.into()))
+        );
+    }
+
+    #[test]
+    fn rejects_other_links() {
+        assert_eq!(parse_card_ref("https://moxfield.com/card/fdn/123"), None);
+        assert_eq!(parse_card_ref("https://scryfall.com/sets/fdn"), None);
+        assert_eq!(parse_card_ref("https://scryfall.com/card/fdn"), None);
+        assert_eq!(parse_card_ref("llanowar elves"), None);
+        assert_eq!(parse_card_ref(""), None);
+    }
 }

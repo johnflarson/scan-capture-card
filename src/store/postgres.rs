@@ -446,6 +446,77 @@ impl CollectionStore for PostgresStore {
         }))
     }
 
+    fn set_quantity(
+        &mut self,
+        scryfall_id: &str,
+        finish: Finish,
+        quantity: u32,
+    ) -> Result<Option<CollectionEntry>> {
+        if quantity == 0 {
+            return self.remove(scryfall_id, finish, i32::MAX as u32);
+        }
+        let updated = self.client.borrow_mut().execute(
+            "update collection set quantity = $3, updated_at = now()
+             where scryfall_id = $1::text::uuid and finish = $2",
+            &[&scryfall_id, &finish.as_str(), &(quantity as i32)],
+        )?;
+        if updated == 0 {
+            return Ok(None);
+        }
+        let rows = self.stored_rows(Some((scryfall_id, finish)))?;
+        Ok(self.hydrate(rows).into_iter().next())
+    }
+
+    fn relocate(
+        &mut self,
+        scryfall_id: &str,
+        finish: Finish,
+        to: CollectionEntry,
+    ) -> Result<Option<CollectionEntry>> {
+        if to.quantity == 0 {
+            bail!("a moved row needs at least one copy");
+        }
+        let mut client = self.client.borrow_mut();
+        let mut tx = client.transaction()?;
+        let Some(old) = tx.query_opt(
+            "delete from collection where scryfall_id = $1::text::uuid and finish = $2
+             returning added_at",
+            &[&scryfall_id, &finish.as_str()],
+        )?
+        else {
+            return Ok(None);
+        };
+        let first_added: DateTime<Utc> = old.get(0);
+        // Merge into the target row if it exists, keeping the earliest add date.
+        let row = tx.query_one(
+            "insert into collection (scryfall_id, finish, quantity, added_at)
+             values ($1::text::uuid, $2, $3, $4)
+             on conflict (scryfall_id, finish)
+             do update set quantity = collection.quantity + excluded.quantity,
+                           added_at = least(collection.added_at, excluded.added_at),
+                           updated_at = now()
+             returning quantity, added_at",
+            &[
+                &to.scryfall_id,
+                &to.finish.as_str(),
+                &(to.quantity as i32),
+                &first_added,
+            ],
+        )?;
+        let date = to
+            .price_updated
+            .unwrap_or_else(|| Local::now().date_naive());
+        record_price(&mut tx, &to.scryfall_id, to.finish, date, &to.prices)?;
+        tx.commit()?;
+        let quantity: i32 = row.get(0);
+        let added: DateTime<Utc> = row.get(1);
+        Ok(Some(CollectionEntry {
+            quantity: quantity as u32,
+            added: added.with_timezone(&Local).date_naive(),
+            ..to
+        }))
+    }
+
     fn update_prices(&mut self, scryfall_id: &str, finish: Finish, prices: Prices) -> Result<()> {
         let mut client = self.client.borrow_mut();
         record_price(
@@ -690,9 +761,49 @@ mod tests {
         assert_eq!(store.price_history(a25, Finish::Foil).unwrap().len(), 1);
         assert!(store.remove(a25, Finish::Foil, 1).unwrap().is_none());
 
+        // Edits: set a quantity, change the finish, then merge into a row that exists.
+        let set = store
+            .set_quantity(m11, Finish::Nonfoil, 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!((set.quantity, set.name.as_str()), (5, "Lightning Bolt"));
+        assert!(
+            store
+                .set_quantity(a25, Finish::Etched, 2)
+                .unwrap()
+                .is_none()
+        );
+        let refinished = store
+            .relocate(a25, Finish::Nonfoil, entry(a25, Finish::Foil, 1, 6.0))
+            .unwrap()
+            .unwrap();
+        assert_eq!((refinished.finish, refinished.quantity), (Finish::Foil, 1));
+        assert_eq!(
+            store
+                .price_history(a25, Finish::Foil)
+                .unwrap()
+                .last()
+                .unwrap()
+                .tcgplayer,
+            Some(6.0),
+            "the moved row is priced"
+        );
+        let merged = store
+            .relocate(a25, Finish::Foil, entry(m11, Finish::Nonfoil, 1, 1.5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged.quantity, 6);
+        assert_eq!(store.entries().unwrap().len(), 1);
+        assert!(
+            store
+                .relocate(a25, Finish::Foil, entry(m11, Finish::Nonfoil, 1, 1.5))
+                .unwrap()
+                .is_none()
+        );
+
         let status = store.status().unwrap();
         assert_eq!(status.schema_version, 1);
-        assert_eq!(status.cards, 4);
+        assert_eq!(status.cards, 6);
 
         drop(store);
         admin

@@ -4,8 +4,8 @@ use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    CardOutcome, CardView, ClientCommand, CollectionRow, CollectionView, Finish, Mode, ServerEvent,
-    StateView, usd,
+    CardOutcome, CardView, ClientCommand, CollectionRow, CollectionView, EditResult, Finish, Mode,
+    PrintingView, RowEdit, ServerEvent, StateView, Totals, usd,
 };
 
 use crate::api;
@@ -129,7 +129,7 @@ pub fn App() -> impl IntoView {
         <main>
             {move || match tab.get() {
                 Tab::Live => view! { <LivePage state cards send epoch /> }.into_any(),
-                Tab::Collection => view! { <CollectionPage notify /> }.into_any(),
+                Tab::Collection => view! { <CollectionPage state notify /> }.into_any(),
             }}
         </main>
         {move || {
@@ -390,10 +390,43 @@ fn PriceLink(
 }
 
 #[component]
-fn CollectionPage(notify: Callback<(String, bool)>) -> impl IntoView {
+fn CollectionPage(
+    state: RwSignal<Option<StateView>>,
+    notify: Callback<(String, bool)>,
+) -> impl IntoView {
     let data = RwSignal::new(None::<CollectionView>);
     let loading = RwSignal::new(false);
     let filter = RwSignal::new(String::new());
+    let editing = RwSignal::new(None::<CollectionRow>);
+    let dry_run = Signal::derive(move || state.get().is_some_and(|s| s.dry_run));
+
+    let on_edit = Callback::new(move |row: CollectionRow| editing.set(Some(row)));
+    let on_close = Callback::new(move |()| editing.set(None));
+    // Patch the table in place rather than reloading the whole collection.
+    let on_saved = Callback::new(move |(original, result): (CollectionRow, EditResult)| {
+        data.update(|d| {
+            let Some(d) = d else { return };
+            d.rows.retain(|r| {
+                !(r.scryfall_id == original.scryfall_id && r.finish == original.finish)
+            });
+            if let Some(row) = result.row {
+                // Moved onto a row that already existed: that row now holds both.
+                d.rows
+                    .retain(|r| !(r.scryfall_id == row.scryfall_id && r.finish == row.finish));
+                d.rows.push(row);
+                d.rows.sort_by(|a, b| {
+                    a.name
+                        .to_lowercase()
+                        .cmp(&b.name.to_lowercase())
+                        .then_with(|| a.set_code.cmp(&b.set_code))
+                        .then_with(|| a.number.cmp(&b.number))
+                });
+            }
+            d.totals = Totals::of(&d.rows);
+        });
+        editing.set(None);
+        notify.run((result.message, false));
+    });
 
     let load = move || {
         loading.set(true);
@@ -471,6 +504,7 @@ fn CollectionPage(notify: Callback<(String, bool)>) -> impl IntoView {
                             <th class="num">"Card Kingdom"</th>
                             <th class="num">"CK buylist"</th>
                             <th>"Priced"</th>
+                            <th></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -486,7 +520,7 @@ fn CollectionPage(notify: Callback<(String, bool)>) -> impl IntoView {
                                     r.cardkingdom,
                                 )
                             }
-                            children=|row| view! { <Row row /> }
+                            children=move |row| view! { <Row row on_edit locked=dry_run /> }
                         />
                     </tbody>
                 </table>
@@ -495,6 +529,7 @@ fn CollectionPage(notify: Callback<(String, bool)>) -> impl IntoView {
                 <div class="empty">"No cards yet. Scan some on the Live tab."</div>
             </Show>
         </section>
+        {move || editing.get().map(|row| view! { <EditDialog row on_close on_saved /> })}
     }
 }
 
@@ -509,8 +544,14 @@ fn Metric(label: &'static str, value: String, kind: &'static str) -> impl IntoVi
 }
 
 #[component]
-fn Row(row: CollectionRow) -> impl IntoView {
+fn Row(
+    row: CollectionRow,
+    on_edit: Callback<CollectionRow>,
+    /// Dry run: the collection can't be changed.
+    locked: Signal<bool>,
+) -> impl IntoView {
     let r = row;
+    let edit_row = r.clone();
     let cell = |kind: &'static str, price: Option<f64>, url: Option<String>| match url {
         Some(href) => view! {
             <td class=format!("num {kind}")>
@@ -533,6 +574,333 @@ fn Row(row: CollectionRow) -> impl IntoView {
             {cell("ck", r.cardkingdom, r.cardkingdom_url.clone())}
             <td class="num">{usd(r.cardkingdom_buylist)}</td>
             <td>{r.priced.clone().unwrap_or_default()}</td>
+            <td class="row-actions">
+                <button
+                    class="icon-btn"
+                    disabled=move || locked.get()
+                    title=move || {
+                        if locked.get() {
+                            "Dry run: editing is off"
+                        } else {
+                            "Edit quantity, finish or printing"
+                        }
+                    }
+                    aria-label="Edit"
+                    on:click=move |_| on_edit.run(edit_row.clone())
+                >
+                    <PencilIcon />
+                </button>
+            </td>
         </tr>
+    }
+}
+
+#[component]
+fn PencilIcon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm17.71-10.21a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
+        </svg>
+    }
+}
+
+/// Edit one collection row: quantity, finish, printing (from a pasted
+/// Scryfall link), or remove it.
+#[component]
+fn EditDialog(
+    row: CollectionRow,
+    on_close: Callback<()>,
+    on_saved: Callback<(CollectionRow, EditResult)>,
+) -> impl IntoView {
+    let original = StoredValue::new(row.clone());
+    let quantity = RwSignal::new(row.quantity);
+    let finish = RwSignal::new(row.finish);
+    // The row's own printing (image, finishes), loaded when the dialog opens.
+    let current = RwSignal::new(None::<PrintingView>);
+    // A different printing picked by pasting a Scryfall link.
+    let target = RwSignal::new(None::<PrintingView>);
+    let link = RwSignal::new(String::new());
+    let looking_up = RwSignal::new(false);
+    let saving = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let confirm_remove = RwSignal::new(false);
+
+    {
+        let id = row.scryfall_id.clone();
+        spawn_local(async move {
+            if let Ok(p) = api::printing(&id).await {
+                // The dialog may have been closed meanwhile.
+                let _ = current.try_set(Some(p));
+            }
+        });
+    }
+
+    let shown = move || target.get().or_else(|| current.get());
+    let available = move |f: Finish| {
+        shown()
+            .map(|p| p.finishes.is_empty() || p.finishes.contains(&f))
+            .unwrap_or(true)
+    };
+    let changed = move || {
+        let o = original.get_value();
+        quantity.get() != o.quantity || finish.get() != o.finish || target.get().is_some()
+    };
+
+    let look_up = move || {
+        let text = link.get_untracked().trim().to_string();
+        error.set(None);
+        if text.is_empty() {
+            target.set(None);
+            return;
+        }
+        looking_up.set(true);
+        spawn_local(async move {
+            match api::printing(&text).await {
+                Ok(p) => {
+                    // Keep the finish if the new printing has it.
+                    if let Some(&first) = p.finishes.first()
+                        && !p.finishes.contains(&finish.get_untracked())
+                    {
+                        let _ = finish.try_set(first);
+                    }
+                    let same = p.scryfall_id == original.get_value().scryfall_id;
+                    let _ = target.try_set((!same).then_some(p));
+                }
+                Err(e) => {
+                    let _ = target.try_set(None);
+                    let _ = error.try_set(Some(e));
+                }
+            }
+            let _ = looking_up.try_set(false);
+        });
+    };
+
+    let submit = move |copies: u32| {
+        let o = original.get_value();
+        let edit = RowEdit {
+            to_scryfall_id: target
+                .get_untracked()
+                .map(|p| p.scryfall_id)
+                .unwrap_or_else(|| o.scryfall_id.clone()),
+            to_finish: finish.get_untracked(),
+            scryfall_id: o.scryfall_id.clone(),
+            finish: o.finish,
+            quantity: copies,
+        };
+        saving.set(true);
+        error.set(None);
+        spawn_local(async move {
+            match api::edit(&edit).await {
+                Ok(result) => {
+                    let _ = saving.try_set(false);
+                    on_saved.run((o, result));
+                }
+                Err(e) => {
+                    let _ = saving.try_set(false);
+                    let _ = error.try_set(Some(e));
+                }
+            }
+        });
+    };
+
+    view! {
+        <div
+            class="scrim"
+            on:click=move |_| on_close.run(())
+            on:keydown=move |ev| {
+                if ev.key() == "Escape" {
+                    on_close.run(());
+                }
+            }
+        >
+            <div
+                class="dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="edit-title"
+                on:click=|ev| ev.stop_propagation()
+            >
+                <h2 id="edit-title">"Edit card"</h2>
+                <div class="dialog-card">
+                    {move || match shown().and_then(|p| p.image_url) {
+                        Some(src) => view! { <img src=src alt="" /> }.into_any(),
+                        None => view! { <div class="noimg"></div> }.into_any(),
+                    }}
+                    <div>
+                        {move || {
+                            let o = original.get_value();
+                            let (name, url, set_line) = match shown() {
+                                Some(p) => (
+                                    p.name,
+                                    p.scryfall_url,
+                                    format!("{} · {} #{} · {}", p.set_name, p.set_code, p.number, p.rarity),
+                                ),
+                                None => (
+                                    o.name,
+                                    o.scryfall_url,
+                                    format!("{} · {} #{} · {}", o.set_name, o.set_code, o.number, o.rarity),
+                                ),
+                            };
+                            view! {
+                                <a class="name" href=url target="_blank" rel="noopener">{name}</a>
+                                <div class="set">{set_line}</div>
+                            }
+                        }}
+                        {move || {
+                            target
+                                .get()
+                                .map(|_| {
+                                    let o = original.get_value();
+                                    view! {
+                                        <span class="chip warning">
+                                            {format!("New printing (was {} #{})", o.set_code, o.number)}
+                                        </span>
+                                    }
+                                })
+                        }}
+                    </div>
+                </div>
+
+                <div class="field">
+                    <span class="control-label">"Quantity"</span>
+                    <div class="stepper">
+                        <button
+                            class="icon-btn"
+                            aria-label="One fewer"
+                            disabled=move || quantity.get() <= 1
+                            on:click=move |_| quantity.update(|q| *q = q.saturating_sub(1).max(1))
+                        >
+                            "−"
+                        </button>
+                        <input
+                            class="text-input"
+                            type="number"
+                            min="1"
+                            prop:value=move || quantity.get().to_string()
+                            on:input=move |ev| {
+                                quantity.set(event_target_value(&ev).trim().parse().unwrap_or(0))
+                            }
+                        />
+                        <button
+                            class="icon-btn"
+                            aria-label="One more"
+                            on:click=move |_| quantity.update(|q| *q += 1)
+                        >
+                            "+"
+                        </button>
+                    </div>
+                    <Show when=move || quantity.get() == 0>
+                        <span class="hint">"To delete the row, use Remove."</span>
+                    </Show>
+                </div>
+
+                <div class="field">
+                    <span class="control-label">"Finish"</span>
+                    <div class="segmented">
+                        {Finish::ALL
+                            .into_iter()
+                            .map(|f| {
+                                view! {
+                                    <button
+                                        class:selected=move || finish.get() == f
+                                        disabled=move || !available(f)
+                                        title=move || {
+                                            if available(f) { "" } else { "Not printed in this finish" }
+                                        }
+                                        on:click=move |_| finish.set(f)
+                                    >
+                                        {f.label()}
+                                    </button>
+                                }
+                            })
+                            .collect_view()}
+                    </div>
+                </div>
+
+                <div class="field">
+                    <span class="control-label">"Printing"</span>
+                    <div class="link-row">
+                        <input
+                            class="text-input"
+                            type="url"
+                            placeholder="Paste a Scryfall link to change the printing"
+                            prop:value=move || link.get()
+                            on:input=move |ev| link.set(event_target_value(&ev))
+                            on:change=move |_| look_up()
+                            on:keydown=move |ev| {
+                                if ev.key() == "Enter" {
+                                    look_up();
+                                }
+                            }
+                        />
+                        <Show
+                            when=move || target.get().is_some()
+                            fallback=move || {
+                                view! {
+                                    <button
+                                        class="btn tonal"
+                                        disabled=move || looking_up.get()
+                                        on:click=move |_| look_up()
+                                    >
+                                        {move || if looking_up.get() { "Looking…" } else { "Look up" }}
+                                    </button>
+                                }
+                            }
+                        >
+                            <button
+                                class="btn text"
+                                title="Keep the current printing"
+                                on:click=move |_| {
+                                    target.set(None);
+                                    link.set(String::new());
+                                    finish.set(original.get_value().finish);
+                                }
+                            >
+                                "Keep current"
+                            </button>
+                        </Show>
+                    </div>
+                </div>
+
+                {move || error.get().map(|e| view! { <p class="error-text" role="alert">{e}</p> })}
+
+                <div class="dialog-actions">
+                    <button
+                        class="btn danger"
+                        class:confirm=move || confirm_remove.get()
+                        disabled=move || saving.get()
+                        on:click=move |_| {
+                            if confirm_remove.get_untracked() {
+                                submit(0);
+                            } else {
+                                confirm_remove.set(true);
+                            }
+                        }
+                    >
+                        {move || {
+                            if confirm_remove.get() {
+                                let n = original.get_value().quantity;
+                                format!("Remove {n} {}?", if n == 1 { "copy" } else { "copies" })
+                            } else {
+                                "Remove".to_string()
+                            }
+                        }}
+                    </button>
+                    <span class="spacer"></span>
+                    <button class="btn text" on:click=move |_| on_close.run(())>
+                        "Cancel"
+                    </button>
+                    <button
+                        class="btn filled"
+                        disabled=move || {
+                            saving.get() || looking_up.get() || quantity.get() == 0 || !changed()
+                        }
+                        on:click=move |_| submit(quantity.get_untracked())
+                    >
+                        {move || if saving.get() { "Saving…" } else { "Save" }}
+                    </button>
+                </div>
+            </div>
+        </div>
     }
 }

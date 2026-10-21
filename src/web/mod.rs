@@ -9,6 +9,8 @@
 //! | `GET /api/stream.mjpg` | live camera preview (MJPEG) |
 //! | `POST /api/command` | `ClientCommand` JSON: scan now, undo, set mode, … |
 //! | `GET /api/collection` | the whole collection with prices and totals |
+//! | `GET /api/printing?q=` | a printing from a Scryfall link or ID (edit dialog) |
+//! | `POST /api/collection/edit` | `RowEdit` JSON: set quantity, remove, change printing/finish |
 //! | everything else | the embedded UI |
 
 use std::convert::Infallible;
@@ -16,9 +18,9 @@ use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -26,15 +28,18 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{Stream, StreamExt};
 use mtg_scan_shared::{
-    ClientCommand, CollectionRow, CollectionView, ServerEvent, SessionView, Totals,
+    ClientCommand, CollectionRow, CollectionView, EditResult, PrintingView, RowEdit, ServerEvent,
+    SessionView, Totals,
 };
 use tokio::sync::watch;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::app::App;
+use crate::app::{self, App};
 use crate::config::Config;
 use crate::engine::{self, Engine, EngineEvent, EngineOptions};
 use crate::live;
+use crate::model::{Card, CollectionEntry, Finish};
+use crate::scryfall::{self, Scryfall};
 
 /// Cap the preview stream at ~15 frames per second per viewer.
 const STREAM_FRAME_INTERVAL: Duration = Duration::from_millis(66);
@@ -110,6 +115,8 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/stream.mjpg", get(stream))
         .route("/api/command", post(command))
         .route("/api/collection", get(collection))
+        .route("/api/collection/edit", post(edit))
+        .route("/api/printing", get(printing))
         .fallback(static_file)
         .with_state(state);
 
@@ -230,14 +237,162 @@ async fn stream(State(st): State<Arc<AppState>>) -> Response {
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
+/// Run blocking work (the store and Scryfall clients are blocking) off the
+/// async threads. Errors become `error_status` with the message as text.
+async fn blocking<T: serde::Serialize + Send + 'static>(
+    error_status: StatusCode,
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Response {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(e)) => (error_status, format!("{e:#}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 async fn collection(State(st): State<Arc<AppState>>) -> Response {
     let cfg = st.cfg.clone();
-    // The store and Scryfall clients are blocking; keep them off the async threads.
-    let result = tokio::task::spawn_blocking(move || collection_view(&cfg)).await;
-    match result {
-        Ok(Ok(view)) => Json(view).into_response(),
-        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
+        collection_view(&cfg)
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+struct PrintingQuery {
+    q: String,
+}
+
+async fn printing(Query(query): Query<PrintingQuery>) -> Response {
+    blocking(StatusCode::BAD_REQUEST, move || find_printing(&query.q)).await
+}
+
+async fn edit(State(st): State<Arc<AppState>>, Json(edit): Json<RowEdit>) -> Response {
+    if st.engine.view().dry_run {
+        return (
+            StatusCode::CONFLICT,
+            "Dry run: the collection can't be changed. Restart without --dry-run to edit it.",
+        )
+            .into_response();
+    }
+    let cfg = st.cfg.clone();
+    blocking(StatusCode::BAD_REQUEST, move || edit_row(&cfg, edit)).await
+}
+
+fn find_printing(link: &str) -> Result<PrintingView> {
+    let Some(card_ref) = scryfall::parse_card_ref(link) else {
+        bail!("Paste a Scryfall card link, e.g. https://scryfall.com/card/fdn/123/...");
+    };
+    let scryfall = Scryfall::new(app::http_client()?);
+    let card = scryfall
+        .by_ref(&card_ref)?
+        .ok_or_else(|| anyhow!("Scryfall has no card at that link"))?;
+    Ok(printing_view(&card))
+}
+
+fn printing_view(card: &Card) -> PrintingView {
+    PrintingView {
+        scryfall_url: format!(
+            "https://scryfall.com/card/{}/{}",
+            card.set_code.to_lowercase(),
+            card.collector_number
+        ),
+        scryfall_id: card.scryfall_id.clone(),
+        name: card.name.clone(),
+        set_code: card.set_code.to_uppercase(),
+        set_name: card.set_name.clone(),
+        number: card.collector_number.clone(),
+        rarity: card.rarity.clone(),
+        finishes: card.finishes.iter().map(|&f| f.into()).collect(),
+        image_url: card
+            .image_small
+            .as_ref()
+            .map(|u| u.replace("/small/", "/normal/")),
+    }
+}
+
+/// Apply a [`RowEdit`]: remove, set the quantity, or move the row to another
+/// printing / finish (priced afresh, merged into a row that already exists).
+fn edit_row(cfg: &Config, edit: RowEdit) -> Result<EditResult> {
+    const GONE: &str = "That row is no longer in the collection. Refresh the page.";
+    let mut app = App::new(cfg)?;
+    let finish: Finish = edit.finish.into();
+    let to_finish: Finish = edit.to_finish.into();
+
+    if edit.quantity == 0 {
+        let gone = app
+            .store
+            .set_quantity(&edit.scryfall_id, finish, 0)?
+            .ok_or_else(|| anyhow!(GONE))?;
+        return Ok(EditResult {
+            message: format!("Removed {} ({finish}) from the collection", gone.name),
+            row: None,
+        });
+    }
+
+    if edit.to_scryfall_id == edit.scryfall_id && to_finish == finish {
+        let row = app
+            .store
+            .set_quantity(&edit.scryfall_id, finish, edit.quantity)?
+            .ok_or_else(|| anyhow!(GONE))?;
+        return Ok(EditResult {
+            message: format!("{} ({finish}): {} owned", row.name, row.quantity),
+            row: Some(collection_row(row)),
+        });
+    }
+
+    let card = app
+        .scryfall
+        .by_id(&edit.to_scryfall_id)?
+        .ok_or_else(|| anyhow!("Scryfall doesn't know the printing {}", edit.to_scryfall_id))?;
+    if !card.finishes.is_empty() && !card.finishes.contains(&to_finish) {
+        bail!(
+            "{} ({} #{}) isn't printed in {to_finish}",
+            card.name,
+            card.set_code.to_uppercase(),
+            card.collector_number
+        );
+    }
+    let prices = app.prices.price(&card, to_finish);
+    let to = CollectionEntry::from_card(&card, to_finish, edit.quantity, prices);
+    let row = app
+        .store
+        .relocate(&edit.scryfall_id, finish, to)?
+        .ok_or_else(|| anyhow!(GONE))?;
+    let merged = if row.quantity > edit.quantity {
+        format!(
+            ", merged with the copies already there ({} owned)",
+            row.quantity
+        )
+    } else {
+        String::new()
+    };
+    Ok(EditResult {
+        message: format!(
+            "Changed to {} ({} #{}, {to_finish}){merged}",
+            row.name, row.set_code, row.collector_number
+        ),
+        row: Some(collection_row(row)),
+    })
+}
+
+fn collection_row(e: CollectionEntry) -> CollectionRow {
+    CollectionRow {
+        scryfall_url: e.scryfall_url(),
+        scryfall_id: e.scryfall_id,
+        name: e.name,
+        set_code: e.set_code,
+        set_name: e.set_name,
+        number: e.collector_number,
+        rarity: e.rarity,
+        finish: e.finish.into(),
+        quantity: e.quantity,
+        tcgplayer: e.prices.tcgplayer,
+        cardkingdom: e.prices.cardkingdom,
+        cardkingdom_buylist: e.prices.cardkingdom_buylist,
+        priced: e.price_updated.map(|d| d.to_string()),
+        tcgplayer_url: e.prices.tcgplayer_url,
+        cardkingdom_url: e.prices.cardkingdom_url,
     }
 }
 
@@ -254,26 +409,7 @@ fn collection_view(cfg: &Config) -> Result<CollectionView> {
             cardkingdom: t.cardkingdom,
             cardkingdom_buylist: t.cardkingdom_buylist,
         },
-        rows: entries
-            .into_iter()
-            .map(|e| CollectionRow {
-                scryfall_url: e.scryfall_url(),
-                scryfall_id: e.scryfall_id,
-                name: e.name,
-                set_code: e.set_code,
-                set_name: e.set_name,
-                number: e.collector_number,
-                rarity: e.rarity,
-                finish: e.finish.into(),
-                quantity: e.quantity,
-                tcgplayer: e.prices.tcgplayer,
-                cardkingdom: e.prices.cardkingdom,
-                cardkingdom_buylist: e.prices.cardkingdom_buylist,
-                priced: e.price_updated.map(|d| d.to_string()),
-                tcgplayer_url: e.prices.tcgplayer_url,
-                cardkingdom_url: e.prices.cardkingdom_url,
-            })
-            .collect(),
+        rows: entries.into_iter().map(collection_row).collect(),
     })
 }
 

@@ -68,7 +68,10 @@ asks). The page shows:
   and auto-scan controls; Scan now / Retry with LLM / Rescan all / Undo; and
   each card the moment it is saved, with its image, set, price links and
   match confidence, plus session totals.
-- **Collection**: everything you own, with totals and a filter.
+- **Collection**: everything you own, with totals and a filter. The pencil on
+  each row edits it: change the quantity or finish, paste a Scryfall link
+  (e.g. `https://scryfall.com/card/a25/141/lightning-bolt`) to fix the
+  printing, or remove the row. Editing is off in `--dry-run`.
 
 Dark theme, luminaldata colours. Anyone on the network can use it, and there's
 no login yet (see issue #17). Phone layouts are planned (#16).

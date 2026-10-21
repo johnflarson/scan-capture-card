@@ -1836,6 +1836,7 @@ dependencies = [
  "gloo-timers",
  "leptos",
  "mtg-scan-shared",
+ "serde",
  "serde_json",
 ]
 

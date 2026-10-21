@@ -1,6 +1,8 @@
 //! Markdown-file collection store. The file is both human-readable (it
 //! renders nicely on GitHub / Obsidian) and the source of truth: it is parsed
-//! on open and fully rewritten after every change.
+//! before every read or change and fully rewritten after every change, so
+//! several stores on the same file (the scanner and the web UI) don't
+//! overwrite each other's edits.
 
 use std::path::{Path, PathBuf};
 
@@ -34,14 +36,20 @@ pub struct MarkdownStore {
 impl MarkdownStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let entries = if path.exists() {
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
-            parse(&text).with_context(|| format!("failed to parse {}", path.display()))?
-        } else {
-            Vec::new()
-        };
+        let entries = load(&path)?;
         Ok(Self { path, entries })
+    }
+
+    /// Pick up changes another store made to the file.
+    fn reload(&mut self) -> Result<()> {
+        self.entries = load(&self.path)?;
+        Ok(())
+    }
+
+    fn position(&self, scryfall_id: &str, finish: Finish) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.same_printing(scryfall_id, finish))
     }
 
     fn save(&mut self) -> Result<()> {
@@ -67,10 +75,11 @@ impl MarkdownStore {
 
 impl CollectionStore for MarkdownStore {
     fn entries(&self) -> Result<Vec<CollectionEntry>> {
-        Ok(self.entries.clone())
+        load(&self.path)
     }
 
     fn add(&mut self, entry: CollectionEntry) -> Result<CollectionEntry> {
+        self.reload()?;
         let result = match self
             .entries
             .iter_mut()
@@ -97,24 +106,68 @@ impl CollectionStore for MarkdownStore {
         finish: Finish,
         quantity: u32,
     ) -> Result<Option<CollectionEntry>> {
-        let Some(idx) = self
-            .entries
-            .iter()
-            .position(|e| e.same_printing(scryfall_id, finish))
-        else {
+        self.reload()?;
+        let Some(idx) = self.position(scryfall_id, finish) else {
             return Ok(None);
         };
-        let entry = &mut self.entries[idx];
-        entry.quantity = entry.quantity.saturating_sub(quantity);
-        let result = entry.clone();
-        if result.quantity == 0 {
+        let left = self.entries[idx].quantity.saturating_sub(quantity);
+        self.set_quantity(scryfall_id, finish, left)
+    }
+
+    fn set_quantity(
+        &mut self,
+        scryfall_id: &str,
+        finish: Finish,
+        quantity: u32,
+    ) -> Result<Option<CollectionEntry>> {
+        self.reload()?;
+        let Some(idx) = self.position(scryfall_id, finish) else {
+            return Ok(None);
+        };
+        self.entries[idx].quantity = quantity;
+        let result = self.entries[idx].clone();
+        if quantity == 0 {
             self.entries.remove(idx);
         }
         self.save()?;
         Ok(Some(result))
     }
 
+    fn relocate(
+        &mut self,
+        scryfall_id: &str,
+        finish: Finish,
+        to: CollectionEntry,
+    ) -> Result<Option<CollectionEntry>> {
+        self.reload()?;
+        let Some(idx) = self.position(scryfall_id, finish) else {
+            return Ok(None);
+        };
+        let old = self.entries.remove(idx);
+        let result = match self.position(&to.scryfall_id, to.finish) {
+            Some(target) => {
+                let existing = &mut self.entries[target];
+                existing.quantity += to.quantity;
+                existing.added = existing.added.min(old.added);
+                existing.prices = to.prices;
+                existing.price_updated = to.price_updated;
+                existing.clone()
+            }
+            None => {
+                let entry = CollectionEntry {
+                    added: old.added,
+                    ..to
+                };
+                self.entries.push(entry.clone());
+                entry
+            }
+        };
+        self.save()?;
+        Ok(Some(result))
+    }
+
     fn update_prices(&mut self, scryfall_id: &str, finish: Finish, prices: Prices) -> Result<()> {
+        self.reload()?;
         if let Some(e) = self
             .entries
             .iter_mut()
@@ -130,6 +183,15 @@ impl CollectionStore for MarkdownStore {
     fn location(&self) -> String {
         self.path.display().to_string()
     }
+}
+
+fn load(path: &Path) -> Result<Vec<CollectionEntry>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    parse(&text).with_context(|| format!("failed to parse {}", path.display()))
 }
 
 fn escape(s: &str) -> String {
@@ -412,5 +474,94 @@ mod tests {
 
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("| Total cards | 1 |"));
+    }
+
+    #[test]
+    fn set_quantity_and_relocate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = MarkdownStore::open(dir.path().join("c.md")).unwrap();
+        store.add(entry("A", "id-1", Finish::Nonfoil, 2)).unwrap();
+        store.add(entry("B", "id-2", Finish::Foil, 1)).unwrap();
+
+        assert_eq!(
+            store
+                .set_quantity("id-1", Finish::Nonfoil, 5)
+                .unwrap()
+                .unwrap()
+                .quantity,
+            5
+        );
+        assert!(
+            store
+                .set_quantity("nope", Finish::Nonfoil, 1)
+                .unwrap()
+                .is_none()
+        );
+
+        // Move to a printing + finish not owned yet: the row is replaced.
+        let mut to = entry("A (other printing)", "id-3", Finish::Foil, 5);
+        to.added = NaiveDate::from_ymd_opt(2030, 1, 1).unwrap();
+        let moved = store
+            .relocate("id-1", Finish::Nonfoil, to)
+            .unwrap()
+            .unwrap();
+        assert_eq!((moved.scryfall_id.as_str(), moved.quantity), ("id-3", 5));
+        // The row keeps the date the card was first added.
+        assert_eq!(moved.added, NaiveDate::from_ymd_opt(2026, 10, 20).unwrap());
+        assert!(
+            !store
+                .entries()
+                .unwrap()
+                .iter()
+                .any(|e| e.scryfall_id == "id-1")
+        );
+
+        // Move onto a row that exists: quantities merge.
+        let merged = store
+            .relocate("id-3", Finish::Foil, entry("B", "id-2", Finish::Foil, 5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged.quantity, 6);
+        assert_eq!(store.entries().unwrap().len(), 1);
+
+        assert!(
+            store
+                .relocate("gone", Finish::Foil, entry("B", "id-2", Finish::Foil, 1))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .set_quantity("id-2", Finish::Foil, 0)
+                .unwrap()
+                .unwrap()
+                .quantity,
+            0
+        );
+        assert!(store.entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stores_on_one_file_see_each_others_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.md");
+        let mut scanner = MarkdownStore::open(&path).unwrap();
+        let mut web = MarkdownStore::open(&path).unwrap();
+        scanner.add(entry("A", "id-1", Finish::Nonfoil, 1)).unwrap();
+        web.set_quantity("id-1", Finish::Nonfoil, 4)
+            .unwrap()
+            .unwrap();
+        // The scanner's next save must not undo the web edit.
+        scanner.add(entry("B", "id-2", Finish::Nonfoil, 1)).unwrap();
+        let entries = web.entries().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries
+                .iter()
+                .find(|e| e.scryfall_id == "id-1")
+                .unwrap()
+                .quantity,
+            4
+        );
     }
 }
