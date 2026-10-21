@@ -88,8 +88,9 @@ asks). The pages:
   finish; open one for every card's status: owned, other printing, partly
   owned or missing. Prices are Moxfield's (TCGplayer and Card Kingdom).
 
-Hover over any card name to see the card. Dark theme, luminaldata colours. Anyone on the network can use it, and there's
-no login yet (see issue #17). Phone layouts are planned (#16).
+Hover over any card name to see the card. It works on phones too (open the
+"other computers" address). Dark theme, luminaldata colours. Anyone on the
+network can use it, and there's no login yet (see issue #17).
 
 ### Desktop window and command line
 
