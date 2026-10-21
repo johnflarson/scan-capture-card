@@ -6,6 +6,7 @@ mod engine;
 mod live;
 mod llm;
 mod model;
+mod movers;
 mod moxfield;
 mod ocr;
 mod pipeline;
@@ -168,6 +169,15 @@ enum Command {
         number: Option<String>,
         #[arg(long, value_enum)]
         finish: Option<Finish>,
+    },
+    /// Cards that gained or lost the most value (postgres backend)
+    Movers {
+        /// Compare with prices from this many days ago
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+        /// Cards to list per direction and price source
+        #[arg(long, default_value_t = 10)]
+        top: usize,
     },
     /// PostgreSQL database management
     Db {
@@ -381,6 +391,7 @@ fn run() -> Result<()> {
             number,
             finish,
         } => history(&cfg, &name, set, number, finish),
+        Command::Movers { days, top } => movers(&cfg, days, top),
         Command::Db { command } => db(&cfg, command),
         Command::List => list(&cfg),
         Command::Cameras => {
@@ -591,6 +602,73 @@ fn history(
             first.date,
             b - a
         );
+    }
+    Ok(())
+}
+
+fn movers(cfg: &Config, days: u32, top: usize) -> Result<()> {
+    let app = App::new(cfg)?;
+    let since = movers::since(chrono::Local::now().date_naive(), days);
+    let moves = app.store.price_moves(since)?;
+    if moves.is_empty() {
+        println!(
+            "No card owned now was priced on or before {since} and again since. Price history \
+             grows by a point a day while mtg-scan runs (or with `mtg-scan reprice`)."
+        );
+        return Ok(());
+    }
+    let entries = app.store.entries()?;
+    let describe = |m: &store::PriceMove| {
+        entries
+            .iter()
+            .find(|e| e.scryfall_id == m.scryfall_id && e.finish == m.finish)
+            .map(|e| {
+                format!(
+                    "{} ({} #{}, {})",
+                    e.name, e.set_code, e.collector_number, e.finish
+                )
+            })
+            .unwrap_or_else(|| format!("{} ({})", m.scryfall_id, m.finish))
+    };
+    let pct = |p: Option<f64>| p.map(|p| format!(" ({p:+.1}%)")).unwrap_or_default();
+    let signed = |v: f64| format!("{}${:.2}", if v < 0.0 { "-" } else { "+" }, v.abs());
+
+    println!("Since {since} ({days} days):");
+    let report = movers::report(&moves, top);
+    for r in &report {
+        println!(
+            "  {:<13} {} → {}  {}{}  over {} printings",
+            r.source.label(),
+            format_usd(Some(r.before)),
+            format_usd(Some(r.now)),
+            signed(r.now - r.before),
+            pct(r.percent()),
+            r.rows
+        );
+    }
+    for r in &report {
+        for (title, list) in [("gains", &r.risers), ("drops", &r.fallers)] {
+            if list.is_empty() {
+                continue;
+            }
+            println!("\n{} — biggest {title}", r.source.label());
+            for c in list {
+                let m = &moves[c.row];
+                println!(
+                    "  {:>9}  {}{}  {} → {}{}",
+                    signed(c.total()),
+                    describe(m),
+                    if c.quantity > 1 {
+                        format!(" ×{}", c.quantity)
+                    } else {
+                        String::new()
+                    },
+                    format_usd(Some(c.then)),
+                    format_usd(Some(c.now)),
+                    pct(c.percent())
+                );
+            }
+        }
     }
     Ok(())
 }

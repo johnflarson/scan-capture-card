@@ -23,6 +23,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   history, breakdowns by color, type, rarity, finish and set, most valuable and recently added
   cards). Decks is a placeholder until Moxfield support (#20).
 - Collection rows carry each card's colors and type line from Scryfall (not stored).
+- `mtg-scan movers [--days N] [--top N]` (#6, PostgreSQL): the collection's TCGplayer and Card
+  Kingdom value now versus N days ago (default 7), and the cards that gained or lost the most for
+  the copies owned.
 - Collection page type, rarity and color (#23): three new columns (full type line and color
   letters on hover); filter chips for each, combinable (any value within a column, every column
   with picks); group by type, rarity or color with per-group count and value; the search also

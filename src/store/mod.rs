@@ -18,6 +18,19 @@ pub struct ValueChange {
     pub rows: u32,
 }
 
+/// A collection row's prices on a past date and now (see
+/// [`CollectionStore::price_moves`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriceMove {
+    pub scryfall_id: String,
+    pub finish: Finish,
+    pub quantity: u32,
+    /// The latest price point on or before the date asked for.
+    pub then: PricePoint,
+    /// The latest price point.
+    pub now: PricePoint,
+}
+
 pub trait CollectionStore {
     fn entries(&self) -> Result<Vec<CollectionEntry>>;
 
@@ -59,6 +72,13 @@ pub trait CollectionStore {
 
     /// Price points over time, oldest first.
     fn price_history(&self, _scryfall_id: &str, _finish: Finish) -> Result<Vec<PricePoint>> {
+        bail!(
+            "price history is only kept by the postgres storage backend ([storage] backend = \"postgres\")"
+        )
+    }
+
+    /// Rows owned now that were priced on or before `since` and again later.
+    fn price_moves(&self, _since: NaiveDate) -> Result<Vec<PriceMove>> {
         bail!(
             "price history is only kept by the postgres storage backend ([storage] backend = \"postgres\")"
         )
