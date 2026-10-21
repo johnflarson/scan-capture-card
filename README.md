@@ -72,7 +72,11 @@ asks). The pages:
   and auto-scan controls; Scan now / Retry with LLM / Rescan all / Undo; and
   each card the moment it is saved, with its image, set, price links and
   match confidence, plus session totals.
-- **Collection**: everything you own, with totals and a filter. The pencil on
+- **Collection**: everything you own, with each card's type, rarity and color.
+  Search by name, set, type, rarity or color (e.g. `blue creature`). Pick
+  filter chips, e.g. Red + Green and Rare + Mythic for red or green rares and
+  mythics, and group the table by type, rarity or color. The totals follow
+  the filter. The pencil on
   each row edits it: change the quantity or finish, paste a Scryfall link
   (e.g. `https://scryfall.com/card/a25/141/lightning-bolt`) to fix the
   printing, or remove the row. Editing is off in `--dry-run`.

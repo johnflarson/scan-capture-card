@@ -23,6 +23,11 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   history, breakdowns by color, type, rarity, finish and set, most valuable and recently added
   cards). Decks is a placeholder until Moxfield support (#20).
 - Collection rows carry each card's colors and type line from Scryfall (not stored).
+- Collection page type, rarity and color (#23): three new columns (full type line and color
+  letters on hover); filter chips for each, combinable (any value within a column, every column
+  with picks); group by type, rarity or color with per-group count and value; the search also
+  matches type line, rarity and color; totals follow the filter. Filters and grouping are kept
+  when switching tabs.
 - Single-card / table mode switch while running (`M` key in the desktop window, toggle in the UI).
 - `[camera] table_width` / `table_height` settings for table mode (default 3840x2160).
 
