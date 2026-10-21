@@ -7,6 +7,7 @@ mod app;
 mod decks;
 mod filters;
 mod home;
+mod mana;
 mod preview;
 mod review;
 

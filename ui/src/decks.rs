@@ -14,6 +14,7 @@ use crate::api;
 use crate::app::{CollectionCache, Metric};
 use crate::filters::count;
 use crate::home::DecksIcon;
+use crate::mana::ManaSymbols;
 use crate::preview::CardLink;
 
 /// The deck list and each deck's cards, shared by Home and Decks. After the
@@ -329,21 +330,9 @@ fn DeckList(
     }
 }
 
-/// Mana-colored pips for a color identity (one gray pip for colorless).
+/// Mana symbols for a color identity (the colorless symbol for none).
 fn pips(colors: &[String]) -> impl IntoView + use<> {
-    let classes: Vec<String> = if colors.is_empty() {
-        vec!["c".into()]
-    } else {
-        colors.iter().map(|c| c.to_lowercase()).collect()
-    };
-    view! {
-        <span class="pips">
-            {classes
-                .into_iter()
-                .map(|c| view! { <span class=format!("swatch {c}")></span> })
-                .collect_view()}
-        </span>
-    }
+    view! { <ManaSymbols colors=colors.to_vec() /> }
 }
 
 /// A price sum, with "+" when some copies have no price and aren't in it.
