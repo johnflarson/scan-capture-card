@@ -465,6 +465,14 @@ button.deck-mini:hover { background: var(--md-surface-container-highest); }
 .placeholder h1 { margin: 0 0 8px; font-size: 24px; font-weight: 400; }
 button.brand { cursor: pointer; font-size: 14px; }
 
+/* Card image shown while hovering a card name. */
+.card-preview {
+  position: fixed; z-index: 40; width: 244px; height: 340px;
+  border-radius: 12px; background: var(--md-surface-container-highest);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.6);
+  pointer-events: none;
+}
+
 /* --------------------------------------------------------- snackbar --- */
 .snackbar {
   position: fixed; left: 24px; bottom: 24px; z-index: 20;
