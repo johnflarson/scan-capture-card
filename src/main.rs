@@ -6,6 +6,7 @@ mod engine;
 mod live;
 mod llm;
 mod model;
+mod moxfield;
 mod ocr;
 mod pipeline;
 mod pricing;

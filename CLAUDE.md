@@ -65,6 +65,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs |
 | `pricing/` | `tcgplayer.rs` (mpapi pricepoints, Scryfall fallback), `cardkingdom.rs` (daily price list, then a compact index), `PriceService` |
 | `store/` | `CollectionStore` trait (add, remove, `set_quantity`, `relocate` to another printing/finish, prices); `markdown.rs` (parse, render, atomic write); `postgres.rs` (migrations, upserts, Scryfall hydration, price history) |
+| `moxfield.rs` | Moxfield decks of `MTG_SCAN_MOXFIELD_USER` (`.env`): deck list and deck contents, cached, 1 req/s |
 | `cache.rs` | JSON cache in `%LOCALAPPDATA%\mtg-scan` |
 | `model.rs` | `Card`, `Finish`, `Prices`, `CollectionEntry`, `PricePoint` |
 | `migrations/` | Numbered SQL files embedded via `include_str!` and listed in `store::postgres::MIGRATIONS` |
@@ -159,6 +160,12 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
   `scryfall_id`, with separate foil rows. Downloaded at most daily.
 - **TCGplayer** `https://mpapi.tcgplayer.com/v2/product/{id}/pricepoints` needs no key.
   `printingType` is "Normal" or "Foil". Etched cards use `tcgplayer_etched_id`.
+- **Moxfield** has no documented API. The site's own endpoints work without a key:
+  `api2.moxfield.com/v2/decks/search?authorUserNames=<user>` (deck list; `/v2/users/<u>/decks`
+  and `/v3/users/...` are 404) and `/v3/decks/all/<publicId>` (cards with `scryfall_id`, type line
+  and prices: `usd`/`usd_foil` = TCGplayer, `ck`/`ck_foil` = Card Kingdom). Double-faced cards
+  have empty top-level `colors`; take them from `card_faces`. The server only serves decks of the
+  configured user, so it isn't a general proxy.
 - Scryfall `game:paper` printings exclude digital-only versions. Newer sets (e.g. `HOB`,
   The Hobbit) often have one printing per common, hence `OnlyPrinting`.
 

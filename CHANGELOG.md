@@ -28,6 +28,12 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   with picks); group by type, rarity or color with per-group count and value; the search also
   matches type line, rarity and color; totals follow the filter. Filters and grouping are kept
   when switching tabs.
+- Moxfield decks (#20): set `MTG_SCAN_MOXFIELD_USER` in `.env` to a Moxfield user name or profile
+  link. The Decks page lists that user's public decks with how much of each is already in the
+  collection (any printing counts) and the TCGplayer cost to finish it; open a deck for each card's
+  status (owned, other printing, partly owned, missing), deck value and cost to finish (TCGplayer
+  and Card Kingdom, Moxfield's prices). The Home page shows deck count, color identities, formats
+  and the decks cheapest to finish. Decks are cached and refetched only when changed on Moxfield.
 - Single-card / table mode switch while running (`M` key in the desktop window, toggle in the UI).
 - `[camera] table_width` / `table_height` settings for table mode (default 3840x2160).
 
@@ -45,6 +51,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   second copy. The original is removed only once the retry has identified the card, and a retry
   never removes cards from a table pass.
 - The startup header showed `collection.md` even when saving to PostgreSQL; it now shows the real location.
+- An unknown `/api/...` request now gets a "not found" message saying the UI and server may come
+  from different builds, instead of the web page (which the UI reported as "expected value at
+  line 1 column 1").
 
 ## [0.2.0] - 2026-10-20
 

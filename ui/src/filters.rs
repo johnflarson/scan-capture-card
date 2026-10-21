@@ -82,7 +82,7 @@ fn marker(facet: Facet, value: &str) -> AnyView {
 }
 
 /// "1 card", "3 cards".
-fn count(n: usize, noun: &str) -> String {
+pub fn count(n: usize, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }
 

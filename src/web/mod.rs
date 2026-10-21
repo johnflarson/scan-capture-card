@@ -11,6 +11,8 @@
 //! | `GET /api/collection` | the whole collection with prices and totals |
 //! | `GET /api/printing?q=` | a printing from a Scryfall link or ID (edit dialog) |
 //! | `POST /api/collection/edit` | `RowEdit` JSON: set quantity, remove, change printing/finish |
+//! | `GET /api/decks[?refresh=true]` | the configured Moxfield user's public decks |
+//! | `GET /api/decks/{id}` | one of those decks with its cards |
 //! | everything else | the embedded UI |
 
 use std::convert::Infallible;
@@ -20,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::body::{Body, Bytes};
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -28,8 +30,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{Stream, StreamExt};
 use mtg_scan_shared::{
-    ClientCommand, CollectionRow, CollectionView, EditResult, PrintingView, RowEdit, ServerEvent,
-    SessionView, Totals, ValueChange,
+    ClientCommand, CollectionRow, CollectionView, DecksView, EditResult, PrintingView, RowEdit,
+    ServerEvent, SessionView, Totals, ValueChange,
 };
 use tokio::sync::watch;
 use tokio_stream::wrappers::BroadcastStream;
@@ -39,6 +41,7 @@ use crate::config::Config;
 use crate::engine::{self, Engine, EngineEvent, EngineOptions};
 use crate::live;
 use crate::model::{Card, CollectionEntry, Finish};
+use crate::moxfield::{self, Moxfield};
 use crate::scryfall::{self, Scryfall};
 
 /// Cap the preview stream at ~15 frames per second per viewer.
@@ -117,6 +120,8 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/collection", get(collection))
         .route("/api/collection/edit", post(edit))
         .route("/api/printing", get(printing))
+        .route("/api/decks", get(decks))
+        .route("/api/decks/{id}", get(deck))
         .fallback(static_file)
         .with_state(state);
 
@@ -277,6 +282,46 @@ async fn edit(State(st): State<Arc<AppState>>, Json(edit): Json<RowEdit>) -> Res
     }
     let cfg = st.cfg.clone();
     blocking(StatusCode::BAD_REQUEST, move || edit_row(&cfg, edit)).await
+}
+
+#[derive(serde::Deserialize)]
+struct DecksQuery {
+    /// Ask Moxfield now instead of using the list fetched in the last minutes.
+    #[serde(default)]
+    refresh: bool,
+}
+
+async fn decks(Query(query): Query<DecksQuery>) -> Response {
+    blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
+        Ok(match moxfield::configured_user() {
+            Some(user) => Moxfield::new(app::http_client()?).decks(&user, query.refresh),
+            None => DecksView {
+                user: None,
+                profile_url: None,
+                decks: Vec::new(),
+                warning: None,
+            },
+        })
+    })
+    .await
+}
+
+/// Only decks of the configured user are served, so this isn't a general
+/// Moxfield proxy.
+async fn deck(Path(id): Path<String>) -> Response {
+    blocking(StatusCode::NOT_FOUND, move || {
+        let user = moxfield::configured_user()
+            .ok_or_else(|| anyhow!("No Moxfield user is set ({}).", moxfield::USER_VAR))?;
+        let client = Moxfield::new(app::http_client()?);
+        let summary = client
+            .decks(&user, false)
+            .decks
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or_else(|| anyhow!("{user} has no public deck {id}"))?;
+        client.deck(&summary)
+    })
+    .await
 }
 
 fn find_printing(link: &str) -> Result<PrintingView> {
@@ -466,6 +511,19 @@ fn collection_view(cfg: &Config) -> Result<CollectionView> {
 async fn static_file(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
+    // An unknown API call must not get the app's HTML: the UI would fail to parse
+    // it as JSON. It happens when the embedded UI is newer than the server.
+    if path == "api" || path.starts_with("api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            format!(
+                "This server has no /{path} request. The web UI and the server may come \
+                 from different builds: run trunk build --release in ui, then cargo build \
+                 --release."
+            ),
+        )
+            .into_response();
+    }
     // Unknown paths without an extension get the app, so reloading any page works.
     let found = match Assets::get(path) {
         Some(f) => Some((path, f)),
@@ -534,5 +592,26 @@ mod tests {
         );
         let missing = rt.block_on(static_file(Uri::from_static("/nope.js")));
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn unknown_api_call_is_not_found_not_the_app() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let text = |uri: &'static str| {
+            rt.block_on(async {
+                let resp = static_file(Uri::from_static(uri)).await;
+                let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+                String::from_utf8_lossy(&body.unwrap()).into_owned()
+            })
+        };
+        for uri in ["/api/nope", "/api/decks/x/y", "/api"] {
+            let resp = rt.block_on(static_file(Uri::from_static(uri)));
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{uri}");
+            assert!(text(uri).contains("different builds"), "{uri}");
+        }
+        // Other paths are client-side pages (the app, or 404 when no UI is built).
+        assert!(!text("/apis").contains("different builds"));
     }
 }
