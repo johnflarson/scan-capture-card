@@ -1,9 +1,14 @@
 //! Markdown-file collection store. The file is both human-readable (it
 //! renders nicely on GitHub / Obsidian) and the source of truth: it is parsed
-//! before every read or change and fully rewritten after every change, so
-//! several stores on the same file (the scanner and the web UI) don't
-//! overwrite each other's edits.
+//! before every read or change and fully rewritten after every change.
+//!
+//! Several stores can have the same file open (the scanner, each web
+//! request, a CLI command in another process). Every change therefore runs
+//! as one locked read-modify-write: it takes an exclusive lock on
+//! `<collection>.md.lock`, re-reads the file, changes it and writes it back,
+//! so no change overwrites another.
 
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
@@ -40,10 +45,41 @@ impl MarkdownStore {
         Ok(Self { path, entries })
     }
 
-    /// Pick up changes another store made to the file.
-    fn reload(&mut self) -> Result<()> {
+    /// Start a change: lock the collection against other writers (threads
+    /// or processes) and re-read it. The lock is released when the returned
+    /// file is dropped, i.e. after the change has been saved.
+    fn begin(&mut self) -> Result<File> {
+        if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)?;
+        }
+        let lock_path = self.path.with_extension("md.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("failed to open {}", lock_path.display()))?;
+        lock.lock()
+            .with_context(|| format!("failed to lock {}", lock_path.display()))?;
         self.entries = load(&self.path)?;
-        Ok(())
+        Ok(lock)
+    }
+
+    /// Set a row's quantity in memory (0 deletes it); `None` if absent.
+    fn apply_quantity(
+        &mut self,
+        scryfall_id: &str,
+        finish: Finish,
+        quantity: impl FnOnce(u32) -> u32,
+    ) -> Option<CollectionEntry> {
+        let idx = self.position(scryfall_id, finish)?;
+        let entry = &mut self.entries[idx];
+        entry.quantity = quantity(entry.quantity);
+        let result = entry.clone();
+        if result.quantity == 0 {
+            self.entries.remove(idx);
+        }
+        Some(result)
     }
 
     fn position(&self, scryfall_id: &str, finish: Finish) -> Option<usize> {
@@ -62,9 +98,6 @@ impl MarkdownStore {
                 .then_with(|| a.finish.as_str().cmp(b.finish.as_str()))
         });
         let text = render(&self.entries);
-        if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir)?;
-        }
         // Write-then-rename so a crash never leaves a half-written collection.
         let tmp = self.path.with_extension("md.tmp");
         std::fs::write(&tmp, text).with_context(|| format!("failed to write {}", tmp.display()))?;
@@ -79,7 +112,7 @@ impl CollectionStore for MarkdownStore {
     }
 
     fn add(&mut self, entry: CollectionEntry) -> Result<CollectionEntry> {
-        self.reload()?;
+        let _lock = self.begin()?;
         let result = match self
             .entries
             .iter_mut()
@@ -106,12 +139,12 @@ impl CollectionStore for MarkdownStore {
         finish: Finish,
         quantity: u32,
     ) -> Result<Option<CollectionEntry>> {
-        self.reload()?;
-        let Some(idx) = self.position(scryfall_id, finish) else {
-            return Ok(None);
-        };
-        let left = self.entries[idx].quantity.saturating_sub(quantity);
-        self.set_quantity(scryfall_id, finish, left)
+        let _lock = self.begin()?;
+        let result = self.apply_quantity(scryfall_id, finish, |have| have.saturating_sub(quantity));
+        if result.is_some() {
+            self.save()?;
+        }
+        Ok(result)
     }
 
     fn set_quantity(
@@ -120,17 +153,12 @@ impl CollectionStore for MarkdownStore {
         finish: Finish,
         quantity: u32,
     ) -> Result<Option<CollectionEntry>> {
-        self.reload()?;
-        let Some(idx) = self.position(scryfall_id, finish) else {
-            return Ok(None);
-        };
-        self.entries[idx].quantity = quantity;
-        let result = self.entries[idx].clone();
-        if quantity == 0 {
-            self.entries.remove(idx);
+        let _lock = self.begin()?;
+        let result = self.apply_quantity(scryfall_id, finish, |_| quantity);
+        if result.is_some() {
+            self.save()?;
         }
-        self.save()?;
-        Ok(Some(result))
+        Ok(result)
     }
 
     fn relocate(
@@ -139,7 +167,7 @@ impl CollectionStore for MarkdownStore {
         finish: Finish,
         to: CollectionEntry,
     ) -> Result<Option<CollectionEntry>> {
-        self.reload()?;
+        let _lock = self.begin()?;
         let Some(idx) = self.position(scryfall_id, finish) else {
             return Ok(None);
         };
@@ -167,7 +195,7 @@ impl CollectionStore for MarkdownStore {
     }
 
     fn update_prices(&mut self, scryfall_id: &str, finish: Finish, prices: Prices) -> Result<()> {
-        self.reload()?;
+        let _lock = self.begin()?;
         if let Some(e) = self
             .entries
             .iter_mut()
@@ -563,5 +591,34 @@ mod tests {
                 .quantity,
             4
         );
+    }
+
+    #[test]
+    fn concurrent_writers_lose_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.md");
+        let writers: Vec<_> = (0..4)
+            .map(|w| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let mut store = MarkdownStore::open(&path).unwrap();
+                    for i in 0..15 {
+                        store
+                            .add(entry("Card", &format!("id-{w}-{i}"), Finish::Nonfoil, 1))
+                            .unwrap();
+                        store
+                            .add(entry("Shared", "shared", Finish::Foil, 1))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        let entries = MarkdownStore::open(&path).unwrap().entries().unwrap();
+        assert_eq!(entries.len(), 4 * 15 + 1, "every distinct row was kept");
+        let shared = entries.iter().find(|e| e.scryfall_id == "shared").unwrap();
+        assert_eq!(shared.quantity, 4 * 15, "every increment was kept");
     }
 }

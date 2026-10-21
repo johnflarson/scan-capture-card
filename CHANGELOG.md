@@ -26,8 +26,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   window and the web UI both drive.
 - Table detection is more robust on messy scenes: capped model output, recovery of boxes from a
   truncated reply, a card-shape filter, and skipping a second overlapping detection of the same card.
-- The Markdown store re-reads `collection.md` before every read and change, so the scanner and
-  the web UI never overwrite each other's edits.
+- The Markdown store makes each change under an exclusive lock (`collection.md.lock`) and
+  re-reads the file first, so the scanner, the web UI and other mtg-scan commands never
+  overwrite each other's changes.
 
 ### Fixed
 - "Retry with LLM" now replaces the card the previous single-card scan added instead of adding a

@@ -116,7 +116,10 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
 - **Test UI and edits against a throwaway collection**, never the user's database:
   `mtg-scan --storage markdown --collection <scratch>.md ui --manual --no-open --port 8788`.
 - **Several stores can be open on one collection** (scanner worker, each web request). PostgreSQL
-  handles that; `MarkdownStore` re-reads the file before every read and change for the same reason.
+  handles that. `MarkdownStore` makes every change one locked read-modify-write (exclusive
+  `std::fs::File::lock` on `<collection>.md.lock`, re-read, change, write), so concurrent changes,
+  even from another process, are never lost. Re-reading alone wasn't enough: two writers could
+  read the same snapshot.
 - **Vision-LLM detection can loop** on messy scenes (e.g. a fanned pile), repeating near-identical
   boxes until it runs out of tokens. Hence `num_predict`/`max_tokens` caps, the regex box parser
   that survives truncated JSON, the card-shape filter (`llm::plausible_cards`), and dropping
