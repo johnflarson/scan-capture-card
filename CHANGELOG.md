@@ -88,6 +88,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
   overwrite each other's changes.
 
 ### Fixed
+- The Decks page missed decks Moxfield marks as not legal in their format (#45), such as 101-card
+  Commander decks, often a third of an account's decks. Private and unlisted decks still aren't
+  listed: Moxfield shows them only to the signed-in owner.
 - Empty session totals showed "$-0.00" (an empty sum is negative zero); they now show "$0.00".
 - "Retry with LLM" now replaces the card the previous single-card scan added instead of adding a
   second copy. The original is removed only once the retry has identified the card, and a retry
