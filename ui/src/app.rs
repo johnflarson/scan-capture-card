@@ -241,12 +241,6 @@ pub fn App() -> impl IntoView {
                         .filter(|s| !s.dry_run && !s.save)
                         .map(|_| view! { <span class="chip warning">"Not saving scans"</span> })
                 }}
-                <span
-                    class="bar-location"
-                    title=move || state.get().map(|s| s.collection).unwrap_or_default()
-                >
-                    {move || state.get().map(|s| s.collection).unwrap_or_default()}
-                </span>
                 <span class="dot" class:on=move || connected.get()></span>
                 <span class="connection">
                     {move || if connected.get() { "Connected" } else { "Offline" }}
@@ -691,7 +685,6 @@ fn CollectionPage(
     view! {
         <div class="collection-head">
             <h1>"Collection"</h1>
-            <span class="location">{move || data.get().map(|d| d.location).unwrap_or_default()}</span>
             <input
                 class="search"
                 type="search"
