@@ -11,6 +11,12 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 ## [Unreleased]
 
 ### Added
+- Card view on the Collection page (#57): **Table** / **Cards** switches between the table and a
+  grid of card images with their names. Hovering a card (tapping it on a phone) pops up the
+  Moxfield decks it is in, any printing counting: the board and copies when it isn't one copy in
+  the main deck, and "this printing" when the deck lists that exact printing; maybeboard-only
+  decks come last. Search, filter chips, grouping (collapsible) and the pie apply to both views,
+  and the chosen view is kept while switching tabs.
 - Group-by pie on the Collection page (#55): while the table is grouped by type, rarity or color,
   a small pie in the filter box shows each group's share of the cards, following the search and
   filter chips. Its key lists every group with its percentage; hovering a slice or key entry

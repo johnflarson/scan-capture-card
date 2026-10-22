@@ -331,6 +331,40 @@ tr.group-head:hover { background: none; }
 tr.group-head.collapsed .chevron { transform: rotate(-45deg); }
 tr.group-head.collapsed td { border-bottom-color: var(--md-outline-variant); }
 
+/* Collection card view: card images with their names, under the same group headers. */
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 18px 14px; padding: 16px 18px 20px; }
+.grid-group { grid-column: 1 / -1; padding: 10px 0 8px; border-bottom: 1px solid var(--md-outline); }
+.grid-group:first-child { padding-top: 0; }
+.grid-group.collapsed { border-bottom-color: var(--md-outline-variant); }
+.grid-group.collapsed .chevron { transform: rotate(-45deg); }
+.card-tile { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.tile-art {
+  aspect-ratio: 488 / 680; border-radius: 4.75% / 3.4%; overflow: hidden;
+  background: var(--md-surface-container-highest); transition: transform 120ms, box-shadow 120ms;
+}
+.tile-art img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.tile-art:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgb(0 0 0 / 0.5); }
+.tile-name { font-size: 13px; color: var(--md-on-surface); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-name:hover { text-decoration: underline; }
+.tile-finish { margin-top: -4px; font-size: 11px; color: var(--md-on-surface-variant); }
+/* The decks a hovered card is in (width matches gallery::WIDTH). */
+.deck-pop {
+  position: fixed; z-index: 40; width: 280px; max-height: calc(100vh - 24px); overflow: hidden;
+  padding: 12px 14px; border-radius: 12px; font-size: 13px;
+  background: var(--md-surface-container-highest); border: 1px solid var(--md-outline-variant);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.6); pointer-events: none;
+}
+.deck-pop p { margin: 0; }
+.deck-pop .deck-pop-name { margin-bottom: 2px; font-weight: 500; font-size: 14px; }
+.deck-pop .deck-pop-count { margin-bottom: 8px; color: var(--md-on-surface-variant); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+.deck-pop-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.deck-pop-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+.deck-pop-list li.maybe { opacity: 0.65; }
+.deck-pop-deck { min-width: 0; overflow-wrap: anywhere; }
+.deck-pop-detail { color: var(--md-on-surface-variant); font-size: 12px; }
+.deck-pop-exact { padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-full); color: var(--md-primary); font-size: 11px; }
+.deck-pop .deck-pop-progress, .deck-pop-list + .muted { margin-top: 8px; font-size: 12px; }
+
 /* Filter chips and group-by. */
 .filters { padding: 14px 18px; margin-bottom: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 14px 28px; }
 .filter-rows { flex: 1 1 560px; min-width: 0; display: grid; gap: 10px; }
@@ -634,6 +668,7 @@ dl.info dd { margin: 0; overflow-wrap: anywhere; }
   .collection-head h1 { font-size: 20px; }
   .collection-head .location { flex-basis: 100%; overflow-wrap: anywhere; }
   .search { min-width: 0; width: 100%; margin-left: 0; order: 5; }
+  .card-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 14px 10px; padding: 12px; }
   .metrics-row, .deck-metrics, .home-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric .value { font-size: 17px; }
   .filters { padding: 12px; }

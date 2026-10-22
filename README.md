@@ -86,7 +86,9 @@ asks). The pages:
   filter chips, e.g. Red + Green and Rare + Mythic for red or green rares and
   mythics, and group the table by type, rarity or color (click a group's
   header to collapse it); while grouped, a small pie beside the filters shows
-  each group's share of the cards. The totals follow
+  each group's share of the cards. **Table** / **Cards** switches between the
+  table and a grid of card images with their names; hovering a card (tapping
+  it on a phone) lists the Moxfield decks it is in. The totals follow
   the filter. **Add card** adds a card by hand from a Scryfall link (quantity
   and finish; merged into a row you already own). The pencil on
   each row edits it: change the quantity or finish, paste a Scryfall link

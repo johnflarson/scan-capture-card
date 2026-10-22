@@ -6,6 +6,7 @@ mod api;
 mod app;
 mod decks;
 mod filters;
+mod gallery;
 mod home;
 mod mana;
 mod pie;
