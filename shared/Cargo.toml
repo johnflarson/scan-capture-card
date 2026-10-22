@@ -1,9 +1,9 @@
 [package]
 name = "mtg-scan-shared"
-version = "0.3.0"
+version = "1.0.0-alpha.0"
 edition = "2024"
 description = "Types shared by the mtg-scan server and its web UI"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

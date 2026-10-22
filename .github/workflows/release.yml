@@ -1,11 +1,12 @@
 # Continuous delivery: pushing a version tag (e.g. `git tag v0.3.0 && git push
 # origin v0.3.0`) builds the Windows release and publishes it on GitHub with
-# the matching CHANGELOG.md section as release notes.
+# the matching CHANGELOG.md section as release notes. A pre-release tag such as
+# v1.0.0-alpha.1 (from the v1 branch) is published as a GitHub pre-release.
 name: Release
 
 on:
   push:
-    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+', 'v[0-9]+.[0-9]+.[0-9]+-*']
 
 permissions:
   contents: write
@@ -70,4 +71,10 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" --title "mtg-scan ${{ github.ref_name }}" --notes-file notes.md "${{ env.ASSET }}.zip" "${{ env.ASSET }}.zip.sha256"
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $releaseArgs = @($tag, '--title', "mtg-scan $tag", '--notes-file', 'notes.md', "${{ env.ASSET }}.zip", "${{ env.ASSET }}.zip.sha256")
+          # A version with a pre-release part (v1.0.0-alpha.1) is a GitHub pre-release.
+          if ($tag.Contains('-')) { $releaseArgs += '--prerelease' }
+          gh release create @releaseArgs

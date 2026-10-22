@@ -7,6 +7,12 @@ file, and price every card with **TCGplayer** (market price) and **Card Kingdom*
 Built in Rust for Windows and tested with an **Insta360 Link 2 Pro**. Any UVC
 webcam works.
 
+> **This is the `v1` branch: The Shuffling Tome 1.0, in progress.** 1.0 turns
+> mtg-scan into an app friends and other self-hosters can run (Docker / Linux
+> first, SQLite by default, accounts, prices from Scryfall). See
+> [docs/v1-plan.md](docs/v1-plan.md). Until it is done, parts of this README
+> describe the 0.x behaviour. The personal 0.x line lives on `main`.
+
 ## How it works
 
 ```
@@ -255,3 +261,16 @@ on demand.
   and released (GitHub Issues + Project board, branches and PRs, CI, tagged releases).
 - [CHANGELOG.md](CHANGELOG.md): what changed in each version.
 - [CLAUDE.md](CLAUDE.md): architecture, design decisions and lessons learned.
+
+## License
+
+Copyright (C) 2026 John Larson. The Shuffling Tome 1.0 and later is licensed
+under the [GNU Affero General Public License v3.0 or later](LICENSE), with an
+[additional term](LICENSE-ADDITIONAL-TERMS.md) that keeps the author credit
+visible in the UI. Releases up to v0.3.0 were MIT-licensed.
+
+Card data, images and prices come from [Scryfall](https://scryfall.com). The
+Shuffling Tome is unofficial Fan Content permitted under the
+[Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy).
+Not approved/endorsed by Wizards. Portions of the materials used are property
+of Wizards of the Coast. ©Wizards of the Coast LLC.

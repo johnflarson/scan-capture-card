@@ -1,12 +1,12 @@
-# Continuous integration: every pull request (and every push to main) must
-# pass formatting, lint, unit tests, the web UI build and the PostgreSQL
-# integration test. Branch protection on `main` requires all jobs to pass.
+# Continuous integration: every pull request (and every push to main or v1)
+# must pass formatting, lint, unit tests, the web UI build and the PostgreSQL
+# integration test. Branch protection on `main` and `v1` requires all jobs to pass.
 name: CI
 
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, v1]
   workflow_dispatch:
 
 permissions:
