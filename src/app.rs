@@ -14,6 +14,7 @@ use crate::scryfall::Scryfall;
 use crate::store::CollectionStore;
 use crate::store::markdown::MarkdownStore;
 use crate::store::postgres::PostgresStore;
+use crate::store::sqlite::SqliteStore;
 
 const USER_AGENT: &str = concat!("mtg-scan/", env!("CARGO_PKG_VERSION"));
 
@@ -37,6 +38,10 @@ impl App {
         let http = http_client()?;
         let scryfall = Rc::new(Scryfall::new(http.clone()));
         let store: Box<dyn CollectionStore> = match cfg.storage.backend {
+            StorageBackend::Sqlite => Box::new(SqliteStore::open(
+                cfg.storage.sqlite_path(),
+                Some(scryfall.clone()),
+            )?),
             StorageBackend::Markdown => Box::new(MarkdownStore::open(&cfg.collection)?),
             StorageBackend::Postgres => Box::new(connect_postgres(cfg, scryfall.clone())?),
         };

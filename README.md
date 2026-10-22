@@ -206,13 +206,26 @@ Caches (Card Kingdom price list, Scryfall names/sets, card images) live in
 
 ## Storage
 
-### Markdown (default)
+### SQLite (default)
 
-`collection.md` is a readable Markdown table with a summary of totals. It is
-also the app's source of truth. You can edit quantities or delete rows by hand.
-It is git-ignored by default.
+One file, no server, with daily price history. It lives in your data folder
+(`%LOCALAPPDATA%\mtg-scan\collection.db` on Windows, `~/.local/share/mtg-scan`
+on Linux, or `MTG_SCAN_DATA_DIR` when set). `[storage] path` or `--db <file>`
+picks another file. It is created and upgraded automatically.
 
-### PostgreSQL (price history)
+```powershell
+mtg-scan db status                    # file, SQLite version, row counts
+mtg-scan db import collection.md      # copy a Markdown collection in (sets quantities)
+mtg-scan db export backup.md          # Markdown snapshot of the database
+```
+
+### Markdown
+
+`collection.md` (`[storage] backend = "markdown"`) is a readable Markdown table
+with a summary of totals, and no price history. You can edit quantities or
+delete rows by hand. It is git-ignored by default.
+
+### PostgreSQL (your own server)
 
 Connection settings and the password live in a `.env` file next to
 `mtg-scan.toml`. It is git-ignored, and real environment variables override it:

@@ -71,7 +71,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
 | `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs |
 | `pricing/` | `tcgplayer.rs` (mpapi pricepoints, Scryfall fallback), `cardkingdom.rs` (daily price list, then a compact index), `PriceService` |
-| `store/` | `CollectionStore` trait (add, remove, `set_quantity`, `relocate` to another printing/finish, prices); `markdown.rs` (parse, render, atomic write); `postgres.rs` (migrations, upserts, Scryfall hydration, price history) |
+| `store/` | `CollectionStore` trait (add, remove, `set_quantity`, `relocate` to another printing/finish, `import`, prices), shared `hydrate` (card details from Scryfall) and `conformance` test suite; `sqlite.rs` (default since 1.0: rusqlite bundled, WAL, `BEGIN IMMEDIATE` writes, migrations applied on open, cents and ISO dates); `postgres.rs` (migrations via `db migrate`, upserts, price history); `markdown.rs` (parse, render, atomic write; import/export format). Migrations live per dialect in `migrations/sqlite/` and `migrations/postgres/` with matching version numbers |
 | `moxfield.rs` | Moxfield decks of `[decks] moxfield_user` (Settings page), else `MTG_SCAN_MOXFIELD_USER` (`.env`): deck list and deck contents, cached, 1 req/s |
 | `cache.rs` | JSON cache in `%LOCALAPPDATA%\mtg-scan` |
 | `model.rs` | `Card`, `Finish`, `Prices`, `CollectionEntry`, `PricePoint` |
@@ -121,8 +121,13 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
   installed Edge headless with its own `userDataDir`; `browser.close()` ends only that instance.
   Navigate with `waitUntil: 'domcontentloaded'`: the MJPEG `<img>` never finishes loading, so
   "load"/"networkidle" (and Edge's `--virtual-time-budget`) hang.
-- **Test UI and edits against a throwaway collection**, never the user's database:
-  `mtg-scan --storage markdown --collection <scratch>.md ui --manual --no-open --port 8788`.
+- **Test UI and edits against a throwaway collection**, never the user's database. The repo
+  folder's (git-ignored) `mtg-scan.toml` and `.env` point at the user's real PostgreSQL, so
+  never run the binary from the repo folder or without a scratch config: run it from a scratch
+  folder with `--config <scratch>.toml` (`[storage] backend = "sqlite"`, `path = "<scratch>.db"`),
+  e.g. `mtg-scan --config scratch.toml ui --manual --no-open --port 8788`, and stop if the build
+  failed (a stale binary may not know new flags). This once imported test rows into the real
+  collection.
 - **Several stores can be open on one collection** (scanner worker, each web request). PostgreSQL
   handles that. `MarkdownStore` makes every change one locked read-modify-write (exclusive
   `std::fs::File::lock` on `<collection>.md.lock`, re-read, change, write), so concurrent changes,

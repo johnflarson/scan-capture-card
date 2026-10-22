@@ -22,6 +22,7 @@ use crate::moxfield;
 use crate::scryfall::Scryfall;
 use crate::store::markdown::MarkdownStore;
 use crate::store::postgres::{self, PostgresStore};
+use crate::store::sqlite::SqliteStore;
 
 /// What the Settings page edits, as last saved.
 pub struct Settings {
@@ -187,6 +188,7 @@ pub async fn database(State(st): State<Arc<AppState>>) -> Response {
     let cfg = st.cfg.clone();
     blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
         Ok(match cfg.storage.backend {
+            StorageBackend::Sqlite => sqlite_view(&cfg),
             StorageBackend::Postgres => postgres_view(&cfg),
             StorageBackend::Markdown => markdown_view(&cfg),
         })
@@ -268,6 +270,42 @@ fn postgres_view(cfg: &Config) -> DatabaseView {
                     },
                 ),
             ];
+        }
+        Err(e) => view.error = Some(format!("{e:#}")),
+    }
+    view
+}
+
+fn sqlite_view(cfg: &Config) -> DatabaseView {
+    let path = cfg.storage.sqlite_path();
+    let path = std::path::absolute(&path).unwrap_or(path);
+    let mut view = DatabaseView {
+        backend: "SQLite".into(),
+        settings: vec![InfoRow::new("File", path.display().to_string())],
+        status: Vec::new(),
+        error: None,
+    };
+    match SqliteStore::open(&path, None).and_then(|store| store.status()) {
+        Ok(s) => {
+            view.status = vec![
+                InfoRow::new("Engine", format!("SQLite {}", s.sqlite_version)),
+                InfoRow::new("Schema version", s.schema_version.to_string()),
+                InfoRow::new("Printings", s.printings.to_string()),
+                InfoRow::new("Cards", s.cards.to_string()),
+                InfoRow::new(
+                    "Price points",
+                    match s.first_price_date {
+                        Some(d) => format!("{} since {d}", s.price_points),
+                        None => s.price_points.to_string(),
+                    },
+                ),
+            ];
+            if let Ok(meta) = std::fs::metadata(&path) {
+                view.status.push(InfoRow::new(
+                    "Size",
+                    format!("{:.1} MB", meta.len() as f64 / 1_048_576.0),
+                ));
+            }
         }
         Err(e) => view.error = Some(format!("{e:#}")),
     }

@@ -37,15 +37,18 @@ use store::{CollectionStore, totals};
 #[command(
     name = "mtg-scan",
     version,
-    about = "Scan Magic: The Gathering cards with a webcam, track them in Markdown or PostgreSQL, and price them via TCGplayer and Card Kingdom"
+    about = "The Shuffling Tome: scan Magic: The Gathering cards with a webcam, keep the collection in SQLite or PostgreSQL, and track its prices"
 )]
 struct Cli {
     /// Config file (default: ./mtg-scan.toml, then %APPDATA%\mtg-scan\config.toml)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
-    /// Collection Markdown file (overrides config)
+    /// Collection Markdown file (markdown backend; overrides config)
     #[arg(long, global = true)]
     collection: Option<PathBuf>,
+    /// SQLite database file (sqlite backend; overrides [storage] path)
+    #[arg(long, global = true)]
+    db: Option<PathBuf>,
     /// Where the collection is stored (overrides [storage] backend)
     #[arg(long, global = true, value_enum)]
     storage: Option<StorageBackend>,
@@ -187,7 +190,7 @@ enum Command {
         #[arg(long)]
         show: bool,
     },
-    /// PostgreSQL database management
+    /// Database management (SQLite or PostgreSQL)
     Db {
         #[command(subcommand)]
         command: DbCommand,
@@ -218,11 +221,11 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DbCommand {
-    /// Create or upgrade the schema (uses the admin / schema-owner account)
+    /// Create or upgrade the schema (PostgreSQL: uses the admin / schema-owner account)
     Migrate,
-    /// Test the connection and show row counts
+    /// Test the database and show row counts
     Status,
-    /// Create a least-privilege login for day-to-day use and switch .env to it
+    /// PostgreSQL: create a least-privilege login for day-to-day use and switch .env to it
     SetupAppUser {
         /// Role name to create
         #[arg(long, default_value = "mtg_scan_app")]
@@ -280,6 +283,9 @@ fn run() -> Result<()> {
     let mut cfg = Config::load(cli.config.as_deref())?;
     if let Some(c) = cli.collection {
         cfg.collection = c;
+    }
+    if let Some(db) = cli.db {
+        cfg.storage.path = Some(db);
     }
     if let Some(s) = cli.storage {
         cfg.storage.backend = s;
@@ -768,10 +774,23 @@ fn ui_token(show: bool) -> Result<()> {
 
 fn db(cfg: &Config, command: DbCommand) -> Result<()> {
     use store::postgres::PostgresStore;
+    use store::sqlite::SqliteStore;
     let scryfall = std::rc::Rc::new(scryfall::Scryfall::new(app::http_client()?));
     let schema = cfg.storage.schema.as_str();
-    match command {
-        DbCommand::Migrate => {
+    match (command, cfg.storage.backend) {
+        (_, StorageBackend::Markdown) => bail!(
+            "`db` commands need a database: set [storage] backend = \"sqlite\" (the default)              or \"postgres\", or pass --storage sqlite"
+        ),
+        (DbCommand::Migrate, StorageBackend::Sqlite) => {
+            // Opening the file applies pending migrations.
+            let store = SqliteStore::open(cfg.storage.sqlite_path(), None)?;
+            println!(
+                "{}: schema is up to date (version {})",
+                store.location(),
+                store.schema_version()?
+            );
+        }
+        (DbCommand::Migrate, StorageBackend::Postgres) => {
             let admin = cfg.storage.resolved_admin_connection()?;
             let (store, applied) = PostgresStore::connect_admin(admin, schema, scryfall)?;
             if applied.is_empty() {
@@ -784,7 +803,26 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
                 println!("{}: applied migrations {applied:?}", store.location());
             }
         }
-        DbCommand::Status => {
+        (DbCommand::Status, StorageBackend::Sqlite) => {
+            let store = SqliteStore::open(cfg.storage.sqlite_path(), None)?;
+            let s = store.status()?;
+            println!("Opened {}", store.location());
+            println!("  engine           SQLite {}", s.sqlite_version);
+            if let Ok(meta) = std::fs::metadata(store.path()) {
+                println!(
+                    "  size             {:.1} MB",
+                    meta.len() as f64 / 1_048_576.0
+                );
+            }
+            print_counts(
+                s.schema_version,
+                s.printings,
+                s.cards,
+                s.price_points,
+                s.first_price_date,
+            );
+        }
+        (DbCommand::Status, StorageBackend::Postgres) => {
             // No version check here, so status works even when migrations are pending.
             let store = PostgresStore::open(cfg.storage.resolved_connection()?, schema, scryfall)?;
             let s = store.status()?;
@@ -799,20 +837,22 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
                     ""
                 }
             );
-            println!("  schema version   {}", s.schema_version);
-            println!("  printings        {}", s.printings);
-            println!("  cards            {}", s.cards);
-            println!(
-                "  price points     {}{}",
+            print_counts(
+                s.schema_version,
+                s.printings,
+                s.cards,
                 s.price_points,
-                s.first_price_date
-                    .map(|d| format!(" (since {d})"))
-                    .unwrap_or_default()
+                s.first_price_date,
             );
         }
-        DbCommand::SetupAppUser { role } => setup_app_user(cfg, &role, scryfall)?,
-        DbCommand::Import { file } => {
-            let store = app::connect_postgres(cfg, scryfall)?;
+        (DbCommand::SetupAppUser { .. }, StorageBackend::Sqlite) => {
+            bail!("setup-app-user is for PostgreSQL; a SQLite file has no logins")
+        }
+        (DbCommand::SetupAppUser { role }, StorageBackend::Postgres) => {
+            setup_app_user(cfg, &role, scryfall)?
+        }
+        (DbCommand::Import { file }, _) => {
+            let mut store = App::new(cfg)?.store;
             let path = file.unwrap_or_else(|| cfg.collection.clone());
             let entries = store::markdown::MarkdownStore::open(&path)?.entries()?;
             let n = store.import(&entries)?;
@@ -822,8 +862,8 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
                 store.location()
             );
         }
-        DbCommand::Export { file } => {
-            let store = app::connect_postgres(cfg, scryfall)?;
+        (DbCommand::Export { file }, _) => {
+            let store = App::new(cfg)?.store;
             let path = file.unwrap_or_else(|| cfg.collection.clone());
             let entries = store.entries()?;
             std::fs::write(&path, store::markdown::render(&entries))
@@ -832,6 +872,24 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_counts(
+    schema_version: i32,
+    printings: i64,
+    cards: i64,
+    price_points: i64,
+    first_price_date: Option<chrono::NaiveDate>,
+) {
+    println!("  schema version   {schema_version}");
+    println!("  printings        {printings}");
+    println!("  cards            {cards}");
+    println!(
+        "  price points     {price_points}{}",
+        first_price_date
+            .map(|d| format!(" (since {d})"))
+            .unwrap_or_default()
+    );
 }
 
 /// Create the least-privilege app role and move `.env` over to it, keeping
