@@ -60,6 +60,9 @@ pub struct StateView {
     pub recognizer: String,
     /// Where cards are saved, e.g. the database location.
     pub collection: String,
+    /// Card Kingdom prices are recorded (`[prices] card_kingdom`).
+    #[serde(default)]
+    pub card_kingdom: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +98,9 @@ pub struct CardView {
     /// Copies in the collection after this scan (None for dry runs).
     pub quantity: Option<u32>,
     pub tcgplayer: Option<f64>,
+    /// Cardmarket price in euros.
+    #[serde(default)]
+    pub cardmarket: Option<f64>,
     pub cardkingdom: Option<f64>,
     pub cardkingdom_buylist: Option<f64>,
     pub tcgplayer_url: Option<String>,
@@ -227,6 +233,9 @@ pub struct Totals {
     pub printings: usize,
     pub cards: u32,
     pub tcgplayer: f64,
+    /// Euros.
+    #[serde(default)]
+    pub cardmarket: f64,
     pub cardkingdom: f64,
     pub cardkingdom_buylist: f64,
 }
@@ -246,6 +255,9 @@ pub struct CollectionRow {
     pub finish: Finish,
     pub quantity: u32,
     pub tcgplayer: Option<f64>,
+    /// Cardmarket price in euros.
+    #[serde(default)]
+    pub cardmarket: Option<f64>,
     pub cardkingdom: Option<f64>,
     pub cardkingdom_buylist: Option<f64>,
     /// `YYYY-MM-DD` the row was first added.
@@ -264,6 +276,7 @@ impl Totals {
             t.printings += 1;
             t.cards += r.quantity;
             t.tcgplayer += r.tcgplayer.unwrap_or(0.0) * q;
+            t.cardmarket += r.cardmarket.unwrap_or(0.0) * q;
             t.cardkingdom += r.cardkingdom.unwrap_or(0.0) * q;
             t.cardkingdom_buylist += r.cardkingdom_buylist.unwrap_or(0.0) * q;
             t
@@ -305,8 +318,11 @@ pub struct CollectionView {
     pub location: String,
     pub rows: Vec<CollectionRow>,
     pub totals: Totals,
-    /// TCGplayer value change over the last week (PostgreSQL price history).
+    /// TCGplayer value change over the last week (from the price history).
     pub value_change: Option<ValueChange>,
+    /// Card Kingdom prices are recorded (`[prices] card_kingdom`).
+    #[serde(default)]
+    pub card_kingdom: bool,
 }
 
 /// How the value of cards owned now changed since `since`, counting only
@@ -759,6 +775,12 @@ pub fn usd(v: Option<f64>) -> String {
         .unwrap_or_else(|| "—".into())
 }
 
+/// `€1.23`, or an em dash when unknown.
+pub fn eur(v: Option<f64>) -> String {
+    v.map(|p| format!("€{:.2}", p + 0.0))
+        .unwrap_or_else(|| "—".into())
+}
+
 /// A printing's front image ("normal", 488×680) straight from Scryfall's
 /// image CDN. Grids use it rather than the API's image redirect, which
 /// counts against the API rate limit.
@@ -896,6 +918,7 @@ mod tests {
             finish: Finish::Nonfoil,
             quantity,
             tcgplayer: tcg,
+            cardmarket: None,
             cardkingdom: Some(1.0),
             cardkingdom_buylist: None,
             added: String::new(),
@@ -920,6 +943,7 @@ mod tests {
             finish: Finish::Nonfoil,
             quantity: None,
             tcgplayer: tcg,
+            cardmarket: None,
             cardkingdom: None,
             cardkingdom_buylist: None,
             tcgplayer_url: None,

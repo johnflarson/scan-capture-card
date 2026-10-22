@@ -29,7 +29,7 @@ use app::{App, describe_card, describe_prices};
 use config::{Config, LlmProvider, RecognitionMode, StorageBackend};
 use engine::EngineOptions;
 use llm::VisionLlm;
-use model::{CollectionEntry, Finish, format_usd};
+use model::{CollectionEntry, Finish, format_eur, format_usd};
 use mtg_scan_shared::Mode;
 use recognize::{CardHints, Method, Recognizer};
 use store::{CollectionStore, totals};
@@ -163,9 +163,9 @@ enum Command {
         #[command(flatten)]
         card: CardArgs,
     },
-    /// Refresh prices for every card in the collection
+    /// Refresh the card data from Scryfall and record today's prices for every card
     Reprice,
-    /// Show a card's price history (postgres backend)
+    /// Show a card's price history
     History {
         /// Name (or part of it) as it appears in the collection
         name: String,
@@ -662,15 +662,24 @@ fn history(
         "{} ({} #{}, {}) x{}",
         e.name, e.set_code, e.collector_number, e.finish, e.quantity
     );
-    println!("{:<10}  {:>9}  {:>9}  {:>9}", "Date", "TCG", "CK", "CK buy");
+    let ck = points.iter().any(|p| p.cardkingdom.is_some());
+    print!("{:<10}  {:>9}  {:>9}", "Date", "TCGplayer", "Cardmarket");
+    println!("{}", if ck { "         CK     CK buy" } else { "" });
     for p in &points {
-        println!(
-            "{:<10}  {:>9}  {:>9}  {:>9}",
+        print!(
+            "{:<10}  {:>9}  {:>10}",
             p.date.to_string(),
             format_usd(p.tcgplayer),
-            format_usd(p.cardkingdom),
-            format_usd(p.cardkingdom_buylist)
+            format_eur(p.cardmarket)
         );
+        if ck {
+            print!(
+                "  {:>9}  {:>9}",
+                format_usd(p.cardkingdom),
+                format_usd(p.cardkingdom_buylist)
+            );
+        }
+        println!();
     }
     if let (Some(first), Some(last)) = (points.first(), points.last())
         && let (Some(a), Some(b)) = (first.tcgplayer, last.tcgplayer)
@@ -711,17 +720,25 @@ fn movers(cfg: &Config, days: u32, top: usize) -> Result<()> {
             .unwrap_or_else(|| format!("{} ({})", m.scryfall_id, m.finish))
     };
     let pct = |p: Option<f64>| p.map(|p| format!(" ({p:+.1}%)")).unwrap_or_default();
-    let signed = |v: f64| format!("{}${:.2}", if v < 0.0 { "-" } else { "+" }, v.abs());
+    let signed = |source: movers::Source, v: f64| {
+        format!(
+            "{}{}",
+            if v < 0.0 { "-" } else { "+" },
+            source.money(v.abs())
+        )
+    };
 
     println!("Since {since} ({days} days):");
     let report = movers::report(&moves, top);
+    // Sources with no prices on both dates (e.g. Card Kingdom switched off) are left out.
+    let report: Vec<_> = report.into_iter().filter(|r| r.rows > 0).collect();
     for r in &report {
         println!(
             "  {:<13} {} → {}  {}{}  over {} printings",
             r.source.label(),
-            format_usd(Some(r.before)),
-            format_usd(Some(r.now)),
-            signed(r.now - r.before),
+            r.source.money(r.before),
+            r.source.money(r.now),
+            signed(r.source, r.now - r.before),
             pct(r.percent()),
             r.rows
         );
@@ -736,15 +753,15 @@ fn movers(cfg: &Config, days: u32, top: usize) -> Result<()> {
                 let m = &moves[c.row];
                 println!(
                     "  {:>9}  {}{}  {} → {}{}",
-                    signed(c.total()),
+                    signed(r.source, c.total()),
                     describe(m),
                     if c.quantity > 1 {
                         format!(" ×{}", c.quantity)
                     } else {
                         String::new()
                     },
-                    format_usd(Some(c.then)),
-                    format_usd(Some(c.now)),
+                    r.source.money(c.then),
+                    r.source.money(c.now),
                     pct(c.percent())
                 );
             }
@@ -1048,27 +1065,32 @@ fn generate_password() -> Result<String> {
 
 fn reprice(cfg: &Config) -> Result<()> {
     let mut app = App::new(cfg)?;
-    app.prices
-        .cardkingdom
-        .force_refresh()
-        .context("failed to refresh Card Kingdom prices")?;
-    let entries = app.store.entries()?;
-    let today = chrono::Local::now().date_naive();
-    let mut repricer = reprice::Repricer::plan(&entries, today, true);
-    println!("Repricing {} printings…", repricer.total());
-    while let Some(r) = repricer.step(&mut app)? {
-        match r.new {
-            None => println!("  ? {} — no longer on Scryfall, skipped", r.label),
-            Some(new) => println!(
-                "  {}: TCG {} → {} · CK {} → {}",
-                r.label,
-                format_usd(r.old.tcgplayer),
-                format_usd(new.tcgplayer),
-                format_usd(r.old.cardkingdom),
-                format_usd(new.cardkingdom)
-            ),
-        }
+    let cache = app
+        .store
+        .card_cache()
+        .context("this storage backend has no card data")?;
+    println!("Checking Scryfall's card data…");
+    let synced = bulk::sync(&app.scryfall, cache, false)?;
+    if !synced.skipped {
+        println!("Copied {} printings from Scryfall", synced.cards);
     }
+    if let Some(ck) = &app.prices.cardkingdom {
+        ck.force_refresh()
+            .context("failed to refresh Card Kingdom prices")?;
+    }
+    let refreshed = reprice::refresh(&mut app, true)?.unwrap_or(reprice::Refreshed {
+        rows: 0,
+        card_kingdom: 0,
+    });
+    println!(
+        "Recorded today's prices for {} printings{}",
+        refreshed.rows,
+        if app.prices.cardkingdom.is_some() {
+            format!(" ({} with Card Kingdom prices)", refreshed.card_kingdom)
+        } else {
+            String::new()
+        }
+    );
     print_totals(&app.store.entries()?);
     Ok(())
 }
@@ -1086,23 +1108,32 @@ fn list(cfg: &Config) -> Result<()> {
         .max()
         .unwrap_or(4)
         .clamp(4, 40);
-    println!(
-        "{:>3}  {:<name_w$}  {:<5} {:>5}  {:<7}  {:>9}  {:>9}  {:>9}",
-        "Qty", "Name", "Set", "#", "Finish", "TCG", "CK", "CK buy"
+    let ck = entries.iter().any(|e| e.prices.cardkingdom.is_some());
+    print!(
+        "{:>3}  {:<name_w$}  {:<5} {:>5}  {:<7}  {:>9}  {:>10}",
+        "Qty", "Name", "Set", "#", "Finish", "TCGplayer", "Cardmarket"
     );
+    println!("{}", if ck { "         CK     CK buy" } else { "" });
     for e in &entries {
         let name: String = e.name.chars().take(name_w).collect();
-        println!(
-            "{:>3}  {:<name_w$}  {:<5} {:>5}  {:<7}  {:>9}  {:>9}  {:>9}",
+        print!(
+            "{:>3}  {:<name_w$}  {:<5} {:>5}  {:<7}  {:>9}  {:>10}",
             e.quantity,
             name,
             e.set_code,
             e.collector_number,
             e.finish.as_str(),
             format_usd(e.prices.tcgplayer),
-            format_usd(e.prices.cardkingdom),
-            format_usd(e.prices.cardkingdom_buylist)
+            format_eur(e.prices.cardmarket)
         );
+        if ck {
+            print!(
+                "  {:>9}  {:>9}",
+                format_usd(e.prices.cardkingdom),
+                format_usd(e.prices.cardkingdom_buylist)
+            );
+        }
+        println!();
     }
     print_totals(&entries);
     Ok(())
@@ -1110,8 +1141,15 @@ fn list(cfg: &Config) -> Result<()> {
 
 fn print_totals(entries: &[CollectionEntry]) {
     let t = totals(entries);
-    println!(
-        "\n{} printings, {} cards · TCGplayer ${:.2} · Card Kingdom ${:.2} (buylist ${:.2})",
-        t.printings, t.cards, t.tcgplayer, t.cardkingdom, t.cardkingdom_buylist
+    print!(
+        "\n{} printings, {} cards · TCGplayer ${:.2} · Cardmarket €{:.2}",
+        t.printings, t.cards, t.tcgplayer, t.cardmarket
     );
+    if entries.iter().any(|e| e.prices.cardkingdom.is_some()) {
+        print!(
+            " · Card Kingdom ${:.2} (buylist ${:.2})",
+            t.cardkingdom, t.cardkingdom_buylist
+        );
+    }
+    println!();
 }

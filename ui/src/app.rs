@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
     CardOutcome, CardView, ClientCommand, CollectionRow, CollectionView, EditResult, Finish, Mode,
-    PrintingView, RowEdit, ServerEvent, StateView, Totals, decks_by_card, usd,
+    PrintingView, RowEdit, ServerEvent, StateView, Totals, decks_by_card, eur, usd,
 };
 
 use crate::add::AddDialog;
@@ -500,9 +500,15 @@ fn SessionPanel(cards: RwSignal<Vec<CardView>>, send: Callback<ClientCommand>) -
                     <div class="value tcg">{move || usd(Some(total(|c| c.tcgplayer)))}</div>
                 </div>
                 <div class="metric">
-                    <div class="label">"Card Kingdom"</div>
-                    <div class="value ck">{move || usd(Some(total(|c| c.cardkingdom)))}</div>
+                    <div class="label">"Cardmarket"</div>
+                    <div class="value cm">{move || eur(Some(total(|c| c.cardmarket)))}</div>
                 </div>
+                <Show when=move || kept().iter().any(|c| c.cardkingdom.is_some())>
+                    <div class="metric">
+                        <div class="label">"Card Kingdom"</div>
+                        <div class="value ck">{move || usd(Some(total(|c| c.cardkingdom)))}</div>
+                    </div>
+                </Show>
             </div>
             <ReviewList held send />
             <Show
@@ -573,9 +579,16 @@ fn CardTile(card: CardView) -> impl IntoView {
                     {c.undone.then(|| view! { <span class="chip">"undone"</span> })}
                 </div>
                 <div class="prices">
-                    <PriceLink kind="tcg" label="TCGplayer" price=c.tcgplayer url=c.tcgplayer_url.clone() />
-                    <PriceLink kind="ck" label="Card Kingdom" price=c.cardkingdom url=c.cardkingdom_url.clone() />
-                    <span class="muted">{format!("buylist {}", usd(c.cardkingdom_buylist))}</span>
+                    <PriceLink kind="tcg" label="TCGplayer" price=usd(c.tcgplayer) url=c.tcgplayer_url.clone() />
+                    <PriceLink kind="cm" label="Cardmarket" price=eur(c.cardmarket) url=None />
+                    {c.cardkingdom
+                        .is_some()
+                        .then(|| {
+                            view! {
+                                <PriceLink kind="ck" label="Card Kingdom" price=usd(c.cardkingdom) url=c.cardkingdom_url.clone() />
+                                <span class="muted">{format!("buylist {}", usd(c.cardkingdom_buylist))}</span>
+                            }
+                        })}
                 </div>
             </div>
         </li>
@@ -586,10 +599,11 @@ fn CardTile(card: CardView) -> impl IntoView {
 fn PriceLink(
     kind: &'static str,
     label: &'static str,
-    price: Option<f64>,
+    /// Already formatted, e.g. `$1.23` or `€1.10`.
+    price: String,
     url: Option<String>,
 ) -> impl IntoView {
-    let text = format!("{label} {}", usd(price));
+    let text = format!("{label} {price}");
     match url {
         Some(href) => {
             view! { <a class=kind href=href target="_blank" rel="noopener">{text}</a> }.into_any()
@@ -621,6 +635,13 @@ fn CollectionPage(
     let editing = RwSignal::new(None::<CollectionRow>);
     let adding = RwSignal::new(false);
     let dry_run = Signal::derive(move || state.get().is_some_and(|s| s.dry_run));
+    // Card Kingdom columns: when that price source is on, or any row has its price.
+    let ck = Signal::derive(move || {
+        data.with(|d| {
+            d.as_ref()
+                .is_some_and(|d| d.card_kingdom || d.rows.iter().any(|r| r.cardkingdom.is_some()))
+        })
+    });
 
     let on_edit = Callback::new(move |row: CollectionRow| editing.set(Some(row)));
     let on_close = Callback::new(move |()| {
@@ -739,8 +760,14 @@ fn CollectionPage(
                             <Metric label="Printings" value=t.printings.to_string() kind="" />
                             <Metric label="Cards" value=t.cards.to_string() kind="" />
                             <Metric label="TCGplayer" value=usd(Some(t.tcgplayer)) kind="tcg" />
-                            <Metric label="Card Kingdom" value=usd(Some(t.cardkingdom)) kind="ck" />
-                            <Metric label="CK buylist" value=usd(Some(t.cardkingdom_buylist)) kind="" />
+                            <Metric label="Cardmarket" value=eur(Some(t.cardmarket)) kind="cm" />
+                            {ck.get()
+                                .then(|| {
+                                    view! {
+                                        <Metric label="Card Kingdom" value=usd(Some(t.cardkingdom)) kind="ck" />
+                                        <Metric label="CK buylist" value=usd(Some(t.cardkingdom_buylist)) kind="" />
+                                    }
+                                })}
                         </div>
                     }
                 })
@@ -762,8 +789,16 @@ fn CollectionPage(
                                     <th>"#"</th>
                                     <th>"Finish"</th>
                                     <th class="num">"TCGplayer"</th>
-                                    <th class="num">"Card Kingdom"</th>
-                                    <th class="num">"CK buylist"</th>
+                                    <th class="num">"Cardmarket"</th>
+                                    {move || {
+                                        ck.get()
+                                            .then(|| {
+                                                view! {
+                                                    <th class="num">"Card Kingdom"</th>
+                                                    <th class="num">"CK buylist"</th>
+                                                }
+                                            })
+                                    }}
                                     <th>"Priced"</th>
                                     <th></th>
                                 </tr>
@@ -778,7 +813,7 @@ fn CollectionPage(
                                                 .into_any()
                                         }
                                         Item::Card(row) => {
-                                            view! { <Row row on_edit locked=dry_run /> }.into_any()
+                                            view! { <Row row on_edit locked=dry_run ck /> }.into_any()
                                         }
                                     }
                                 />
@@ -821,6 +856,8 @@ fn Row(
     on_edit: Callback<CollectionRow>,
     /// Dry run: the collection can't be changed.
     locked: Signal<bool>,
+    /// Show the Card Kingdom columns.
+    ck: Signal<bool>,
 ) -> impl IntoView {
     let r = row;
     let edit_row = r.clone();
@@ -846,8 +883,19 @@ fn Row(
             <td>{r.number.clone()}</td>
             <td>{r.finish.label()}</td>
             {cell("tcg", r.tcgplayer, r.tcgplayer_url.clone())}
-            {cell("ck", r.cardkingdom, r.cardkingdom_url.clone())}
-            <td class="num">{usd(r.cardkingdom_buylist)}</td>
+            <td class="num cm">{eur(r.cardmarket)}</td>
+            {
+                let (price, url, buylist) = (r.cardkingdom, r.cardkingdom_url.clone(), r.cardkingdom_buylist);
+                move || {
+                    ck.get()
+                        .then(|| {
+                            view! {
+                                {cell("ck", price, url.clone())}
+                                <td class="num">{usd(buylist)}</td>
+                            }
+                        })
+                }
+            }
             <td>{r.priced.clone().unwrap_or_default()}</td>
             <td class="row-actions">
                 <button

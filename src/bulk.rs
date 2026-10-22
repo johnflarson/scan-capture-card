@@ -5,7 +5,8 @@
 //!
 //! It runs inside the app, not from an OS scheduler: [`spawn_daily`] checks
 //! once an hour whether Scryfall has published a new file (it does about once
-//! a day) and copies it in; `mtg-scan db sync-cards` does it now.
+//! a day), copies it in, then records the day's prices (`reprice`);
+//! `mtg-scan db sync-cards` copies the file now.
 
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
@@ -110,22 +111,19 @@ pub fn read_cards(
     Ok((total, unreadable))
 }
 
-/// Keep the card cache current in the background while the app runs: check
-/// for a new bulk file now and then every hour. Uses its own database
-/// connection, so scanning never waits for it.
-pub fn spawn_daily(cfg: Config) {
+/// Keep the card data and daily prices current in the background while the
+/// app runs: now, then every hour. Uses its own database connection, so
+/// scanning never waits for it. Skipped while `saving()` is false (a dry run,
+/// or the Scan page's Save switch off): then nothing is written.
+pub fn spawn_daily(cfg: Config, saving: impl Fn() -> bool + Send + 'static) {
     let spawned = std::thread::Builder::new()
         .name("card-sync".into())
         .spawn(move || {
             loop {
-                match sync_now(&cfg) {
-                    Ok(Some(r)) if !r.skipped => eprintln!(
-                        "Card data: copied {} printings from Scryfall's file of {}",
-                        r.cards,
-                        r.file_date.get(..10).unwrap_or(&r.file_date)
-                    ),
-                    Ok(_) => {}
-                    Err(e) => eprintln!("  ! card data sync failed ({e:#}); trying again later"),
+                if saving()
+                    && let Err(e) = sync_now(&cfg)
+                {
+                    eprintln!("  ! card data sync failed ({e:#}); trying again later");
                 }
                 std::thread::sleep(CHECK_EVERY);
             }
@@ -135,14 +133,25 @@ pub fn spawn_daily(cfg: Config) {
     }
 }
 
-/// One sync against the configured store; `None` when it has no card cache
-/// (Markdown).
-fn sync_now(cfg: &Config) -> Result<Option<Report>> {
-    let app = App::new(cfg)?;
+/// One sync against the configured store, then today's prices if they
+/// weren't recorded yet.
+fn sync_now(cfg: &Config) -> Result<()> {
+    let mut app = App::new(cfg)?;
     let Some(cache) = app.store.card_cache() else {
-        return Ok(None);
+        return Ok(());
     };
-    sync(&app.scryfall, cache, false).map(Some)
+    let r = sync(&app.scryfall, cache, false)?;
+    if !r.skipped {
+        eprintln!(
+            "Card data: copied {} printings from Scryfall's file of {}",
+            r.cards,
+            r.file_date.get(..10).unwrap_or(&r.file_date)
+        );
+    }
+    if let Some(p) = crate::reprice::refresh(&mut app, false)? {
+        eprintln!("Prices: recorded today's prices for {} printings", p.rows);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

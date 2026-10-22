@@ -125,10 +125,16 @@ impl Card {
     }
 }
 
+/// A printing + finish's prices: TCGplayer (USD), Cardmarket (EUR) and MTGO
+/// tix from Scryfall, Card Kingdom (USD) when that source is switched on.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Prices {
     pub tcgplayer: Option<f64>,
     pub tcgplayer_url: Option<String>,
+    /// Cardmarket trend price, in euros.
+    pub cardmarket: Option<f64>,
+    /// MTGO (Cardhoarder) price in tix.
+    pub tix: Option<f64>,
     pub cardkingdom: Option<f64>,
     pub cardkingdom_buylist: Option<f64>,
     pub cardkingdom_url: Option<String>,
@@ -187,15 +193,21 @@ impl CollectionEntry {
     }
 }
 
-/// Prices observed on one day (postgres backend only).
+/// Prices observed on one day.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PricePoint {
     pub date: NaiveDate,
     pub tcgplayer: Option<f64>,
+    pub cardmarket: Option<f64>,
+    pub tix: Option<f64>,
     pub cardkingdom: Option<f64>,
     pub cardkingdom_buylist: Option<f64>,
 }
 
 pub fn format_usd(v: Option<f64>) -> String {
     v.map(|p| format!("${p:.2}")).unwrap_or_else(|| "—".into())
+}
+
+pub fn format_eur(v: Option<f64>) -> String {
+    v.map(|p| format!("€{p:.2}")).unwrap_or_else(|| "—".into())
 }

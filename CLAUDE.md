@@ -71,7 +71,8 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
 | `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs, bulk data metadata |
 | `bulk.rs` | Scryfall's daily `default_cards` bulk file (gzip JSON Lines, ~80 MB, ~110k paper printings) streamed into the store's card cache (`CardCache`); `spawn_daily` (hourly check, own connection, skipped in `--dry-run`), job state in `app_job` |
-| `pricing/` | `tcgplayer.rs` (mpapi pricepoints, Scryfall fallback), `cardkingdom.rs` (daily price list, then a compact index), `PriceService` |
+| `pricing/` | `PriceService`: Scryfall's prices from the card data (`scryfall_prices`: TCGplayer USD, Cardmarket EUR, MTGO tix per finish; TCGplayer product links), plus `cardkingdom.rs` (daily price list, then a compact index) only when `[prices] card_kingdom` is on |
+| `reprice.rs` | The daily price refresh: `record_cached_prices` (one SQL statement per store: today's point for every owned row from `card_printing`) plus Card Kingdom per row when on; once a day (`app_job` `daily_prices`), after the bulk sync and on `mtg-scan reprice`. Same-day upserts `coalesce`, so sources recorded separately keep each other's prices |
 | `store/` | `CollectionStore` trait (add, remove, `set_quantity`, `relocate` to another printing/finish, `import`, prices), shared `hydrate` (card details from Scryfall) and `conformance` test suite; `sqlite.rs` (default since 1.0: rusqlite bundled, WAL, `BEGIN IMMEDIATE` writes, migrations applied on open, cents and ISO dates); `postgres.rs` (migrations via `db migrate`, upserts, price history); `markdown.rs` (parse, render, atomic write; import/export format). Migrations live per dialect in `migrations/sqlite/` and `migrations/postgres/` with matching version numbers |
 | `moxfield.rs` | Moxfield decks of `[decks] moxfield_user` (Settings page), else `MTG_SCAN_MOXFIELD_USER` (`.env`): deck list and deck contents, cached, 1 req/s |
 | `cache.rs` | JSON cache in `%LOCALAPPDATA%\mtg-scan` |
@@ -102,9 +103,10 @@ the camera and `Windows.Media.Ocr` for OCR.
 - Owner-created future tables are granted to the app role via `ALTER DEFAULT PRIVILEGES`, so new
   migrations need no grant statements.
 - **No OS dependencies for app behaviour.** The user doesn't want the app to rely on OS
-  features such as Task Scheduler or Windows env vars. Periodic work (e.g. repricing) runs
-  inside the app: `reprice::Repricer` steps through cards not priced today on the live
-  worker thread whenever no scan job is waiting.
+  features such as Task Scheduler or Windows env vars. Periodic work runs inside the app:
+  `bulk::spawn_daily` (own thread and connection, hourly) copies Scryfall's daily data and
+  then `reprice::refresh` records the day's prices. It pauses while the engine isn't saving
+  (`Engine::saving`: dry run or the Save switch off).
 - **Backups:** none yet. The user will design the backup process (a GitHub issue tracks it). Don't
   add local dump files or backup jobs on your own.
 - Driver: sync `postgres` crate with native-tls. It uses prepared statements, so connect
@@ -184,8 +186,10 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
   actually delivers about 19-30 fps).
 - **Card Kingdom** `https://api.cardkingdom.com/api/v2/pricelist` is about 70 MB, keyed by
   `scryfall_id`, with separate foil rows. Downloaded at most daily.
-- **TCGplayer** `https://mpapi.tcgplayer.com/v2/product/{id}/pricepoints` needs no key.
-  `printingType` is "Normal" or "Foil". Etched cards use `tcgplayer_etched_id`.
+- **TCGplayer** has no public API for new developers (deprecated 2023). 0.x used the
+  site's internal `mpapi.tcgplayer.com/.../pricepoints`; 1.0 dropped it (fragile, likely
+  against their terms) for Scryfall's TCGplayer-sourced `usd` / `usd_foil` / `usd_etched`.
+  Scryfall has no Cardmarket price for etched foils and no Card Kingdom prices at all.
 - **Moxfield** has no documented API. The site's own endpoints work without a key:
   `api2.moxfield.com/v2/decks/search?authorUserNames=<user>&showIllegal=true` (deck list;
   without `showIllegal` it silently drops decks not legal in their format, 21 of 57 for the

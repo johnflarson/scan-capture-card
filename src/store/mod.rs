@@ -82,6 +82,13 @@ pub trait CollectionStore {
         bail!("this storage backend can't import; use sqlite or postgres")
     }
 
+    /// Record `date`'s prices for every owned row from the card cache
+    /// (Scryfall's daily TCGplayer, Cardmarket and MTGO prices). Returns the
+    /// rows priced.
+    fn record_cached_prices(&mut self, _date: NaiveDate) -> Result<usize> {
+        bail!("this storage backend has no card cache")
+    }
+
     /// Price points over time, oldest first.
     fn price_history(&self, _scryfall_id: &str, _finish: Finish) -> Result<Vec<PricePoint>> {
         bail!("price history is only kept by the sqlite and postgres storage backends")
@@ -198,6 +205,8 @@ pub struct Totals {
     pub printings: usize,
     pub cards: u32,
     pub tcgplayer: f64,
+    /// Euros.
+    pub cardmarket: f64,
     pub cardkingdom: f64,
     pub cardkingdom_buylist: f64,
 }
@@ -208,6 +217,7 @@ pub fn totals(entries: &[CollectionEntry]) -> Totals {
         t.printings += 1;
         t.cards += e.quantity;
         t.tcgplayer += e.prices.tcgplayer.unwrap_or(0.0) * q;
+        t.cardmarket += e.prices.cardmarket.unwrap_or(0.0) * q;
         t.cardkingdom += e.prices.cardkingdom.unwrap_or(0.0) * q;
         t.cardkingdom_buylist += e.prices.cardkingdom_buylist.unwrap_or(0.0) * q;
         t
@@ -335,6 +345,8 @@ pub(crate) fn conformance(store: &mut dyn CollectionStore) {
         quantity: qty,
         prices: Prices {
             tcgplayer: Some(tcg),
+            cardmarket: Some(tcg - 0.25),
+            tix: Some(0.02),
             cardkingdom: Some(tcg + 1.0),
             cardkingdom_buylist: None,
             ..Prices::default()
@@ -361,6 +373,12 @@ pub(crate) fn conformance(store: &mut dyn CollectionStore) {
         (Some(1.5), Some(2.5)),
         "same-day price point is replaced"
     );
+    assert_eq!(
+        (m11_row.prices.cardmarket, m11_row.prices.tix),
+        (Some(1.25), Some(0.02))
+    );
+    let point = &store.price_history(m11, Finish::Nonfoil).unwrap()[0];
+    assert_eq!((point.cardmarket, point.tix), (Some(1.25), Some(0.02)));
     assert_eq!(m11_row.price_updated, Some(today));
     assert_eq!(store.price_history(m11, Finish::Nonfoil).unwrap().len(), 1);
 

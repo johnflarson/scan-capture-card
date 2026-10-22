@@ -27,7 +27,6 @@ use crate::camera::{self, Webcam};
 use crate::config::Config;
 use crate::model::Finish;
 use crate::pipeline::{CardResult, Outcome, Pipeline, Rect};
-use crate::reprice::Repricer;
 use draw::{Color, Overlay};
 use watcher::Watcher;
 
@@ -159,6 +158,8 @@ struct State {
     camera: String,
     recognizer: String,
     collection: String,
+    /// Card Kingdom prices are recorded.
+    card_kingdom: bool,
     boxes: Vec<(Rect, Color)>,
     guide_color: Color,
     cards: Vec<CardView>,
@@ -179,6 +180,7 @@ impl State {
             camera: self.camera.clone(),
             recognizer: self.recognizer.clone(),
             collection: self.collection.clone(),
+            card_kingdom: self.card_kingdom,
         }
     }
 }
@@ -262,6 +264,7 @@ impl Engine {
                 camera: String::new(),
                 recognizer: String::new(),
                 collection: String::new(),
+                card_kingdom: cfg.prices.card_kingdom,
                 boxes: Vec::new(),
                 guide_color: draw::IDLE,
                 cards: Vec::new(),
@@ -315,6 +318,14 @@ impl Engine {
 
     pub fn view(&self) -> StateView {
         self.ctx.lock().view()
+    }
+
+    /// Whether scans are being saved right now (off in a dry run and while
+    /// the Scan page's Save switch is off), for background work that writes
+    /// to the database and should pause with it.
+    pub fn saving(&self) -> impl Fn() -> bool + Send + 'static {
+        let state = self.ctx.state.clone();
+        move || state.lock().is_ok_and(|s| s.save)
     }
 
     pub fn session(&self) -> SessionView {
@@ -631,7 +642,6 @@ fn capture_loop(
 
 fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) -> Result<()> {
     let dry_run = opts.dry_run;
-    let saving = |ctx: &Ctx| ctx.lock().save;
     let mut pipeline = match Pipeline::new(&cfg) {
         Ok(p) => p,
         Err(e) => {
@@ -643,7 +653,9 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
     };
     pipeline.hold_uncertain = opts.review_uncertain && !dry_run;
     // Warm the Card Kingdom cache now rather than during the first scan.
-    let _ = pipeline.app.prices.cardkingdom.price("", Finish::Nonfoil);
+    if let Some(ck) = &pipeline.app.prices.cardkingdom {
+        let _ = ck.price("", Finish::Nonfoil);
+    }
     let recognizer = pipeline.recognizer.describe();
     let collection = pipeline.app.store.location();
     ctx.update(|s| {
@@ -663,59 +675,9 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
          Lay out cards and hold still — scanning is automatic."
     )));
 
-    // Background reprice of rows not yet priced today, one row whenever no
-    // scan is waiting, so price history builds up while the app runs.
-    let today = chrono::Local::now().date_naive();
-    let mut repricer = match (dry_run, pipeline.app.store.entries()) {
-        (false, Ok(entries)) => Repricer::plan(&entries, today, false),
-        (true, _) => Repricer::plan(&[], today, false),
-        (false, Err(e)) => {
-            ctx.emit(EngineEvent::Error(format!(
-                "background reprice skipped: {e:#}"
-            )));
-            Repricer::plan(&[], today, false)
-        }
-    };
-    if !repricer.is_done() {
-        ctx.emit(EngineEvent::Info(format!(
-            "Refreshing prices in the background: {} card(s) not priced today.",
-            repricer.total()
-        )));
-    }
-
     // Session cards added by the most recent scan, for Undo.
     let mut last_scan: Vec<u64> = Vec::new();
-    loop {
-        // The price refresh writes price history, so it waits while not saving.
-        let job = if repricer.is_done() || !saving(&ctx) {
-            match jobs.recv() {
-                Ok(job) => job,
-                Err(_) => break,
-            }
-        } else {
-            match jobs.try_recv() {
-                Ok(job) => job,
-                Err(TryRecvError::Disconnected) => break,
-                Err(TryRecvError::Empty) => {
-                    match repricer.step(&mut pipeline.app) {
-                        Ok(_) if repricer.is_done() => ctx.emit(EngineEvent::Info(format!(
-                            "Background price refresh finished ({} card(s)).",
-                            repricer.total()
-                        ))),
-                        Ok(_) => {}
-                        Err(e) => {
-                            ctx.emit(EngineEvent::Error(format!(
-                                "background price refresh stopped ({} left): {e:#}",
-                                repricer.remaining()
-                            )));
-                            repricer.abandon();
-                        }
-                    }
-                    continue;
-                }
-            }
-        };
-
+    while let Ok(job) = jobs.recv() {
         match job {
             Job::Single {
                 image,
@@ -799,6 +761,7 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
                         view.finish = entry.finish.into();
                         view.quantity = Some(entry.quantity);
                         view.tcgplayer = entry.prices.tcgplayer;
+                        view.cardmarket = entry.prices.cardmarket;
                         view.cardkingdom = entry.prices.cardkingdom;
                         view.cardkingdom_buylist = entry.prices.cardkingdom_buylist;
                         view.tcgplayer_url = entry.prices.tcgplayer_url.clone();
@@ -985,18 +948,18 @@ pub fn summarize(results: &[CardResult], mode: Mode, auto: bool) -> String {
         };
     }
     let (mut new, mut same, mut failed, mut held) = (0, 0, 0, 0);
-    let (mut tcg, mut ck) = (0.0, 0.0);
+    let (mut tcg, mut cm) = (0.0, 0.0);
     for r in results {
         match &r.outcome {
             Outcome::Added { entry, .. } => {
                 new += 1;
                 tcg += entry.prices.tcgplayer.unwrap_or(0.0);
-                ck += entry.prices.cardkingdom.unwrap_or(0.0);
+                cm += entry.prices.cardmarket.unwrap_or(0.0);
             }
             Outcome::Priced { prices, .. } => {
                 new += 1;
                 tcg += prices.tcgplayer.unwrap_or(0.0);
-                ck += prices.cardkingdom.unwrap_or(0.0);
+                cm += prices.cardmarket.unwrap_or(0.0);
             }
             Outcome::Held { .. } => held += 1,
             Outcome::Unchanged { .. } => same += 1,
@@ -1009,7 +972,7 @@ pub fn summarize(results: &[CardResult], mode: Mode, auto: bool) -> String {
         String::new()
     };
     format!(
-        "{} cards: {new} new (TCG ${tcg:.2} · CK ${ck:.2}){review}, {same} unchanged, {failed} unrecognised",
+        "{} cards: {new} new (TCGplayer ${tcg:.2} · Cardmarket €{cm:.2}){review}, {same} unchanged, {failed} unrecognised",
         results.len()
     )
 }
@@ -1041,6 +1004,7 @@ fn card_view(r: &CardResult, seq: u64) -> Option<CardView> {
         finish: finish.into(),
         quantity,
         tcgplayer: prices.tcgplayer,
+        cardmarket: prices.cardmarket,
         cardkingdom: prices.cardkingdom,
         cardkingdom_buylist: prices.cardkingdom_buylist,
         tcgplayer_url: prices.tcgplayer_url.clone(),

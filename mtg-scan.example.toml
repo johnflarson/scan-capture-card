@@ -20,6 +20,12 @@ backend = "sqlite"
 # Schema the tables live in; created automatically.
 schema = "mtg_scan"
 
+[prices]
+# Prices come from Scryfall's daily data: TCGplayer (USD), Cardmarket (EUR)
+# and MTGO tix. Also record Card Kingdom retail + buylist prices (its public
+# ~70 MB price list, downloaded at most daily):
+card_kingdom = false
+
 [camera]
 # Index from `mtg-scan cameras`. Leave unset to auto-pick the Insta360.
 # index = 0

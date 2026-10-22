@@ -1,9 +1,10 @@
 //! Scan page "Top 5" box: this session's most expensive cards by TCGplayer
-//! and by Card Kingdom price, as card images with that store's price. A card can be hidden (e.g. a
+//! and by Cardmarket price (and Card Kingdom's, when that source is on), as
+//! card images with that store's price. A card can be hidden (e.g. a
 //! mis-scan); that only changes this box, never the collection.
 
 use leptos::prelude::*;
-use mtg_scan_shared::{CardView, top_cards, usd};
+use mtg_scan_shared::{CardView, eur, top_cards, usd};
 
 use crate::preview::Preview;
 
@@ -30,8 +31,11 @@ pub fn TopCards(
                     </button>
                 </Show>
             </div>
-            <TopList title="TCGplayer" kind="tcg" price=|c| c.tcgplayer cards hidden />
-            <TopList title="Card Kingdom" kind="ck" price=|c| c.cardkingdom cards hidden />
+            <TopList title="TCGplayer" kind="tcg" price=|c| c.tcgplayer money=usd cards hidden />
+            <TopList title="Cardmarket" kind="cm" price=|c| c.cardmarket money=eur cards hidden />
+            <Show when=move || cards.with(|list| list.iter().any(|c| c.cardkingdom.is_some()))>
+                <TopList title="Card Kingdom" kind="ck" price=|c| c.cardkingdom money=usd cards hidden />
+            </Show>
         </section>
     }
 }
@@ -41,6 +45,8 @@ fn TopList(
     title: &'static str,
     kind: &'static str,
     price: fn(&CardView) -> Option<f64>,
+    /// Formats a price in the store's currency.
+    money: fn(Option<f64>) -> String,
     cards: RwSignal<Vec<CardView>>,
     hidden: RwSignal<Vec<String>>,
 ) -> impl IntoView {
@@ -58,7 +64,7 @@ fn TopList(
                         key=|c| c.key()
                         children=move |c| {
                             let key = c.key();
-                            let label = format!("{} · {}", c.name, usd(price(&c)));
+                            let label = format!("{} · {}", c.name, money(price(&c)));
                             // Hovering shows the card full size, as card names do.
                             let preview = use_context::<Preview>();
                             let id = c.scryfall_id.clone();
@@ -90,7 +96,7 @@ fn TopList(
                                             None => view! { <div class="noimg">{c.name.clone()}</div> }.into_any(),
                                         }}
                                     </a>
-                                    <span class=format!("top-price {kind}")>{usd(price(&c))}</span>
+                                    <span class=format!("top-price {kind}")>{money(price(&c))}</span>
                                     <button
                                         class="top-hide"
                                         title="Hide from the top 5 (e.g. a mis-scan); the collection is unchanged"

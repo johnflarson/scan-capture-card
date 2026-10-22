@@ -412,6 +412,7 @@ pub fn parse(text: &str) -> Result<Vec<CollectionEntry>> {
                 cardkingdom: parse_usd(&ck),
                 cardkingdom_buylist: parse_usd(&cells[9]),
                 cardkingdom_url: ck_url,
+                ..Prices::default()
             },
             added: date(&cells[10]).unwrap_or_else(|| chrono::Local::now().date_naive()),
             price_updated: date(&cells[11]),
@@ -445,6 +446,7 @@ mod tests {
                 cardkingdom_url: Some(
                     "https://www.cardkingdom.com/mtg/dominaria-united/sheoldred".into(),
                 ),
+                ..Prices::default()
             },
             added: NaiveDate::from_ymd_opt(2026, 10, 20).unwrap(),
             price_updated: NaiveDate::from_ymd_opt(2026, 10, 20),

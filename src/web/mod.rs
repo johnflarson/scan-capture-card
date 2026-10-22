@@ -83,12 +83,11 @@ struct AppState {
 pub fn run(cfg: &Config, opts: EngineOptions, web: WebOptions) -> Result<()> {
     if opts.dry_run {
         println!("Dry run: cards are identified and priced but not saved.");
-    } else {
-        // Keeps the card cache (details and prices) current while the app runs.
-        crate::bulk::spawn_daily(cfg.clone());
     }
     let engine = Arc::new(engine::start(cfg, opts)?);
     println!("Camera: {}", engine.view().camera);
+    // Keeps the card data and daily prices current while the app runs.
+    crate::bulk::spawn_daily(cfg.clone(), engine.saving());
     let logger = live::spawn_console_logger(&engine);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -592,6 +591,7 @@ fn collection_row(e: CollectionEntry) -> CollectionRow {
         finish: e.finish.into(),
         quantity: e.quantity,
         tcgplayer: e.prices.tcgplayer,
+        cardmarket: e.prices.cardmarket,
         cardkingdom: e.prices.cardkingdom,
         cardkingdom_buylist: e.prices.cardkingdom_buylist,
         added: e.added.to_string(),
@@ -625,11 +625,13 @@ fn collection_view(cfg: &Config) -> Result<CollectionView> {
             printings: t.printings,
             cards: t.cards,
             tcgplayer: t.tcgplayer,
+            cardmarket: t.cardmarket,
             cardkingdom: t.cardkingdom,
             cardkingdom_buylist: t.cardkingdom_buylist,
         },
         rows: entries.into_iter().map(collection_row).collect(),
         value_change,
+        card_kingdom: cfg.prices.card_kingdom,
     })
 }
 

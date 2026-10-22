@@ -20,9 +20,6 @@ use crate::store::totals;
 pub fn run(cfg: &Config, opts: EngineOptions) -> Result<()> {
     if opts.dry_run {
         println!("Dry run: cards are identified and priced but not saved.");
-    } else {
-        // Keeps the card cache (details and prices) current while the app runs.
-        crate::bulk::spawn_daily(cfg.clone());
     }
     println!(
         "Keys: SPACE scan now · A auto on/off · F finish · M single/table mode · U undo · \
@@ -33,6 +30,8 @@ pub fn run(cfg: &Config, opts: EngineOptions) -> Result<()> {
     );
 
     let engine = engine::start(cfg, opts)?;
+    // Keeps the card data and daily prices current while the app runs.
+    crate::bulk::spawn_daily(cfg.clone(), engine.saving());
     println!("Camera: {}", engine.view().camera);
     let logger = spawn_console_logger(&engine);
     let result = window_loop(&engine);
