@@ -60,7 +60,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `../ui/` | `mtg-scan-ui`: Leptos 0.8 CSR app (`app.rs` components, `home.rs` landing page, `top.rs` Scan page top 5 (ranking is `shared::top_cards`), `filters.rs` Collection filters, `mana.rs` mana symbols, `api.rs` fetch + EventSource), `style.css` Material 3 tokens |
 | `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo; with `hold_uncertain` (web UI, `[recognition] review_uncertain`) uncertain matches become `Outcome::Held`, which the engine saves on `Command::Accept` or drops on `Discard` |
 | `recognize.rs` | `Recognizer` (OCR, then LLM, then visual refine), `resolve()` hints to a Scryfall printing, `NameIndex`, `MatchQuality` |
-| `detect.rs` | Table-mode card detection without an LLM: straight edges (LSD-style region growing, collinear pieces joined), facing pairs → 63:88 rectangles, side check (dark border inside, lighter table outside, edge on the side), then size consensus. `mtg-scan detect-dump <photo> --out x.png` draws the boxes and edges |
+| `detect.rs` | Table-mode card detection without an LLM: straight edges (LSD-style region growing, collinear pieces joined), facing pairs → 63:88 rectangles, side check (dark border inside, lighter table outside, edge on the side; on a dark mat a second pass finds the light frame inside the border), then size consensus. `mtg-scan detect-dump <photo> --out x.png` draws the boxes and edges |
 | `ocr.rs` | Windows OCR wrapper; returns lines with normalised boxes |
 | `llm.rs` | Vision LLM: `read_card`, `detect_cards` (bbox_2d, 0-1000). OpenAI wire format, or Ollama native `/api/chat` |
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
@@ -162,6 +162,9 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
   rectangle (so nested rectangles and the size consensus decide, in that order: drop the inner
   one when the outer scores about as well, then drop widths >12% off the typical card, then
   resolve overlaps). Rules keyed on "all four sides" or "crosswise" broke other photos.
+  On a **dark mat** the border merges into the mat: `Look::Frame` finds the light frame inside
+  the border (light between facing edges, frame proportions) and `Card::around_frame` adds the
+  border back. A black-framed card on a black mat shows neither outline and is missed.
 - **nokhwa `RequestedFormatType::Closest` picked a 1 fps mode**, and Media Foundation reports
   the active fps as 1. `camera::choose_format` selects the exact mode instead (4K MJPEG
   actually delivers about 19-30 fps).

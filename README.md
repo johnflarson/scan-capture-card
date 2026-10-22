@@ -174,7 +174,8 @@ recognised.
   Smaller cards are read by the LLM.
 * `scan-all` finds the cards by their black borders, in under a second and
   without an LLM. Lay them out flat, near upright or sideways (up to about 25°
-  off), not overlapping. A busy playmat is fine. Only when it finds nothing
+  off), not overlapping. A busy playmat is fine, and so is a dark one,
+  except that a black-framed card on a black mat can be missed. Only when it finds nothing
   does the vision LLM look for cards; `[recognition] detection = "llm"` always
   uses the LLM instead (slower, but it copes with fanned piles).
 
