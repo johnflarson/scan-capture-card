@@ -8,8 +8,13 @@ collection, and prices cards via TCGplayer and Card Kingdom.
 
 The full process is in [CONTRIBUTING.md](CONTRIBUTING.md). The rules that matter for every change:
 
-- **Never commit or push to `main`.** It's protected. Work on a branch named
+- **Never commit or push to `main` or `v1`.** Both are protected. Work on a branch named
   `feature/<issue>-<slug>`, `fix/<issue>-<slug>` or `chore/<slug>`, then open a PR.
+- **Two tracks.** `main` is the personal 0.x line (last release v0.3.0). `v1` is The
+  Shuffling Tome 1.0 for friends and self-hosters (plan: `docs/v1-plan.md`, milestone
+  `1.0.0-alpha.1`, label `track:v1`). 1.0 work branches from and PRs into `v1`.
+  1.0 is AGPL-3.0-or-later with a credit term (`LICENSE-ADDITIONAL-TERMS.md`); keep
+  the About line in the UI.
 - **The backlog is GitHub Issues** (labels `type:*`, `priority:P0-P3`, `area:*`) on the
   "mtg-scan" GitHub Project board. Not this file. Create or link an issue for any new work;
   the PR body says `Closes #N`.
@@ -201,4 +206,5 @@ CONTRIBUTING.md. Release-by-release detail is in [CHANGELOG.md](CHANGELOG.md).
 |---|---|---|
 | 1 | v0.1.0 | Webcam scanning (single card + whole table), OCR + vision-LLM recognition, Scryfall resolution, TCGplayer + Card Kingdom prices, Markdown collection |
 | 2 | v0.2.0 | PostgreSQL storage (one row per printing + finish, daily price history), `.env` secrets, least-privilege app role, background daily reprice, CI/CD + GitHub process |
-| 3 | (next) | Pick from the board, ordered by `priority:*` |
+| 3 | v0.3.0 | Web UI (collection, decks, statistics, Top 5, card view), classical table detection (also on dark mats), Moxfield decks; last release of the personal 0.x line |
+| 4 | 1.0 (`v1` branch) | The Shuffling Tome for friends and self-hosters: see `docs/v1-plan.md` |

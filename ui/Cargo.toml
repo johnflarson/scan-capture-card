@@ -1,9 +1,9 @@
 [package]
 name = "mtg-scan-ui"
-version = "0.3.0"
+version = "1.0.0-alpha.0"
 edition = "2024"
 description = "mtg-scan web UI (Leptos, compiled to WebAssembly by Trunk)"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 publish = false
 
 [dependencies]

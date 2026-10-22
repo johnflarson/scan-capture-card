@@ -627,6 +627,12 @@ button.brand { cursor: pointer; }
   pointer-events: none;
 }
 
+/* Credit, license and data notices at the bottom of every page (required by the license terms). */
+.about { max-width: 1800px; margin: 0 auto; padding: 0 24px 28px; color: var(--md-on-surface-variant); font-size: 12px; line-height: 1.5; }
+.about p { margin: 0 0 4px; }
+.about a { color: var(--md-on-surface-variant); text-decoration: underline; text-decoration-color: var(--md-outline); }
+.about a:hover { color: var(--md-primary); }
+
 /* --------------------------------------------------------- snackbar --- */
 .snackbar {
   position: fixed; left: 24px; bottom: 24px; z-index: 20;
@@ -692,6 +698,7 @@ dl.info dd { margin: 0; overflow-wrap: anywhere; }
   .tab { flex: 1 0 auto; padding: 8px 12px; }
   .bar-end .chip { white-space: normal; }
   main { padding: 12px 12px 32px; }
+  .about { padding: 0 12px 24px; }
   .card-header { padding: 12px 14px; flex-wrap: wrap; }
   .card-header .chip { white-space: normal; }
 

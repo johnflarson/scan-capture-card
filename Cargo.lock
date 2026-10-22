@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "mtg-scan"
-version = "0.3.0"
+version = "1.0.0-alpha.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "mtg-scan-shared"
-version = "0.3.0"
+version = "1.0.0-alpha.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "mtg-scan-ui"
-version = "0.3.0"
+version = "1.0.0-alpha.0"
 dependencies = [
  "console_error_panic_hook",
  "futures",

@@ -10,6 +10,15 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 
 ## [Unreleased]
 
+The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
+
+### Changed
+- 1.0 is licensed under the GNU AGPL v3.0 or later, with an additional term that keeps the
+  author credit visible in the UI (#63). Every page ends with an About line: credit, version,
+  license, source link, Scryfall attribution and the Wizards Fan Content disclaimer. Releases up
+  to v0.3.0 stay MIT. Version `1.0.0-alpha.0`; `v1.0.0-alpha.N` tags publish GitHub
+  pre-releases.
+
 ## [0.3.0] - 2026-10-22
 
 The last release of the personal 0.x line: web UI, classical table detection, decks and

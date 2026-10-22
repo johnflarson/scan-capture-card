@@ -34,6 +34,17 @@ Issues move automatically when linked pull requests open and merge.
    - **Low value, high effort** waits or gets closed.
 3. Keep at most about 3 issues **In Progress**. Finishing beats starting.
 
+## Two tracks: `main` (0.x) and `v1` (1.0)
+
+- `main` is the personal 0.x line. Its last planned release is v0.3.0; it gets
+  fixes only.
+- `v1` is The Shuffling Tome 1.0 for friends and self-hosters
+  ([plan](docs/v1-plan.md), milestone `1.0.0-alpha.1`, label `track:v1`).
+  Branch 1.0 work from `v1` (`git switch v1; git pull; git switch -c ...`) and
+  open PRs against it (`--base v1`). It has the same protection and CI as `main`.
+- 1.0 versions are pre-releases until 1.0.0: tag `v1.0.0-alpha.N` on `v1`; the
+  release workflow publishes them as GitHub pre-releases.
+
 ## 3. Build: branch, code, test
 
 ```powershell
@@ -92,7 +103,7 @@ $env:MTG_SCAN_TEST_DATABASE_URL="postgres://mtg:mtgtest@localhost:55432/mtg"; ca
 4. **Squash-merge** once CI is green, so the whole PR becomes one commit on `main`.
 5. The branch deletes itself.
 
-`main` is protected: no direct pushes, and CI must pass. So `main` always builds.
+`main` and `v1` are protected: no direct pushes, and CI must pass. So both always build.
 
 ## 5. Release
 

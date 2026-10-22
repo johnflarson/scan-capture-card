@@ -270,6 +270,7 @@ pub fn App() -> impl IntoView {
                 Tab::Settings => view! { <SettingsPage decks notify /> }.into_any(),
             }}
         </main>
+        <AboutLine />
         {move || {
             snack
                 .get()
@@ -875,6 +876,35 @@ fn PlusIcon() -> impl IntoView {
         <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
         </svg>
+    }
+}
+
+const SOURCE_URL: &str = "https://github.com/johnflarson/scan-capture-card";
+
+/// Credit, version, license and data notices at the bottom of every page.
+/// The author credit is required by the license's additional terms
+/// (LICENSE-ADDITIONAL-TERMS.md): keep it, and mark modified versions.
+#[component]
+fn AboutLine() -> impl IntoView {
+    view! {
+        <footer class="about">
+            <p>
+                <a href=SOURCE_URL target="_blank" rel="noopener">"The Shuffling Tome by John Larson"</a>
+                {format!(" · {} · ", env!("CARGO_PKG_VERSION"))}
+                <a href=format!("{SOURCE_URL}/blob/v1/LICENSE") target="_blank" rel="noopener">"AGPL-3.0"</a>
+                " · "
+                <a href=SOURCE_URL target="_blank" rel="noopener">"Source code"</a>
+                " · Card data and prices from "
+                <a href="https://scryfall.com" target="_blank" rel="noopener">"Scryfall"</a>
+            </p>
+            <p>
+                "The Shuffling Tome is unofficial Fan Content permitted under the "
+                <a href="https://company.wizards.com/en/legal/fancontentpolicy" target="_blank" rel="noopener">
+                    "Fan Content Policy"
+                </a>
+                ". Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC."
+            </p>
+        </footer>
     }
 }
 
