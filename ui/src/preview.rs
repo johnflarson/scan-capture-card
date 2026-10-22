@@ -37,7 +37,7 @@ impl Preview {
         }
     }
 
-    fn enter(self, id: String, ev: &PointerEvent) {
+    pub fn enter(self, id: String, ev: &PointerEvent) {
         if ev.pointer_type() == "touch" {
             return;
         }
@@ -53,14 +53,14 @@ impl Preview {
         });
     }
 
-    fn moved(self, ev: &PointerEvent) {
+    pub fn moved(self, ev: &PointerEvent) {
         if ev.pointer_type() != "touch" {
             self.pointer
                 .set((ev.client_x() as f64, ev.client_y() as f64));
         }
     }
 
-    fn leave(self) {
+    pub fn leave(self) {
         self.seq.update_value(|s| *s += 1);
         self.card.set(None);
     }
