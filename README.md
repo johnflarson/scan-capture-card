@@ -218,6 +218,8 @@ picks another file. It is created and upgraded automatically.
 mtg-scan db status                    # file, SQLite version, row counts
 mtg-scan db import collection.md      # copy a Markdown collection in (sets quantities)
 mtg-scan db export backup.md          # Markdown snapshot of the database
+mtg-scan db copy --to postgres        # move the collection and its price history to PostgreSQL
+mtg-scan --storage postgres db copy --to sqlite --file collection.db   # ...or back
 ```
 
 ### Markdown

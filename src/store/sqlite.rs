@@ -424,6 +424,36 @@ impl CollectionStore for SqliteStore {
         Ok(entries.len())
     }
 
+    fn all_price_points(&self) -> Result<Vec<(String, Finish, PricePoint)>> {
+        let mut stmt = self.conn.prepare(
+            "select scryfall_id, finish, price_date, price_tcg, price_cardmarket, price_tix,
+                    price_ck, price_ck_buylist
+             from price_history
+             order by scryfall_id, finish, price_date",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                point_at(r, 2)?,
+            ))
+        })?;
+        rows.map(|r| {
+            let (id, finish, point) = r?;
+            Ok((id, finish.parse()?, price_point(point)?))
+        })
+        .collect()
+    }
+
+    fn import_price_points(&mut self, points: &[(String, Finish, PricePoint)]) -> Result<usize> {
+        let tx = self.write()?;
+        for (id, finish, p) in points {
+            record_price(&tx, id, *finish, p.date, &point_prices(p))?;
+        }
+        tx.commit()?;
+        Ok(points.len())
+    }
+
     fn price_history(&self, scryfall_id: &str, finish: Finish) -> Result<Vec<PricePoint>> {
         let mut stmt = self.conn.prepare(
             "select price_date, price_tcg, price_cardmarket, price_tix, price_ck, price_ck_buylist
@@ -729,6 +759,18 @@ fn record_price(
     Ok(())
 }
 
+/// A price point's prices, to record it again (copying a database).
+fn point_prices(p: &PricePoint) -> Prices {
+    Prices {
+        tcgplayer: p.tcgplayer,
+        cardmarket: p.cardmarket,
+        tix: p.tix,
+        cardkingdom: p.cardkingdom,
+        cardkingdom_buylist: p.cardkingdom_buylist,
+        ..Prices::default()
+    }
+}
+
 /// A price point as stored: its date and the five prices in cents
 /// (TCGplayer, Cardmarket, tix, Card Kingdom, CK buylist).
 type RawPoint = (String, [Option<i64>; 5]);
@@ -933,6 +975,29 @@ mod tests {
         assert_eq!(
             row.prices.tcgplayer_url.as_deref(),
             Some("https://www.tcgplayer.com/product/37301")
+        );
+    }
+
+    #[test]
+    fn a_collection_and_its_history_copy_into_another_database() {
+        let mut from = SqliteStore::open_in_memory().unwrap();
+        crate::store::conformance(&mut from);
+        let mut to = SqliteStore::open_in_memory().unwrap();
+        let (rows, points) = crate::store::copy(&from, &mut to).unwrap();
+        assert_eq!(rows, from.entries().unwrap().len());
+        assert_eq!(points, from.all_price_points().unwrap().len());
+        let (a, b) = (from.entries().unwrap(), to.entries().unwrap());
+        assert_eq!(
+            a.iter()
+                .map(|e| (&e.scryfall_id, e.finish, e.quantity, e.added))
+                .collect::<Vec<_>>(),
+            b.iter()
+                .map(|e| (&e.scryfall_id, e.finish, e.quantity, e.added))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            from.all_price_points().unwrap(),
+            to.all_price_points().unwrap()
         );
     }
 

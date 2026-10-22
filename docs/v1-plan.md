@@ -32,7 +32,7 @@ Progress is tracked in the GitHub milestone **1.0.0-alpha.1** (issues labelled
 - Scryfall bulk data (`default_cards`) cached in the database: card details and daily prices come from it, so listings no longer call the Scryfall API.
 - Prices from Scryfall only; Card Kingdom as an optional source.
 - SQLite as the default store, PostgreSQL as an option; one test suite runs against both.
-- Schema v2: card cache, price history v2 (USD, EUR, tix, optional CK), condition and language per collection row; import from 0.x (PostgreSQL or Markdown); copy between SQLite and PostgreSQL.
+- Schema v2: card cache, price history v2 (USD, EUR, tix, optional CK); import from 0.x (PostgreSQL migrates in place with `db migrate`; Markdown with `db import`); copy between SQLite and PostgreSQL (`db copy`). Condition and language per collection row moved to Phase 4, where the collection's key changes for accounts anyway.
 - Settings: currency and card language.
 
 ### 2. Runs on Linux and in Docker
@@ -46,7 +46,7 @@ Progress is tracked in the GitHub milestone **1.0.0-alpha.1** (issues labelled
 
 ### 4. Accounts
 - Users, sessions (argon2id passwords), admin, invite links, API tokens.
-- Collections, settings, hidden decks, Moxfield user and LLM keys per user (keys encrypted at rest).
+- Collections, settings, hidden decks, Moxfield user and LLM keys per user (keys encrypted at rest); condition and language per collection row.
 - A scan session per user, sharing one recognition queue; no "same computer skips sign-in" behind a reverse proxy.
 
 ### 5. Setup wizard and providers
