@@ -14,6 +14,12 @@
 //!    wash out the fourth);
 //! 4. keeps the best rectangle where several overlap.
 //!
+//! On a dark mat the border merges into the mat. What shows instead is the
+//! border's inside edge: a light rectangle (the card's frame) surrounded by
+//! dark. A second pass looks for exactly that, the same way with light and
+//! dark swapped and the frame's proportions, and grows each frame it finds by
+//! the border to the whole card. Both passes' rectangles compete in step 4.
+//!
 //! Brightness is the brightest channel, so a red or blue mat counts as light
 //! and only a black border (or a dark line) as dark. Contrast is relative, so
 //! a border greyed by glare still counts. A playmat's line art is curved or
@@ -37,6 +43,10 @@ const MIN_WIDTH: f32 = 0.05;
 const MAX_WIDTH: f32 = 0.45;
 /// The black border's thickness as a share of the card's width.
 const BORDER: f32 = 0.045;
+/// The frame inside the border: its width as a share of the card's, and its
+/// width to height.
+const FRAME_WIDTH: f32 = 1.0 - 2.0 * BORDER;
+const FRAME_ASPECT: f32 = FRAME_WIDTH / (1.0 / CARD_ASPECT - 2.0 * BORDER);
 /// Gradient (brightness levels per pixel) for a pixel to be on an edge.
 const MIN_GRADIENT: f32 = 6.0;
 /// A pixel joins an edge while its gradient points within this of the edge's.
@@ -109,7 +119,13 @@ pub fn analyse(frame: &RgbImage) -> Analysis {
     let small = imageops::resize(frame, w, h, imageops::FilterType::Triangle);
     let scene = Scene::new(&small);
     let edges = joined(edges(&scene));
-    let cards = cards(&scene, &edges);
+    let mut found = cards(&scene, &edges, Look::Border);
+    found.extend(
+        cards(&scene, &edges, Look::Frame)
+            .into_iter()
+            .map(Card::around_frame),
+    );
+    let cards = keep_best(found);
     let boxes = cards.iter().map(|c| c.bounds(w, h)).collect();
     let debug = draw_debug(small, &edges, &cards);
     Analysis { boxes, debug }
@@ -423,6 +439,33 @@ fn fit(region: &[usize], mag: &[f32], w: usize, theta: f32) -> Option<Edge> {
     })
 }
 
+/// What marks a card's outline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Look {
+    /// Its black border, darker than the table around it.
+    Border,
+    /// On a dark mat: its frame, lighter than the border (and mat) around it.
+    Frame,
+}
+
+impl Look {
+    /// Width to height of the rectangle looked for.
+    fn aspect(self) -> f32 {
+        match self {
+            Look::Border => CARD_ASPECT,
+            Look::Frame => FRAME_ASPECT,
+        }
+    }
+
+    /// +1 when the outline is darker inside (the border), -1 when lighter.
+    fn sign(self) -> f32 {
+        match self {
+            Look::Border => 1.0,
+            Look::Frame => -1.0,
+        }
+    }
+}
+
 /// A card-shaped rectangle: centre, unit axes along its width and height,
 /// size, and how well each side (top, bottom, left, right) shows a border.
 #[derive(Debug, Clone, Copy)]
@@ -465,6 +508,17 @@ impl Card {
         }
     }
 
+    /// The whole card around a frame found on a dark mat: the border added
+    /// on every side.
+    fn around_frame(self) -> Card {
+        let w = self.w / FRAME_WIDTH;
+        Card {
+            w,
+            h: self.h + 2.0 * BORDER * w,
+            ..self
+        }
+    }
+
     /// Overlap of the upright boxes, as a share of the smaller one.
     fn overlap(&self, o: &Card) -> f32 {
         let ([a0, a1, a2, a3], [b0, b1, b2, b3]) = (self.aabb(), o.aabb());
@@ -475,22 +529,31 @@ impl Card {
     }
 }
 
-/// Rectangles on pairs of facing edges, checked, best kept, reading order.
-fn cards(scene: &Scene, edges: &[Edge]) -> Vec<Card> {
+/// Rectangles on pairs of facing edges that pass [`check`]: card-sized for
+/// `Look::Border`, frame-sized for `Look::Frame`.
+fn cards(scene: &Scene, edges: &[Edge], look: Look) -> Vec<Card> {
     let short = scene.light.w.min(scene.light.h) as f32;
-    let (min_w, max_w) = (short * MIN_WIDTH, short * MAX_WIDTH);
-    let max_h = max_w / CARD_ASPECT;
+    let scale = if look == Look::Frame {
+        FRAME_WIDTH
+    } else {
+        1.0
+    };
+    let (min_w, max_w) = (short * MIN_WIDTH * scale, short * MAX_WIDTH * scale);
+    let aspect = look.aspect();
+    let max_h = max_w / aspect;
     let parallel = PARALLEL.cos();
     let mut found = Vec::new();
     for (i, a) in edges.iter().enumerate() {
         for b in &edges[i + 1..] {
-            // Antiparallel normals: the light sides face away from each other.
+            // Antiparallel normals: the light sides face away from each other
+            // (a border), or towards each other (a frame).
             if a.n.dot(b.n) > -parallel {
                 continue;
             }
-            // `u` runs across the pair from b to a; the dark band between
-            // them means a lies further along it.
-            let u = (a.n - b.n).unit();
+            // `u` runs across the pair from b to a; the band between them
+            // (dark for a border, light for a frame) means a lies further
+            // along it.
+            let u = ((a.n - b.n) * look.sign()).unit();
             // Cards laid out for a scan sit near upright or sideways; steep
             // angles are mostly the table's artwork.
             if u.x.abs().min(u.y.abs()) > MAX_TILT.sin() {
@@ -519,9 +582,9 @@ fn cards(scene: &Scene, edges: &[Edge]) -> Vec<Card> {
                 // to it wins a tie.
                 for stretch in STRETCH {
                     let (cw, ch) = if wide {
-                        (gap, gap / CARD_ASPECT * stretch)
+                        (gap, gap / aspect * stretch)
                     } else {
-                        (gap * CARD_ASPECT * stretch, gap)
+                        (gap * aspect * stretch, gap)
                     };
                     if cw < min_w || cw > max_w {
                         continue;
@@ -550,7 +613,7 @@ fn cards(scene: &Scene, edges: &[Edge]) -> Vec<Card> {
                             sides: [0.0; 4],
                             score: 0.0,
                         };
-                        if let Some(c) = check(scene, card)
+                        if let Some(c) = check(scene, card, look)
                             && best.is_none_or(|b| c.score > b.score)
                         {
                             best = Some(c);
@@ -561,12 +624,18 @@ fn cards(scene: &Scene, edges: &[Edge]) -> Vec<Card> {
             }
         }
     }
-    keep_best(found)
+    found
 }
 
-/// The card with its side scores, if at least three sides show a border.
-fn check(scene: &Scene, mut card: Card) -> Option<Card> {
-    let border = (card.w * BORDER).max(1.5);
+/// The card with its side scores, if at least three sides show its outline
+/// (see [`Look`]).
+fn check(scene: &Scene, mut card: Card, look: Look) -> Option<Card> {
+    let card_w = if look == Look::Frame {
+        card.w / FRAME_WIDTH
+    } else {
+        card.w
+    };
+    let border = (card_w * BORDER).max(1.5);
     // Outward normal, direction along the side, distance from the centre,
     // half length: top, bottom, left, right.
     let sides = [
@@ -575,6 +644,8 @@ fn check(scene: &Scene, mut card: Card) -> Option<Card> {
         (card.ex * -1.0, card.ey, card.w / 2.0, card.h / 2.0),
         (card.ex, card.ey, card.w / 2.0, card.h / 2.0),
     ];
+    // The light side's brightness (the table, or the frame), for the inside
+    // check below.
     let (mut table_sum, mut table_n) = (0.0, 0);
     let mut weak = 0;
     for (k, &(out, along, dist, half)) in sides.iter().enumerate() {
@@ -582,17 +653,19 @@ fn check(scene: &Scene, mut card: Card) -> Option<Card> {
         for i in 0..SAMPLES {
             let t = -0.8 + 1.6 * (i as f32 + 0.5) / SAMPLES as f32;
             let p = card.c + out * dist + along * (t * half);
+            // Towards the light side: out of a border, into a frame. The
+            // dark sample stays within the border's thickness.
+            let to_light = out * look.sign();
             let (Some(table), Some(rim)) = (
-                scene.light.sample(p + out * (0.7 * border)),
-                scene.light.sample(p - out * (0.5 * border)),
+                scene.light.sample(p + to_light * (0.7 * border)),
+                scene.light.sample(p - to_light * (0.5 * border)),
             ) else {
                 continue;
             };
-            // A border here: the table just outside clearly lighter than the
-            // border just inside, and the edge between them on the side, not
-            // just near it.
+            // The outline here: the light side clearly lighter than the dark
+            // one, and the edge between them on the side, not just near it.
             if table - rim >= MIN_CONTRAST.max(RELATIVE_CONTRAST * table)
-                && scene.edge_towards(p, out, EDGE_REACH)
+                && scene.edge_towards(p, to_light, EDGE_REACH)
                     >= MIN_GRADIENT.max(EDGE_SHARPNESS * (table - rim))
             {
                 hits += 1;
@@ -822,5 +895,22 @@ mod tests {
     #[test]
     fn empty_table_has_no_cards() {
         assert!(find_cards(&table()).is_empty());
+    }
+
+    #[test]
+    fn finds_cards_on_a_dark_mat() {
+        // The border is as dark as the mat, so only the light frame inside
+        // it shows; the boxes are still the whole cards.
+        let mat = Rgb([22, 22, 24]);
+        let mut img = RgbImage::from_pixel(1280, 720, mat);
+        draw_card(&mut img, 300.0, 250.0, 126.0, 176.0, 0.0, Rgb([16, 16, 16]));
+        draw_card(&mut img, 600.0, 300.0, 126.0, 176.0, 8.0, Rgb([16, 16, 16]));
+        draw_card(&mut img, 900.0, 260.0, 126.0, 176.0, 0.0, Rgb([16, 16, 16]));
+        let found = find_cards(&img);
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert_near(&found[0], (237.0, 162.0, 363.0, 338.0));
+        // Reading order: the tilted card sits lower, so it comes last.
+        assert_near(&found[1], (837.0, 172.0, 963.0, 348.0));
+        assert!(find_cards(&RgbImage::from_pixel(1280, 720, mat)).is_empty());
     }
 }

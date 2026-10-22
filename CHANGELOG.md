@@ -11,11 +11,18 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 ## [Unreleased]
 
 ### Added
+- Table mode finds cards on a dark playmat too (#53). On a black mat the card's black border
+  disappears into the mat, so the border detector found nothing and every pass fell back to the
+  vision LLM (~13 s). A second pass now looks for the light frame inside the border and grows it
+  to the whole card: 6 of 7 cards on a black mat in 0.2 s, all identified. Black-framed cards
+  on a black mat can still be missed: their frame is as dark as the border. Light tables are
+  unchanged (one desk photo gained a card the border pass missed).
 - Top 5 on the Scan page (#51): beside the session list (under it on narrower screens), this
   session's five most expensive cards by TCGplayer price and by Card Kingdom price, as card
-  images with that store's price under each (each printing once; hover for the full-size card, click for Scryfall). The × on a card
-  hides it from both lists, e.g. a mis-scan, without changing the collection or the session
-  list; **Show hidden** brings them back, and **Clear** starts the lists over.
+  images with that store's price under each (each printing once; hover for the full-size card,
+  click for Scryfall). The × on a card hides it from both lists, e.g. a mis-scan, without
+  changing the collection or the session list; **Show hidden** brings them back, and **Clear**
+  starts the lists over.
 - Scan without saving, and start fresh (#49). The Scan page has a **Save to collection** switch:
   off, cards are identified and priced but not added, and the background price refresh pauses,
   so nothing is written to the database (a "Not saving scans" chip shows in the top bar). It
