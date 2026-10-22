@@ -126,16 +126,21 @@ pub fn save_settings(path: &Path, ui: &UiConfig, decks: &DecksConfig) -> Result<
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageBackend {
-    /// `collection.md` (iteration 1).
-    Markdown,
-    /// PostgreSQL with price history (iteration 2).
+    /// One SQLite file with price history (the default since 1.0).
+    Sqlite,
+    /// Your own PostgreSQL server with price history.
     Postgres,
+    /// `collection.md`, no price history (iteration 1).
+    Markdown,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
     pub backend: StorageBackend,
+    /// SQLite database file (sqlite backend). Default: `collection.db` in
+    /// the data folder ([`data_dir`]).
+    pub path: Option<PathBuf>,
     /// Environment variable holding the connection string, e.g.
     /// `postgres://user:pass@host:5432/dbname?sslmode=require`.
     pub database_url_env: String,
@@ -149,7 +154,8 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            backend: StorageBackend::Markdown,
+            backend: StorageBackend::Sqlite,
+            path: None,
             database_url_env: "MTG_SCAN_DATABASE_URL".into(),
             database_url: None,
             schema: "mtg_scan".into(),
@@ -157,7 +163,27 @@ impl Default for StorageConfig {
     }
 }
 
+/// Where the app keeps its data (the SQLite database): `MTG_SCAN_DATA_DIR`
+/// when set (e.g. a Docker volume), else `%LOCALAPPDATA%\mtg-scan` on
+/// Windows (`~/.local/share/mtg-scan` on Linux).
+pub fn data_dir() -> PathBuf {
+    std::env::var("MTG_SCAN_DATA_DIR")
+        .ok()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::data_local_dir().map(|d| d.join("mtg-scan")))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 impl StorageConfig {
+    /// The SQLite file: `[storage] path`, else `collection.db` in [`data_dir`].
+    pub fn sqlite_path(&self) -> PathBuf {
+        self.path
+            .clone()
+            .unwrap_or_else(|| data_dir().join("collection.db"))
+    }
+
     /// Connection settings from (in order) the connection-string variable,
     /// `[storage] database_url`, or the separate `MTG_SCAN_DB_*` variables —
     /// normally kept in the app's `.env` file (see `.env.example`).
@@ -550,7 +576,8 @@ mod tests {
             "held for review by default"
         );
         assert_eq!(cfg.camera.width, 1920);
-        assert_eq!(cfg.storage.backend, StorageBackend::Markdown);
+        assert_eq!(cfg.storage.backend, StorageBackend::Sqlite);
+        assert!(cfg.storage.sqlite_path().ends_with("collection.db"));
         assert_eq!(cfg.storage.schema, "mtg_scan");
     }
 

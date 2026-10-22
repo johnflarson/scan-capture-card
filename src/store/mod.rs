@@ -1,13 +1,18 @@
-//! Collection persistence behind [`CollectionStore`]: a Markdown file
-//! (iteration 1) or PostgreSQL with price history (iteration 2).
+//! Collection persistence behind [`CollectionStore`]: SQLite (the default),
+//! PostgreSQL, or a Markdown file. The two databases keep daily price
+//! history; card details come from Scryfall.
 
 pub mod markdown;
 pub mod postgres;
+pub mod sqlite;
+
+use std::collections::HashMap;
 
 use anyhow::{Result, bail};
-use chrono::NaiveDate;
+use chrono::{Local, NaiveDate};
 
 use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
+use crate::scryfall::Scryfall;
 
 /// TCGplayer value of the cards owned now, at the prices of `since` and at
 /// their latest prices, over the rows priced on both dates.
@@ -70,18 +75,21 @@ pub trait CollectionStore {
     /// Record current prices for a printing + finish.
     fn update_prices(&mut self, scryfall_id: &str, finish: Finish, prices: Prices) -> Result<()>;
 
+    /// Copy rows in (e.g. from `collection.md`), setting quantities rather
+    /// than adding to them, and recording each row's prices as a price point
+    /// on the day they were taken. Returns the number of rows.
+    fn import(&mut self, _entries: &[CollectionEntry]) -> Result<usize> {
+        bail!("this storage backend can't import; use sqlite or postgres")
+    }
+
     /// Price points over time, oldest first.
     fn price_history(&self, _scryfall_id: &str, _finish: Finish) -> Result<Vec<PricePoint>> {
-        bail!(
-            "price history is only kept by the postgres storage backend ([storage] backend = \"postgres\")"
-        )
+        bail!("price history is only kept by the sqlite and postgres storage backends")
     }
 
     /// Rows owned now that were priced on or before `since` and again later.
     fn price_moves(&self, _since: NaiveDate) -> Result<Vec<PriceMove>> {
-        bail!(
-            "price history is only kept by the postgres storage backend ([storage] backend = \"postgres\")"
-        )
+        bail!("price history is only kept by the sqlite and postgres storage backends")
     }
 
     /// How the collection's value moved since `since`; `None` without price
@@ -113,4 +121,250 @@ pub fn totals(entries: &[CollectionEntry]) -> Totals {
         t.cardkingdom_buylist += e.prices.cardkingdom_buylist.unwrap_or(0.0) * q;
         t
     })
+}
+
+/// A collection row as the databases store it: no card details.
+pub(crate) struct StoredRow {
+    pub scryfall_id: String,
+    pub finish: Finish,
+    pub quantity: u32,
+    pub added: NaiveDate,
+    pub prices: Prices,
+    pub price_date: Option<NaiveDate>,
+}
+
+/// Fill in card details from Scryfall (when given), sorted by name. Falls
+/// back to placeholders when Scryfall is unreachable so the collection can
+/// still be listed.
+pub(crate) fn hydrate(scryfall: Option<&Scryfall>, rows: Vec<StoredRow>) -> Vec<CollectionEntry> {
+    let ids: Vec<String> = rows.iter().map(|r| r.scryfall_id.clone()).collect();
+    let cards = match scryfall {
+        Some(scryfall) => scryfall.cards_by_id(&ids).unwrap_or_else(|e| {
+            eprintln!("  ! could not fetch card details from Scryfall ({e:#})");
+            HashMap::new()
+        }),
+        None => HashMap::new(),
+    };
+    let mut entries: Vec<CollectionEntry> = rows
+        .into_iter()
+        .map(|r| {
+            let card = cards.get(&r.scryfall_id);
+            let mut prices = r.prices;
+            prices.tcgplayer_url = card
+                .and_then(|c| {
+                    if r.finish == Finish::Etched {
+                        c.tcgplayer_etched_id.or(c.tcgplayer_id)
+                    } else {
+                        c.tcgplayer_id
+                    }
+                })
+                .map(|id| format!("https://www.tcgplayer.com/product/{id}"));
+            CollectionEntry {
+                name: card
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| format!("(unknown card {})", r.scryfall_id)),
+                set_code: card.map(|c| c.set_code.to_uppercase()).unwrap_or_default(),
+                set_name: card.map(|c| c.set_name.clone()).unwrap_or_default(),
+                collector_number: card.map(|c| c.collector_number.clone()).unwrap_or_default(),
+                rarity: card.map(|c| c.rarity.clone()).unwrap_or_default(),
+                colors: card.map(|c| c.colors.clone()).unwrap_or_default(),
+                type_line: card.map(|c| c.type_line.clone()).unwrap_or_default(),
+                scryfall_id: r.scryfall_id,
+                finish: r.finish,
+                quantity: r.quantity,
+                prices,
+                added: r.added,
+                price_updated: r.price_date,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.set_code.cmp(&b.set_code))
+            .then_with(|| a.collector_number.cmp(&b.collector_number))
+    });
+    entries
+}
+
+/// A row that was just deleted (quantity 0), described from Scryfall alone.
+pub(crate) fn removed_entry(
+    scryfall: Option<&Scryfall>,
+    scryfall_id: &str,
+    finish: Finish,
+) -> CollectionEntry {
+    let card = scryfall.and_then(|s| s.by_id(scryfall_id).ok().flatten());
+    CollectionEntry {
+        scryfall_id: scryfall_id.to_string(),
+        name: card
+            .as_ref()
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| scryfall_id.to_string()),
+        set_code: card
+            .as_ref()
+            .map(|c| c.set_code.to_uppercase())
+            .unwrap_or_default(),
+        set_name: card
+            .as_ref()
+            .map(|c| c.set_name.clone())
+            .unwrap_or_default(),
+        collector_number: card
+            .as_ref()
+            .map(|c| c.collector_number.clone())
+            .unwrap_or_default(),
+        rarity: card.as_ref().map(|c| c.rarity.clone()).unwrap_or_default(),
+        colors: card.as_ref().map(|c| c.colors.clone()).unwrap_or_default(),
+        type_line: card
+            .as_ref()
+            .map(|c| c.type_line.clone())
+            .unwrap_or_default(),
+        finish,
+        quantity: 0,
+        prices: Prices::default(),
+        added: Local::now().date_naive(),
+        price_updated: None,
+    }
+}
+
+/// Behaviour every database store must share. Runs on in-memory SQLite in
+/// every `cargo test` and on PostgreSQL in the integration test. Card
+/// details aren't checked: they come from Scryfall, which tests don't call.
+#[cfg(test)]
+pub(crate) fn conformance(store: &mut dyn CollectionStore) {
+    let today = Local::now().date_naive();
+    let entry = |id: &str, finish, qty, tcg: f64| CollectionEntry {
+        scryfall_id: id.into(),
+        name: "Lightning Bolt".into(),
+        set_code: "X".into(),
+        set_name: "X".into(),
+        collector_number: "1".into(),
+        rarity: "common".into(),
+        colors: Vec::new(),
+        type_line: String::new(),
+        finish,
+        quantity: qty,
+        prices: Prices {
+            tcgplayer: Some(tcg),
+            cardkingdom: Some(tcg + 1.0),
+            cardkingdom_buylist: None,
+            ..Prices::default()
+        },
+        added: today,
+        price_updated: Some(today),
+    };
+    // Two printings of Lightning Bolt (M11 #149 and A25 #141) + a foil copy.
+    let m11 = "e768c957-3a1f-42f5-853a-96942f645df5";
+    let a25 = "e3285e6b-3e79-4d7c-bf96-d920f973b122";
+    store.add(entry(m11, Finish::Nonfoil, 2, 1.0)).unwrap();
+    let merged = store.add(entry(m11, Finish::Nonfoil, 1, 1.5)).unwrap();
+    assert_eq!(merged.quantity, 3);
+    assert_eq!(merged.added, today);
+    store.add(entry(a25, Finish::Nonfoil, 1, 2.0)).unwrap();
+    store.add(entry(a25, Finish::Foil, 1, 5.0)).unwrap();
+
+    let rows = store.entries().unwrap();
+    assert_eq!(rows.len(), 3, "one row per printing + finish");
+    let m11_row = rows.iter().find(|e| e.scryfall_id == m11).unwrap();
+    assert_eq!(m11_row.quantity, 3);
+    assert_eq!(
+        (m11_row.prices.tcgplayer, m11_row.prices.cardkingdom),
+        (Some(1.5), Some(2.5)),
+        "same-day price point is replaced"
+    );
+    assert_eq!(m11_row.price_updated, Some(today));
+    assert_eq!(store.price_history(m11, Finish::Nonfoil).unwrap().len(), 1);
+
+    let left = store.remove(a25, Finish::Foil, 5).unwrap().unwrap();
+    assert_eq!(left.quantity, 0);
+    assert_eq!(store.entries().unwrap().len(), 2);
+    // History survives removal.
+    assert_eq!(store.price_history(a25, Finish::Foil).unwrap().len(), 1);
+    assert!(store.remove(a25, Finish::Foil, 1).unwrap().is_none());
+    let partial = store.remove(m11, Finish::Nonfoil, 1).unwrap().unwrap();
+    assert_eq!(partial.quantity, 2);
+
+    // Edits: set a quantity, change the finish, then merge into a row that exists.
+    let set = store
+        .set_quantity(m11, Finish::Nonfoil, 5)
+        .unwrap()
+        .unwrap();
+    assert_eq!(set.quantity, 5);
+    assert!(
+        store
+            .set_quantity(a25, Finish::Etched, 2)
+            .unwrap()
+            .is_none()
+    );
+    let refinished = store
+        .relocate(a25, Finish::Nonfoil, entry(a25, Finish::Foil, 1, 6.0))
+        .unwrap()
+        .unwrap();
+    assert_eq!((refinished.finish, refinished.quantity), (Finish::Foil, 1));
+    assert_eq!(
+        store
+            .price_history(a25, Finish::Foil)
+            .unwrap()
+            .last()
+            .unwrap()
+            .tcgplayer,
+        Some(6.0),
+        "the moved row is priced"
+    );
+    let merged = store
+        .relocate(a25, Finish::Foil, entry(m11, Finish::Nonfoil, 1, 1.5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(merged.quantity, 6);
+    assert_eq!(store.entries().unwrap().len(), 1);
+    assert!(
+        store
+            .relocate(a25, Finish::Foil, entry(m11, Finish::Nonfoil, 1, 1.5))
+            .unwrap()
+            .is_none()
+    );
+
+    // Value change: the 6 copies were $1.00 ten days ago and $1.50 now.
+    assert!(store.value_change(today).unwrap().is_some());
+    let ten_days_ago = today - chrono::Days::new(10);
+    assert!(
+        store.value_change(ten_days_ago).unwrap().is_none(),
+        "nothing was priced back then"
+    );
+    // Importing sets the quantity (unchanged here) and records its price on its day.
+    let old = CollectionEntry {
+        price_updated: Some(ten_days_ago),
+        added: ten_days_ago,
+        ..entry(m11, Finish::Nonfoil, 6, 1.0)
+    };
+    assert_eq!(store.import(&[old]).unwrap(), 1);
+    let change = store
+        .value_change(today - chrono::Days::new(7))
+        .unwrap()
+        .unwrap();
+    assert_eq!((change.before, change.now, change.rows), (6.0, 9.0, 1));
+
+    // Price moves: the same row, $1.00 ten days ago and $1.50 today.
+    let moves = store.price_moves(today - chrono::Days::new(7)).unwrap();
+    assert_eq!(moves.len(), 1);
+    let m = &moves[0];
+    assert_eq!(
+        (m.scryfall_id.as_str(), m.finish, m.quantity),
+        (m11, Finish::Nonfoil, 6)
+    );
+    assert_eq!((m.then.date, m.now.date), (ten_days_ago, today));
+    assert_eq!((m.then.tcgplayer, m.now.tcgplayer), (Some(1.0), Some(1.5)));
+    assert!(
+        store
+            .price_moves(ten_days_ago - chrono::Days::new(1))
+            .unwrap()
+            .is_empty(),
+        "nothing was priced before then"
+    );
+
+    // A day with no prices at all records nothing.
+    store
+        .update_prices(m11, Finish::Nonfoil, Prices::default())
+        .unwrap();
+    assert_eq!(store.price_history(m11, Finish::Nonfoil).unwrap().len(), 2);
 }

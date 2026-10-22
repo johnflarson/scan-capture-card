@@ -1,4 +1,5 @@
-//! PostgreSQL collection store (iteration 2).
+//! PostgreSQL collection store (iteration 2; optional since 1.0, where
+//! SQLite is the default).
 //!
 //! Only what isn't available online is stored: Scryfall ID, finish,
 //! quantity and dated prices. Names, sets, numbers and rarities are fetched
@@ -7,7 +8,6 @@
 //! (schema owner) account; the app itself runs as a least-privilege role.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, bail};
@@ -15,7 +15,7 @@ use chrono::{DateTime, Local, NaiveDate, Utc};
 use postgres::{Client, GenericClient, Row};
 use postgres_native_tls::MakeTlsConnector;
 
-use super::{CollectionStore, PriceMove, ValueChange};
+use super::{CollectionStore, PriceMove, StoredRow, ValueChange, hydrate, removed_entry};
 use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
 use crate::scryfall::Scryfall;
 
@@ -24,8 +24,11 @@ pub fn latest_migration() -> i32 {
 }
 
 /// (version, name, sql). Append new migrations; never edit applied ones.
-const MIGRATIONS: &[(i32, &str, &str)] =
-    &[(1, "init", include_str!("../../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i32, &str, &str)] = &[(
+    1,
+    "init",
+    include_str!("../../migrations/postgres/0001_init.sql"),
+)];
 
 pub struct PostgresStore {
     client: RefCell<Client>,
@@ -54,16 +57,6 @@ pub struct DbStatus {
     pub cards: i64,
     pub price_points: i64,
     pub first_price_date: Option<NaiveDate>,
-}
-
-/// A collection row as stored: no card details.
-struct StoredRow {
-    scryfall_id: String,
-    finish: Finish,
-    quantity: u32,
-    added: NaiveDate,
-    prices: Prices,
-    price_date: Option<NaiveDate>,
 }
 
 impl PostgresStore {
@@ -247,32 +240,6 @@ impl PostgresStore {
         })
     }
 
-    /// Import rows (e.g. from `collection.md`), setting quantities rather than
-    /// adding to them, and recording each row's prices as a price point.
-    pub fn import(&self, entries: &[CollectionEntry]) -> Result<usize> {
-        let mut client = self.client.borrow_mut();
-        let mut tx = client.transaction()?;
-        for e in entries {
-            tx.execute(
-                "insert into collection (scryfall_id, finish, quantity, added_at)
-                 values ($1::text::uuid, $2, $3, $4::date)
-                 on conflict (scryfall_id, finish)
-                 do update set quantity = excluded.quantity, updated_at = now()",
-                &[
-                    &e.scryfall_id,
-                    &e.finish.as_str(),
-                    &(e.quantity as i32),
-                    &e.added,
-                ],
-            )
-            .with_context(|| format!("failed to import {} ({})", e.name, e.scryfall_id))?;
-            let date = e.price_updated.unwrap_or(e.added);
-            record_price(&mut tx, &e.scryfall_id, e.finish, date, &e.prices)?;
-        }
-        tx.commit()?;
-        Ok(entries.len())
-    }
-
     fn stored_rows(&self, filter: Option<(&str, Finish)>) -> Result<Vec<StoredRow>> {
         const SELECT: &str = "select scryfall_id::text, finish, quantity, added_at,
                 price_tcg::float8, price_ck::float8, price_ck_buylist::float8, price_date
@@ -287,62 +254,11 @@ impl PostgresStore {
         };
         rows.iter().map(stored_row).collect()
     }
-
-    /// Fill in card details from Scryfall. Falls back to placeholders when
-    /// Scryfall is unreachable so the collection can still be listed.
-    fn hydrate(&self, rows: Vec<StoredRow>) -> Vec<CollectionEntry> {
-        let ids: Vec<String> = rows.iter().map(|r| r.scryfall_id.clone()).collect();
-        let cards = self.scryfall.cards_by_id(&ids).unwrap_or_else(|e| {
-            eprintln!("  ! could not fetch card details from Scryfall ({e:#})");
-            HashMap::new()
-        });
-        let mut entries: Vec<CollectionEntry> = rows
-            .into_iter()
-            .map(|r| {
-                let card = cards.get(&r.scryfall_id);
-                let mut prices = r.prices;
-                prices.tcgplayer_url = card
-                    .and_then(|c| {
-                        if r.finish == Finish::Etched {
-                            c.tcgplayer_etched_id.or(c.tcgplayer_id)
-                        } else {
-                            c.tcgplayer_id
-                        }
-                    })
-                    .map(|id| format!("https://www.tcgplayer.com/product/{id}"));
-                CollectionEntry {
-                    name: card
-                        .map(|c| c.name.clone())
-                        .unwrap_or_else(|| format!("(unknown card {})", r.scryfall_id)),
-                    set_code: card.map(|c| c.set_code.to_uppercase()).unwrap_or_default(),
-                    set_name: card.map(|c| c.set_name.clone()).unwrap_or_default(),
-                    collector_number: card.map(|c| c.collector_number.clone()).unwrap_or_default(),
-                    rarity: card.map(|c| c.rarity.clone()).unwrap_or_default(),
-                    colors: card.map(|c| c.colors.clone()).unwrap_or_default(),
-                    type_line: card.map(|c| c.type_line.clone()).unwrap_or_default(),
-                    scryfall_id: r.scryfall_id,
-                    finish: r.finish,
-                    quantity: r.quantity,
-                    prices,
-                    added: r.added,
-                    price_updated: r.price_date,
-                }
-            })
-            .collect();
-        entries.sort_by(|a, b| {
-            a.name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-                .then_with(|| a.set_code.cmp(&b.set_code))
-                .then_with(|| a.collector_number.cmp(&b.collector_number))
-        });
-        entries
-    }
 }
 
 impl CollectionStore for PostgresStore {
     fn entries(&self) -> Result<Vec<CollectionEntry>> {
-        Ok(self.hydrate(self.stored_rows(None)?))
+        Ok(hydrate(Some(&self.scryfall), self.stored_rows(None)?))
     }
 
     fn add(&mut self, entry: CollectionEntry) -> Result<CollectionEntry> {
@@ -417,40 +333,14 @@ impl CollectionStore for PostgresStore {
         };
         if remaining > 0 {
             let rows = self.stored_rows(Some((scryfall_id, finish)))?;
-            return Ok(self.hydrate(rows).into_iter().next());
+            return Ok(hydrate(Some(&self.scryfall), rows).into_iter().next());
         }
         // Row is gone; describe it from Scryfall alone.
-        let card = self.scryfall.by_id(scryfall_id).ok().flatten();
-        Ok(Some(CollectionEntry {
-            scryfall_id: scryfall_id.to_string(),
-            name: card
-                .as_ref()
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| scryfall_id.to_string()),
-            set_code: card
-                .as_ref()
-                .map(|c| c.set_code.to_uppercase())
-                .unwrap_or_default(),
-            set_name: card
-                .as_ref()
-                .map(|c| c.set_name.clone())
-                .unwrap_or_default(),
-            collector_number: card
-                .as_ref()
-                .map(|c| c.collector_number.clone())
-                .unwrap_or_default(),
-            rarity: card.as_ref().map(|c| c.rarity.clone()).unwrap_or_default(),
-            colors: card.as_ref().map(|c| c.colors.clone()).unwrap_or_default(),
-            type_line: card
-                .as_ref()
-                .map(|c| c.type_line.clone())
-                .unwrap_or_default(),
+        Ok(Some(removed_entry(
+            Some(&self.scryfall),
+            scryfall_id,
             finish,
-            quantity: 0,
-            prices: Prices::default(),
-            added: Local::now().date_naive(),
-            price_updated: None,
-        }))
+        )))
     }
 
     fn set_quantity(
@@ -471,7 +361,7 @@ impl CollectionStore for PostgresStore {
             return Ok(None);
         }
         let rows = self.stored_rows(Some((scryfall_id, finish)))?;
-        Ok(self.hydrate(rows).into_iter().next())
+        Ok(hydrate(Some(&self.scryfall), rows).into_iter().next())
     }
 
     fn relocate(
@@ -522,6 +412,30 @@ impl CollectionStore for PostgresStore {
             added: added.with_timezone(&Local).date_naive(),
             ..to
         }))
+    }
+
+    fn import(&mut self, entries: &[CollectionEntry]) -> Result<usize> {
+        let mut client = self.client.borrow_mut();
+        let mut tx = client.transaction()?;
+        for e in entries {
+            tx.execute(
+                "insert into collection (scryfall_id, finish, quantity, added_at)
+                 values ($1::text::uuid, $2, $3, $4::date)
+                 on conflict (scryfall_id, finish)
+                 do update set quantity = excluded.quantity, updated_at = now()",
+                &[
+                    &e.scryfall_id,
+                    &e.finish.as_str(),
+                    &(e.quantity as i32),
+                    &e.added,
+                ],
+            )
+            .with_context(|| format!("failed to import {} ({})", e.name, e.scryfall_id))?;
+            let date = e.price_updated.unwrap_or(e.added);
+            record_price(&mut tx, &e.scryfall_id, e.finish, date, &e.prices)?;
+        }
+        tx.commit()?;
+        Ok(entries.len())
     }
 
     fn update_prices(&mut self, scryfall_id: &str, finish: Finish, prices: Prices) -> Result<()> {
@@ -792,136 +706,9 @@ mod tests {
             .batch_execute("drop table price_history");
         assert!(ddl.is_err(), "app role must not be able to drop tables");
 
-        let today = Local::now().date_naive();
-        let entry = |id: &str, finish, qty, tcg| CollectionEntry {
-            scryfall_id: id.into(),
-            name: "Lightning Bolt".into(),
-            set_code: "X".into(),
-            set_name: "X".into(),
-            collector_number: "1".into(),
-            rarity: "common".into(),
-            colors: Vec::new(),
-            type_line: String::new(),
-            finish,
-            quantity: qty,
-            prices: Prices {
-                tcgplayer: Some(tcg),
-                cardkingdom: Some(tcg + 1.0),
-                cardkingdom_buylist: None,
-                ..Prices::default()
-            },
-            added: today,
-            price_updated: Some(today),
-        };
-        // Two printings of Lightning Bolt (M11 #149 and A25 #141) + a foil copy.
-        let m11 = "e768c957-3a1f-42f5-853a-96942f645df5";
-        let a25 = "e3285e6b-3e79-4d7c-bf96-d920f973b122";
-        store.add(entry(m11, Finish::Nonfoil, 2, 1.0)).unwrap();
-        let merged = store.add(entry(m11, Finish::Nonfoil, 1, 1.5)).unwrap();
-        assert_eq!(merged.quantity, 3);
-        store.add(entry(a25, Finish::Nonfoil, 1, 2.0)).unwrap();
-        store.add(entry(a25, Finish::Foil, 1, 5.0)).unwrap();
-
+        crate::store::conformance(&mut store);
         let rows = store.entries().unwrap();
-        assert_eq!(rows.len(), 3, "one row per printing + finish");
-        let m11_row = rows.iter().find(|e| e.scryfall_id == m11).unwrap();
-        assert_eq!(m11_row.quantity, 3);
-        assert_eq!(
-            m11_row.prices.tcgplayer,
-            Some(1.5),
-            "same-day price point is replaced"
-        );
-        assert_eq!(m11_row.name, "Lightning Bolt", "details come from Scryfall");
-        assert_eq!(store.price_history(m11, Finish::Nonfoil).unwrap().len(), 1);
-
-        let left = store.remove(a25, Finish::Foil, 5).unwrap().unwrap();
-        assert_eq!(left.quantity, 0);
-        assert_eq!(store.entries().unwrap().len(), 2);
-        // History survives removal.
-        assert_eq!(store.price_history(a25, Finish::Foil).unwrap().len(), 1);
-        assert!(store.remove(a25, Finish::Foil, 1).unwrap().is_none());
-
-        // Edits: set a quantity, change the finish, then merge into a row that exists.
-        let set = store
-            .set_quantity(m11, Finish::Nonfoil, 5)
-            .unwrap()
-            .unwrap();
-        assert_eq!((set.quantity, set.name.as_str()), (5, "Lightning Bolt"));
-        assert!(
-            store
-                .set_quantity(a25, Finish::Etched, 2)
-                .unwrap()
-                .is_none()
-        );
-        let refinished = store
-            .relocate(a25, Finish::Nonfoil, entry(a25, Finish::Foil, 1, 6.0))
-            .unwrap()
-            .unwrap();
-        assert_eq!((refinished.finish, refinished.quantity), (Finish::Foil, 1));
-        assert_eq!(
-            store
-                .price_history(a25, Finish::Foil)
-                .unwrap()
-                .last()
-                .unwrap()
-                .tcgplayer,
-            Some(6.0),
-            "the moved row is priced"
-        );
-        let merged = store
-            .relocate(a25, Finish::Foil, entry(m11, Finish::Nonfoil, 1, 1.5))
-            .unwrap()
-            .unwrap();
-        assert_eq!(merged.quantity, 6);
-        assert_eq!(store.entries().unwrap().len(), 1);
-        assert!(
-            store
-                .relocate(a25, Finish::Foil, entry(m11, Finish::Nonfoil, 1, 1.5))
-                .unwrap()
-                .is_none()
-        );
-
-        // Value change: the 6 copies were $1.00 ten days ago and $1.50 now.
-        assert!(store.value_change(today).unwrap().is_some());
-        let ten_days_ago = today - chrono::Days::new(10);
-        assert!(
-            store.value_change(ten_days_ago).unwrap().is_none(),
-            "nothing was priced back then"
-        );
-        record_price(
-            &mut *store.client.borrow_mut(),
-            m11,
-            Finish::Nonfoil,
-            ten_days_ago,
-            &Prices {
-                tcgplayer: Some(1.0),
-                ..Prices::default()
-            },
-        )
-        .unwrap();
-        let change = store
-            .value_change(today - chrono::Days::new(7))
-            .unwrap()
-            .unwrap();
-        assert_eq!((change.before, change.now, change.rows), (6.0, 9.0, 1));
-
-        // Price moves: the same row, $1.00 ten days ago and $1.50 today.
-        let moves = store.price_moves(today - chrono::Days::new(7)).unwrap();
-        assert_eq!(moves.len(), 1);
-        let m = &moves[0];
-        assert_eq!(
-            (m.scryfall_id.as_str(), m.finish, m.quantity),
-            (m11, Finish::Nonfoil, 6)
-        );
-        assert_eq!((m.then.date, m.now.date), (ten_days_ago, today));
-        assert_eq!((m.then.tcgplayer, m.now.tcgplayer), (Some(1.0), Some(1.5)));
-        assert!(
-            store
-                .price_moves(ten_days_ago - chrono::Days::new(1))
-                .unwrap()
-                .is_empty(),
-            "nothing was priced before then"
-        );
+        assert_eq!(rows[0].name, "Lightning Bolt", "details come from Scryfall");
 
         let status = store.status().unwrap();
         assert_eq!(status.schema_version, 1);

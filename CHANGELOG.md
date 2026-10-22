@@ -12,6 +12,15 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 
 The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
 
+### Added
+- SQLite storage, the default (#66): one file with the same tables and daily price history as
+  PostgreSQL, no server needed. It lives in the data folder (`%LOCALAPPDATA%\mtg-scan`, or
+  `MTG_SCAN_DATA_DIR`), or `[storage] path` / `--db <file>`; it is created and upgraded
+  automatically. `db status`, `db import` and `db export` work with SQLite and PostgreSQL alike,
+  and the Settings page shows the file and its row counts. Both databases pass one shared test
+  suite (SQLite in every `cargo test`, PostgreSQL in the integration test). PostgreSQL remains
+  available for your own server; Markdown stays as a file format.
+
 ### Changed
 - 1.0 is licensed under the GNU AGPL v3.0 or later, with an additional term that keeps the
   author credit visible in the UI (#63). Every page ends with an About line: credit, version,

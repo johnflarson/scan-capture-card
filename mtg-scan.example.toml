@@ -6,8 +6,12 @@
 collection = "collection.md"
 
 [storage]
-# markdown = collection.md (default) | postgres = PostgreSQL with price history
-backend = "markdown"
+# sqlite = one file with price history (default) | postgres = your own
+# PostgreSQL server with price history | markdown = collection.md, no history
+backend = "sqlite"
+# SQLite file (default: collection.db in %LOCALAPPDATA%\mtg-scan, or in
+# MTG_SCAN_DATA_DIR when set).
+# path = "collection.db"
 # Connection details and the password go in the `.env` file next to this one
 # (copy .env.example): MTG_SCAN_DB_HOST / _PORT / _USER / _PASSWORD / _NAME /
 # _SSLMODE, or a single MTG_SCAN_DATABASE_URL connection string.
