@@ -1,6 +1,6 @@
 [package]
 name = "mtg-scan"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Scan Magic: The Gathering cards with a webcam, track the collection in Markdown, and price cards via TCGplayer and Card Kingdom"
 license = "MIT"
@@ -24,7 +24,7 @@ getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 mime_guess = "2"
 minifb = "0.29"
-mtg-scan-shared = { version = "0.2.0", path = "shared" }
+mtg-scan-shared = { version = "0.3.0", path = "shared" }
 native-tls = "0.2.18"
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }
 postgres = { version = "0.19", features = ["with-chrono-0_4"] }

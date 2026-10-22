@@ -10,6 +10,12 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-22
+
+The last release of the personal 0.x line: web UI, classical table detection, decks and
+collection views. Work on 1.0 (The Shuffling Tome for other people) continues on the `v1`
+branch.
+
 ### Added
 - Card view on the Collection page (#57): **Table** / **Cards** switches between the table and a
   grid of card images with their names. Hovering a card (tapping it on a phone) pops up the
@@ -186,6 +192,7 @@ Iteration 1: scanning, recognition, pricing and a Markdown collection.
 - Prices from TCGplayer (market) and Card Kingdom (retail + buylist).
 - `collection.md` Markdown collection with totals; `list`, `add`, `remove`, `price`, `reprice`.
 
-[Unreleased]: https://github.com/johnflarson/scan-capture-card/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/johnflarson/scan-capture-card/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/johnflarson/scan-capture-card/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/johnflarson/scan-capture-card/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/johnflarson/scan-capture-card/releases/tag/v0.1.0
