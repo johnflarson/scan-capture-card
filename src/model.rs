@@ -71,11 +71,16 @@ impl FromStr for Finish {
     }
 }
 
-/// A specific printing of a card, as resolved from Scryfall.
-#[derive(Debug, Clone)]
+/// A specific printing of a card, as resolved from Scryfall (or the local
+/// card cache filled from Scryfall's bulk data).
+#[derive(Debug, Clone, PartialEq)]
 pub struct Card {
     pub scryfall_id: String,
+    /// Shared by every printing of the same card.
+    pub oracle_id: Option<String>,
     pub name: String,
+    /// Printed language, e.g. `en`, `ja`.
+    pub lang: String,
     pub set_code: String,
     pub set_name: String,
     pub collector_number: String,
@@ -87,12 +92,19 @@ pub struct Card {
     pub finishes: Vec<Finish>,
     pub tcgplayer_id: Option<u64>,
     pub tcgplayer_etched_id: Option<u64>,
+    pub cardmarket_id: Option<u64>,
     /// ~146x204 card image, used for visual printing matching.
     pub image_small: Option<String>,
-    /// Scryfall's daily TCGplayer-sourced prices, used as a fallback.
+    /// 488x680 card image.
+    pub image_normal: Option<String>,
+    /// Scryfall's daily prices: TCGplayer (USD), Cardmarket (EUR) and
+    /// Cardhoarder (MTGO tix).
     pub scryfall_usd: Option<f64>,
     pub scryfall_usd_foil: Option<f64>,
     pub scryfall_usd_etched: Option<f64>,
+    pub scryfall_eur: Option<f64>,
+    pub scryfall_eur_foil: Option<f64>,
+    pub scryfall_tix: Option<f64>,
 }
 
 impl Card {

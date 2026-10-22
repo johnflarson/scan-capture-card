@@ -20,6 +20,9 @@ use crate::store::totals;
 pub fn run(cfg: &Config, opts: EngineOptions) -> Result<()> {
     if opts.dry_run {
         println!("Dry run: cards are identified and priced but not saved.");
+    } else {
+        // Keeps the card cache (details and prices) current while the app runs.
+        crate::bulk::spawn_daily(cfg.clone());
     }
     println!(
         "Keys: SPACE scan now · A auto on/off · F finish · M single/table mode · U undo · \

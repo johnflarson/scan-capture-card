@@ -83,6 +83,9 @@ struct AppState {
 pub fn run(cfg: &Config, opts: EngineOptions, web: WebOptions) -> Result<()> {
     if opts.dry_run {
         println!("Dry run: cards are identified and priced but not saved.");
+    } else {
+        // Keeps the card cache (details and prices) current while the app runs.
+        crate::bulk::spawn_daily(cfg.clone());
     }
     let engine = Arc::new(engine::start(cfg, opts)?);
     println!("Camera: {}", engine.view().camera);

@@ -16,7 +16,7 @@ use crate::store::markdown::MarkdownStore;
 use crate::store::postgres::PostgresStore;
 use crate::store::sqlite::SqliteStore;
 
-const USER_AGENT: &str = concat!("mtg-scan/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("mtg-scan/", env!("CARGO_PKG_VERSION"));
 
 pub struct App {
     /// Shared with the postgres store (it looks card details up) so both

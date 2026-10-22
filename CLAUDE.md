@@ -69,7 +69,8 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `ocr.rs` | Windows OCR wrapper; returns lines with normalised boxes |
 | `llm.rs` | Vision LLM: `read_card`, `detect_cards` (bbox_2d, 0-1000). OpenAI wire format, or Ollama native `/api/chat` |
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
-| `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs |
+| `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs, bulk data metadata |
+| `bulk.rs` | Scryfall's daily `default_cards` bulk file (gzip JSON Lines, ~80 MB, ~110k paper printings) streamed into the store's card cache (`CardCache`); `spawn_daily` (hourly check, own connection, skipped in `--dry-run`), job state in `app_job` |
 | `pricing/` | `tcgplayer.rs` (mpapi pricepoints, Scryfall fallback), `cardkingdom.rs` (daily price list, then a compact index), `PriceService` |
 | `store/` | `CollectionStore` trait (add, remove, `set_quantity`, `relocate` to another printing/finish, `import`, prices), shared `hydrate` (card details from Scryfall) and `conformance` test suite; `sqlite.rs` (default since 1.0: rusqlite bundled, WAL, `BEGIN IMMEDIATE` writes, migrations applied on open, cents and ISO dates); `postgres.rs` (migrations via `db migrate`, upserts, price history); `markdown.rs` (parse, render, atomic write; import/export format). Migrations live per dialect in `migrations/sqlite/` and `migrations/postgres/` with matching version numbers |
 | `moxfield.rs` | Moxfield decks of `[decks] moxfield_user` (Settings page), else `MTG_SCAN_MOXFIELD_USER` (`.env`): deck list and deck contents, cached, 1 req/s |
@@ -78,9 +79,12 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `migrations/` | Numbered SQL files embedded via `include_str!` and listed in `store::postgres::MIGRATIONS` |
 
 ### PostgreSQL design (iteration 2)
-- **Store only what isn't online.** No names, sets or images; card details are fetched from
-  Scryfall `/cards/collection` (75 IDs per request) whenever rows are listed. When adding a
-  column, ask first whether Scryfall already has it.
+- **Own only what isn't online; cache the rest.** The collection and price history are the
+  only source-of-truth tables. Card details (names, sets, images, Scryfall's daily prices) live
+  in `card_printing`, a rebuildable cache filled from Scryfall's daily bulk file by `bulk.rs`
+  (`bulk::spawn_daily` checks hourly inside the app; `db sync-cards` runs it now) and, for
+  printings not synced yet, from `/cards/collection`. Nothing references the cache. When adding
+  a column to an owned table, ask first whether Scryfall already has it.
 - `collection`: unique `(scryfall_id, finish)`. A Scryfall ID is one printing, so every printing
   and every finish is its own row. Quantity is always > 0; a row is deleted when it reaches 0.
 - `price_history`: unique `(scryfall_id, finish, price_date)`, so one point per day (same-day

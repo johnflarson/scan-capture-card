@@ -242,14 +242,20 @@ mtg-scan movers --days 30             # biggest price gains and drops, collectio
 mtg-scan db export backup.md          # Markdown snapshot of the database
 ```
 
-The database stores only what isn't available online. Card details come from
-Scryfall by ID.
+The database owns what isn't available online: what you have and its price
+history. Card details (names, sets, images and Scryfall's daily prices) are a
+local copy of Scryfall's daily bulk data, refreshed inside the app while it
+runs (`mtg-scan db sync-cards` refreshes it now; the first copy is about 80 MB
+to download and 50 MB on disk). Nothing depends on the copy: it can be rebuilt
+from Scryfall at any time.
 
 | Table / view | Columns |
 |---|---|
 | `collection` | `scryfall_id`, `finish`, `quantity`, `added_at`, `updated_at`. One row per **printing + finish**. |
 | `price_history` | `scryfall_id`, `finish`, `price_date`, `price_tcg`, `price_ck`, `price_ck_buylist`, `captured_at`. One row per day. |
 | `collection_value` (view) | Collection with its latest prices, `value_*` totals and a `scryfall_url` |
+| `card_printing` | Local copy of Scryfall's card data: name, set, number, rarity, colors, type, finishes, images, TCGplayer / Cardmarket IDs, and Scryfall's daily USD, EUR and MTGO prices. One row per printing. |
+| `app_job` | When background jobs (the daily card data sync) last finished |
 
 Each Scryfall ID is one printing, so different printings of the same card
 (say, Lightning Bolt from M11 and from A25) are separate rows, and so are

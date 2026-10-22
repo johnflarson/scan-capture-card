@@ -20,6 +20,7 @@ use crate::app;
 use crate::config::{self, Config, DecksConfig, StorageBackend, UiConfig};
 use crate::moxfield;
 use crate::scryfall::Scryfall;
+use crate::store::CardCache;
 use crate::store::markdown::MarkdownStore;
 use crate::store::postgres::{self, PostgresStore};
 use crate::store::sqlite::SqliteStore;
@@ -247,9 +248,9 @@ fn postgres_view(cfg: &Config) -> DatabaseView {
     let status = app::http_client()
         .map(|http| Rc::new(Scryfall::new(http)))
         .and_then(|scryfall| PostgresStore::open(conn, &cfg.storage.schema, scryfall))
-        .and_then(|store| store.status());
+        .and_then(|store| Ok((store.status()?, store)));
     match status {
-        Ok(s) => {
+        Ok((s, store)) => {
             let latest = postgres::latest_migration();
             let schema = if s.schema_version < latest {
                 format!("{} of {latest}: run mtg-scan db migrate", s.schema_version)
@@ -270,6 +271,9 @@ fn postgres_view(cfg: &Config) -> DatabaseView {
                     },
                 ),
             ];
+            if s.schema_version >= 2 {
+                view.status.push(cache_row(&store));
+            }
         }
         Err(e) => view.error = Some(format!("{e:#}")),
     }
@@ -285,8 +289,8 @@ fn sqlite_view(cfg: &Config) -> DatabaseView {
         status: Vec::new(),
         error: None,
     };
-    match SqliteStore::open(&path, None).and_then(|store| store.status()) {
-        Ok(s) => {
+    match SqliteStore::open(&path, None).and_then(|store| Ok((store.status()?, store))) {
+        Ok((s, store)) => {
             view.status = vec![
                 InfoRow::new("Engine", format!("SQLite {}", s.sqlite_version)),
                 InfoRow::new("Schema version", s.schema_version.to_string()),
@@ -306,10 +310,27 @@ fn sqlite_view(cfg: &Config) -> DatabaseView {
                     format!("{:.1} MB", meta.len() as f64 / 1_048_576.0),
                 ));
             }
+            view.status.push(cache_row(&store));
         }
         Err(e) => view.error = Some(format!("{e:#}")),
     }
     view
+}
+
+/// The card cache's size and last sync, for the Database box.
+fn cache_row(cache: &dyn CardCache) -> InfoRow {
+    let count = cache.cached_count().unwrap_or(0);
+    let value = match cache.job(crate::bulk::JOB).ok().flatten() {
+        Some(job) => format!(
+            "{count} printings, synced {}",
+            job.done_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+        ),
+        None if count > 0 => format!("{count} printings, daily sync not run yet"),
+        None => "empty: fills on the first daily sync".into(),
+    };
+    InfoRow::new("Card data", value)
 }
 
 fn ssl_mode(mode: ::postgres::config::SslMode) -> &'static str {

@@ -44,10 +44,18 @@ pub struct Scryfall {
     printings_cache: RefCell<HashMap<String, Vec<Card>>>,
 }
 
+/// A card object as the API and the bulk data files return it (only the
+/// fields mtg-scan uses).
 #[derive(Deserialize)]
-struct ApiCard {
+pub(crate) struct ApiCard {
     id: String,
+    oracle_id: Option<String>,
     name: String,
+    #[serde(default = "english")]
+    lang: String,
+    /// Digital-only printings (MTG Arena, MTGO) can't be scanned.
+    #[serde(default)]
+    pub digital: bool,
     set: String,
     set_name: String,
     collector_number: String,
@@ -60,8 +68,10 @@ struct ApiCard {
     finishes: Vec<String>,
     tcgplayer_id: Option<u64>,
     tcgplayer_etched_id: Option<u64>,
+    cardmarket_id: Option<u64>,
     image_uris: Option<ImageUris>,
     card_faces: Option<Vec<ApiFace>>,
+    #[serde(default)]
     prices: ApiPrices,
 }
 
@@ -75,6 +85,11 @@ struct ApiFace {
 #[derive(Deserialize)]
 struct ImageUris {
     small: Option<String>,
+    normal: Option<String>,
+}
+
+fn english() -> String {
+    "en".into()
 }
 
 #[derive(Deserialize)]
@@ -82,11 +97,23 @@ struct SearchPage {
     data: Vec<ApiCard>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct ApiPrices {
     usd: Option<String>,
     usd_foil: Option<String>,
     usd_etched: Option<String>,
+    eur: Option<String>,
+    eur_foil: Option<String>,
+    tix: Option<String>,
+}
+
+/// A Scryfall bulk data file (<https://scryfall.com/docs/api/bulk-data>).
+#[derive(Deserialize)]
+pub struct BulkInfo {
+    /// When Scryfall last rebuilt the file (about daily).
+    pub updated_at: String,
+    /// The gzip-compressed JSON Lines file.
+    pub jsonl_download_uri: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -113,14 +140,15 @@ impl From<ApiCard> for Card {
         colors.sort_by_key(|c| "WUBRG".find(c.as_str()).unwrap_or(usize::MAX));
         colors.dedup();
         // Double-faced cards keep images per face; use the front.
-        let image_small = c.image_uris.and_then(|i| i.small).or_else(|| {
-            faces
-                .into_iter()
-                .find_map(|f| f.image_uris.and_then(|i| i.small))
-        });
+        let images = c
+            .image_uris
+            .or_else(|| faces.into_iter().find_map(|f| f.image_uris));
+        let (image_small, image_normal) = images.map_or((None, None), |i| (i.small, i.normal));
         Card {
             scryfall_id: c.id,
+            oracle_id: c.oracle_id,
             name: c.name,
+            lang: c.lang,
             set_code: c.set,
             set_name: c.set_name,
             collector_number: c.collector_number,
@@ -134,10 +162,15 @@ impl From<ApiCard> for Card {
                 .collect(),
             tcgplayer_id: c.tcgplayer_id,
             tcgplayer_etched_id: c.tcgplayer_etched_id,
+            cardmarket_id: c.cardmarket_id,
             image_small,
+            image_normal,
             scryfall_usd: parse(c.prices.usd),
             scryfall_usd_foil: parse(c.prices.usd_foil),
             scryfall_usd_etched: parse(c.prices.usd_etched),
+            scryfall_eur: parse(c.prices.eur),
+            scryfall_eur_foil: parse(c.prices.eur_foil),
+            scryfall_tix: parse(c.prices.tix),
         }
     }
 }
@@ -318,6 +351,12 @@ impl Scryfall {
         Ok(page
             .map(|p| p.data.into_iter().map(Card::from).collect())
             .unwrap_or_default())
+    }
+
+    /// Where today's bulk data file of `kind` (e.g. `default-cards`) is.
+    pub fn bulk_info(&self, kind: &str) -> Result<BulkInfo> {
+        self.api_get(&format!("/bulk-data/{kind}"), &[])?
+            .with_context(|| format!("Scryfall has no {kind} bulk data"))
     }
 
     /// Download (or read from the disk cache) a card's small image.

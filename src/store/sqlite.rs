@@ -11,25 +11,36 @@
 //! Dates are ISO-8601 text (`YYYY-MM-DD` local dates, UTC timestamps) and
 //! money is integer cents.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use chrono::{Local, NaiveDate, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
-use super::{CollectionStore, PriceMove, StoredRow, ValueChange, hydrate, removed_entry};
-use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
+use super::{
+    CardCache, CollectionStore, Job, PriceMove, StoredRow, ValueChange, colors_from_text,
+    colors_text, finishes_from_text, finishes_text, hydrate, removed_entry,
+};
+use crate::model::{Card, CollectionEntry, Finish, PricePoint, Prices};
 use crate::scryfall::Scryfall;
 
 /// (version, name, sql). Append new migrations; never edit applied ones.
 /// Versions match `migrations/postgres/` so both stores stay in step.
-const MIGRATIONS: &[(i32, &str, &str)] = &[(
-    1,
-    "init",
-    include_str!("../../migrations/sqlite/0001_init.sql"),
-)];
+const MIGRATIONS: &[(i32, &str, &str)] = &[
+    (
+        1,
+        "init",
+        include_str!("../../migrations/sqlite/0001_init.sql"),
+    ),
+    (
+        2,
+        "card_cache",
+        include_str!("../../migrations/sqlite/0002_card_cache.sql"),
+    ),
+];
 
 pub fn latest_migration() -> i32 {
     MIGRATIONS.iter().map(|m| m.0).max().unwrap_or(0)
@@ -176,6 +187,22 @@ impl SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?)
     }
 
+    /// [`Self::write`] for methods that only have `&self` (the card cache):
+    /// runs `f` in a `BEGIN IMMEDIATE` transaction, rolled back on error.
+    fn write_with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        self.conn.execute_batch("begin immediate")?;
+        match f(&self.conn) {
+            Ok(value) => {
+                self.conn.execute_batch("commit")?;
+                Ok(value)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("rollback");
+                Err(e)
+            }
+        }
+    }
+
     fn stored_rows(&self, filter: Option<(&str, Finish)>) -> Result<Vec<StoredRow>> {
         const SELECT: &str = "select c.scryfall_id, c.finish, c.quantity, c.added_at,
                 p.price_tcg, p.price_ck, p.price_ck_buylist, p.price_date
@@ -202,13 +229,19 @@ impl SqliteStore {
 
     fn one(&self, scryfall_id: &str, finish: Finish) -> Result<Option<CollectionEntry>> {
         let rows = self.stored_rows(Some((scryfall_id, finish)))?;
-        Ok(hydrate(self.scryfall.as_deref(), rows).into_iter().next())
+        Ok(hydrate(Some(self), self.scryfall.as_deref(), rows)
+            .into_iter()
+            .next())
     }
 }
 
 impl CollectionStore for SqliteStore {
     fn entries(&self) -> Result<Vec<CollectionEntry>> {
-        Ok(hydrate(self.scryfall.as_deref(), self.stored_rows(None)?))
+        Ok(hydrate(
+            Some(self),
+            self.scryfall.as_deref(),
+            self.stored_rows(None)?,
+        ))
     }
 
     fn add(&mut self, entry: CollectionEntry) -> Result<CollectionEntry> {
@@ -276,6 +309,7 @@ impl CollectionStore for SqliteStore {
         }
         // Row is gone; describe it from Scryfall alone.
         Ok(Some(removed_entry(
+            Some(self),
             self.scryfall.as_deref(),
             scryfall_id,
             finish,
@@ -493,6 +527,153 @@ impl CollectionStore for SqliteStore {
             .display()
             .to_string()
     }
+
+    fn card_cache(&self) -> Option<&dyn CardCache> {
+        Some(self)
+    }
+}
+
+/// `card_printing` columns in the order [`card_from_row`] reads them.
+const CARD_COLUMNS: &str = "scryfall_id, oracle_id, name, lang, set_code, set_name,
+    collector_number, rarity, type_line, colors, finishes, tcgplayer_id, tcgplayer_etched_id,
+    cardmarket_id, image_small, image_normal, usd, usd_foil, usd_etched, eur, eur_foil, tix";
+
+impl CardCache for SqliteStore {
+    fn cached_cards(&self, ids: &[String]) -> Result<HashMap<String, Card>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut stmt = self.conn.prepare(&format!(
+            "select {CARD_COLUMNS} from card_printing
+             where scryfall_id in (select value from json_each(?1))"
+        ))?;
+        let rows = stmt.query_map(params![serde_json::to_string(ids)?], card_from_row)?;
+        rows.map(|r| {
+            let card = r?;
+            Ok((card.scryfall_id.clone(), card))
+        })
+        .collect()
+    }
+
+    fn store_cards(&self, cards: &[Card]) -> Result<usize> {
+        if cards.is_empty() {
+            return Ok(0);
+        }
+        self.write_with(|conn| {
+            let mut stmt = conn.prepare(&format!(
+                "insert into card_printing ({CARD_COLUMNS}, synced_at)
+                 values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                         ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+                 on conflict (scryfall_id) do update set
+                   oracle_id = excluded.oracle_id, name = excluded.name, lang = excluded.lang,
+                   set_code = excluded.set_code, set_name = excluded.set_name,
+                   collector_number = excluded.collector_number, rarity = excluded.rarity,
+                   type_line = excluded.type_line, colors = excluded.colors,
+                   finishes = excluded.finishes, tcgplayer_id = excluded.tcgplayer_id,
+                   tcgplayer_etched_id = excluded.tcgplayer_etched_id,
+                   cardmarket_id = excluded.cardmarket_id, image_small = excluded.image_small,
+                   image_normal = excluded.image_normal, usd = excluded.usd,
+                   usd_foil = excluded.usd_foil, usd_etched = excluded.usd_etched,
+                   eur = excluded.eur, eur_foil = excluded.eur_foil, tix = excluded.tix,
+                   synced_at = excluded.synced_at"
+            ))?;
+            let synced = now();
+            for c in cards {
+                stmt.execute(params![
+                    c.scryfall_id,
+                    c.oracle_id,
+                    c.name,
+                    c.lang,
+                    c.set_code,
+                    c.set_name,
+                    c.collector_number,
+                    c.rarity,
+                    c.type_line,
+                    colors_text(&c.colors),
+                    finishes_text(&c.finishes),
+                    c.tcgplayer_id.map(|v| v as i64),
+                    c.tcgplayer_etched_id.map(|v| v as i64),
+                    c.cardmarket_id.map(|v| v as i64),
+                    c.image_small,
+                    c.image_normal,
+                    cents(c.scryfall_usd),
+                    cents(c.scryfall_usd_foil),
+                    cents(c.scryfall_usd_etched),
+                    cents(c.scryfall_eur),
+                    cents(c.scryfall_eur_foil),
+                    cents(c.scryfall_tix),
+                    synced,
+                ])?;
+            }
+            Ok(cards.len())
+        })
+    }
+
+    fn cached_count(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("select count(*) from card_printing", [], |r| r.get(0))?)
+    }
+
+    fn job(&self, name: &str) -> Result<Option<Job>> {
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "select done_at, detail from app_job where name = ?1",
+                params![name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(done_at, detail)| {
+            Ok(Job {
+                done_at: DateTime::parse_from_rfc3339(&done_at)
+                    .with_context(|| format!("bad timestamp {done_at:?}"))?
+                    .with_timezone(&Utc),
+                detail,
+            })
+        })
+        .transpose()
+    }
+
+    fn finish_job(&self, name: &str, detail: &str) -> Result<()> {
+        self.conn.execute(
+            "insert into app_job (name, done_at, detail) values (?1, ?2, ?3)
+             on conflict (name) do update set done_at = excluded.done_at, detail = excluded.detail",
+            params![name, now(), detail],
+        )?;
+        Ok(())
+    }
+}
+
+fn card_from_row(r: &Row<'_>) -> rusqlite::Result<Card> {
+    let id = |at: usize| -> rusqlite::Result<Option<u64>> {
+        Ok(r.get::<_, Option<i64>>(at)?.map(|v| v as u64))
+    };
+    let price = |at: usize| -> rusqlite::Result<Option<f64>> { Ok(dollars(r.get(at)?)) };
+    Ok(Card {
+        scryfall_id: r.get(0)?,
+        oracle_id: r.get(1)?,
+        name: r.get(2)?,
+        lang: r.get(3)?,
+        set_code: r.get(4)?,
+        set_name: r.get(5)?,
+        collector_number: r.get(6)?,
+        rarity: r.get(7)?,
+        type_line: r.get(8)?,
+        colors: colors_from_text(&r.get::<_, String>(9)?),
+        finishes: finishes_from_text(&r.get::<_, String>(10)?),
+        tcgplayer_id: id(11)?,
+        tcgplayer_etched_id: id(12)?,
+        cardmarket_id: id(13)?,
+        image_small: r.get(14)?,
+        image_normal: r.get(15)?,
+        scryfall_usd: price(16)?,
+        scryfall_usd_foil: price(17)?,
+        scryfall_usd_etched: price(18)?,
+        scryfall_eur: price(19)?,
+        scryfall_eur_foil: price(20)?,
+        scryfall_tix: price(21)?,
+    })
 }
 
 /// Upsert `date`'s price point. Skipped when no price is known.
@@ -643,6 +824,69 @@ mod tests {
         );
         drop((first, second));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn listings_take_card_details_from_the_cache() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let id = "e768c957-3a1f-42f5-853a-96942f645df5";
+        let entry = CollectionEntry {
+            scryfall_id: id.into(),
+            name: String::new(),
+            set_code: String::new(),
+            set_name: String::new(),
+            collector_number: String::new(),
+            rarity: String::new(),
+            colors: Vec::new(),
+            type_line: String::new(),
+            finish: Finish::Nonfoil,
+            quantity: 1,
+            prices: Prices::default(),
+            added: Local::now().date_naive(),
+            price_updated: None,
+        };
+        store.add(entry).unwrap();
+        // Not cached and no Scryfall client: a placeholder name.
+        assert!(store.entries().unwrap()[0].name.contains("unknown card"));
+        let card = Card {
+            scryfall_id: id.into(),
+            oracle_id: None,
+            name: "Lightning Bolt".into(),
+            lang: "en".into(),
+            set_code: "m11".into(),
+            set_name: "Magic 2011".into(),
+            collector_number: "149".into(),
+            rarity: "common".into(),
+            colors: vec!["R".into()],
+            type_line: "Instant".into(),
+            finishes: vec![Finish::Nonfoil, Finish::Foil],
+            tcgplayer_id: Some(37301),
+            tcgplayer_etched_id: None,
+            cardmarket_id: None,
+            image_small: None,
+            image_normal: None,
+            scryfall_usd: Some(1.13),
+            scryfall_usd_foil: None,
+            scryfall_usd_etched: None,
+            scryfall_eur: Some(0.95),
+            scryfall_eur_foil: None,
+            scryfall_tix: None,
+        };
+        store.store_cards(&[card]).unwrap();
+        let row = &store.entries().unwrap()[0];
+        assert_eq!(
+            (
+                row.name.as_str(),
+                row.set_code.as_str(),
+                row.collector_number.as_str()
+            ),
+            ("Lightning Bolt", "M11", "149")
+        );
+        assert_eq!(row.colors, vec!["R"]);
+        assert_eq!(
+            row.prices.tcgplayer_url.as_deref(),
+            Some("https://www.tcgplayer.com/product/37301")
+        );
     }
 
     #[test]
