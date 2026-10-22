@@ -8,24 +8,29 @@ use mtg_scan_shared::{CARD_TYPES, CollectionRow, ColorGroup, Facet, PieSlice, pe
 use crate::filters::count;
 
 /// The class that colors a group's slice and key swatch: its mana color,
-/// its rarity color, or (types) a fixed slot of the categorical palette in
-/// `style.css`, so a type keeps its color whatever the filter leaves.
-/// "Other" and "Unknown" are grey.
+/// its rarity color, or its type color ([`type_class`]).
 fn slice_class(facet: Facet, value: &str) -> String {
     match facet {
         Facet::Color => ColorGroup::ALL
             .into_iter()
             .find(|g| g.label() == value)
-            .map_or("none", ColorGroup::class)
+            .map_or("t0", ColorGroup::class)
             .to_string(),
         Facet::Rarity => format!("rarity-{}", value.to_lowercase()),
-        Facet::Type => match CARD_TYPES[..CARD_TYPES.len() - 1]
-            .iter()
-            .position(|t| *t == value)
-        {
-            Some(i) => format!("t{}", i + 1),
-            None => "none".to_string(),
-        },
+        Facet::Type => type_class(value),
+    }
+}
+
+/// A card type's slot in the categorical palette in `style.css` (`--cat`),
+/// so a type keeps its color on every page and whatever a filter leaves.
+/// "Other" and "Unknown" are grey (`t0`).
+pub fn type_class(value: &str) -> String {
+    match CARD_TYPES[..CARD_TYPES.len() - 1]
+        .iter()
+        .position(|t| *t == value)
+    {
+        Some(i) => format!("t{}", i + 1),
+        None => "t0".to_string(),
     }
 }
 

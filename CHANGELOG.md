@@ -107,6 +107,17 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 - `[camera] table_width` / `table_height` settings for table mode (default 3840x2160).
 
 ### Changed
+- UI cleanup (#59):
+  - The database location (file path or `postgres://…`) now shows only on the Settings page, not
+    in the top bar or the Collection header.
+  - Every box has the same border, with 16 px corners for page boxes and 12 px for boxes inside
+    them.
+  - More of the palette: teal marks navigation, selections and actions (active tab, toggles,
+    picked filter chips), orange marks Card Kingdom and attention, and Home's Scan / Collection /
+    Decks buttons are solid teal, orange and cream.
+  - Titles use the brand's serif, and small labels are no longer all caps.
+  - The Home "By type" bars use the same type colors as the Collection pie.
+  - On the Scan page, the Top 5 box sits right under the session list again.
 - The color breakdown on the Home page (cards and decks) shows each color's symbol, count and
   percentage right under its part of the bar instead of in a separate legend (#47). Colors with
   none are left out.

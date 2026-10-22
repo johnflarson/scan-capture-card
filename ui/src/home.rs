@@ -9,6 +9,7 @@ use mtg_scan_shared::{
 use crate::app::{CollectionCache, Metric, Tab};
 use crate::decks::{DeckCache, DeckStatsBlock, ownership};
 use crate::mana::group_symbol;
+use crate::pie::type_class;
 use crate::preview::CardLink;
 
 #[component]
@@ -198,7 +199,7 @@ fn StatsBody(
                 <ColorBreakdown slices=stats.by_color.clone() total=t.cards />
             </StatBlock>
             <StatBlock title="By type">
-                <Bars slices=stats.by_type.clone() class_of=|_| String::new() />
+                <Bars slices=stats.by_type.clone() class_of=|t| format!("cat {}", type_class(t)) />
             </StatBlock>
             <StatBlock title="By rarity">
                 <Bars slices=stats.by_rarity.clone() class_of=rarity_class />
