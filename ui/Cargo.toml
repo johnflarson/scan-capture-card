@@ -10,7 +10,7 @@ publish = false
 console_error_panic_hook = "0.1"
 futures = "0.3"
 gloo-net = "0.7"
-gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-timers = { version = "0.4", features = ["futures"] }
 leptos = { version = "0.8.22", features = ["csr"] }
 mtg-scan-shared = { path = "../shared" }
 serde = "1"
