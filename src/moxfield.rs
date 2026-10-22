@@ -132,7 +132,8 @@ impl Moxfield {
     /// the cache when fresh (unless `refresh`), or when Moxfield fails (with
     /// a warning).
     pub fn decks(&self, user: &str, refresh: bool) -> DecksView {
-        let name = format!("moxfield-decks-{}.json", user.to_lowercase());
+        // "v2": lists cached before `showIllegal` (#45) lack decks; ignore them.
+        let name = format!("moxfield-decks-v2-{}.json", user.to_lowercase());
         let profile_url = Some(format!("https://moxfield.com/users/{user}"));
         let view = |decks, warning| DecksView {
             user: Some(user.to_string()),

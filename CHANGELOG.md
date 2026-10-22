@@ -79,6 +79,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 - `[camera] table_width` / `table_height` settings for table mode (default 3840x2160).
 
 ### Changed
+- The color breakdown on the Home page (cards and decks) shows each color's symbol, count and
+  percentage right under its part of the bar instead of in a separate legend (#47). Colors with
+  none are left out.
 - Colors are shown as MTG mana symbols (Scryfall's symbol SVGs) instead of a colored dot and the
   color's name (#39): the Collection color column, filter chips and group headers, the Home color
   breakdown and deck colors. Multicolor is a gold coin; each symbol is named on hover.
@@ -96,7 +99,8 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 ### Fixed
 - The Decks page missed decks Moxfield marks as not legal in their format (#45), such as 101-card
   Commander decks, often a third of an account's decks. Private and unlisted decks still aren't
-  listed: Moxfield shows them only to the signed-in owner.
+  listed: Moxfield shows them only to the signed-in owner. Deck lists saved by older builds are
+  ignored, so the missing decks show up straight after updating.
 - Empty session totals showed "$-0.00" (an empty sum is negative zero); they now show "$0.00".
 - "Retry with LLM" now replaces the card the previous single-card scan added instead of adding a
   second copy. The original is removed only once the retry has identified the card, and a retry

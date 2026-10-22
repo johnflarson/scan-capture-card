@@ -241,8 +241,9 @@ fn StatBlock(
     }
 }
 
-/// A stacked bar of the color groups with a legend; `unit` names what is
-/// counted ("cards", "decks").
+/// A stacked bar of the color groups, each segment with its symbol, count
+/// and share right under it; `unit` names what is counted ("cards",
+/// "decks"). Groups with none are left out.
 #[component]
 pub fn ColorBreakdown(
     slices: Vec<(mtg_scan_shared::ColorGroup, Slice)>,
@@ -256,34 +257,30 @@ pub fn ColorBreakdown(
             cards as f64 * 100.0 / total as f64
         }
     };
-    let segments = slices
+    let columns: Vec<_> = slices
         .iter()
         .filter(|(_, s)| s.cards > 0)
         .map(|(g, s)| {
+            // Widths follow the counts; a minimum width keeps a small
+            // group's label readable.
             view! {
-                <span
-                    class=format!("seg {}", g.class())
-                    style=format!("width: {:.2}%", pct(s.cards))
+                <li
+                    class=g.class()
+                    style=format!("flex-grow: {}", s.cards)
                     title=format!("{}: {} {unit}", s.label, s.cards)
-                ></span>
-            }
-        })
-        .collect_view();
-    let legend = slices
-        .iter()
-        .map(|(g, s)| {
-            view! {
-                <li class:none=s.cards == 0>
+                >
+                    <span class="seg"></span>
                     <span class="legend-label">{group_symbol(*g)}</span>
                     <span class="legend-count">{s.cards}</span>
                     <span class="legend-pct">{format!("{:.0}%", pct(s.cards))}</span>
                 </li>
             }
         })
-        .collect_view();
-    view! {
-        <div class="color-bar">{segments}</div>
-        <ul class="legend">{legend}</ul>
+        .collect();
+    if columns.is_empty() {
+        view! { <div class="color-bar"></div> }.into_any()
+    } else {
+        view! { <ul class="color-columns">{columns}</ul> }.into_any()
     }
 }
 
