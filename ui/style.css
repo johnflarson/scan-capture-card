@@ -412,15 +412,18 @@ tr.group-head.collapsed td { border-bottom-color: var(--md-outline-variant); }
 .g { --mana: #3fa66b; }
 .m { --mana: #d9b23c; }
 .c { --mana: #a79f97; }
-.color-bar { display: flex; height: 18px; border-radius: var(--radius-full); overflow: hidden; background: var(--md-surface-container-highest); }
-.color-bar .seg { background: var(--mana); min-width: 3px; }
-.color-bar .seg + .seg { box-shadow: inset 2px 0 0 var(--md-surface-container-high); }
-.legend { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 16px; }
-.legend li { display: grid; grid-template-columns: 20px 1fr 40px; align-items: center; gap: 8px; }
-.legend li.none { opacity: 0.4; }
+.color-bar { height: 18px; border-radius: var(--radius-full); background: var(--md-surface-container-highest); }
+/* One column per color group: its bar segment, then its label centered under it. */
+.color-columns { list-style: none; margin: 0; padding: 0; display: flex; }
+.color-columns li { flex: 1 1 0; min-width: 40px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.color-columns .seg { align-self: stretch; height: 18px; margin-bottom: 4px; background: var(--mana); }
+.color-columns li + li .seg { box-shadow: inset 2px 0 0 var(--md-surface-container-high); }
+.color-columns li:first-child .seg { border-radius: var(--radius-full) 0 0 var(--radius-full); }
+.color-columns li:last-child .seg { border-radius: 0 var(--radius-full) var(--radius-full) 0; }
+.color-columns li:only-child .seg { border-radius: var(--radius-full); }
 .legend-label { display: flex; }
-.legend-count { font-variant-numeric: tabular-nums; font-weight: 500; }
-.legend-pct { color: var(--md-on-surface-variant); text-align: right; font-variant-numeric: tabular-nums; }
+.legend-count { font-variant-numeric: tabular-nums; font-weight: 500; line-height: 1.1; }
+.legend-pct { color: var(--md-on-surface-variant); font-size: 12px; font-variant-numeric: tabular-nums; line-height: 1.1; }
 
 .bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
 .bars li { display: grid; grid-template-columns: minmax(80px, 38%) 1fr 44px; align-items: center; gap: 10px; }
@@ -487,7 +490,6 @@ pre.code {
 .deck-home-metrics { grid-template-columns: repeat(2, minmax(0, 200px)); margin-bottom: 14px; }
 .deck-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .deck-stats h4 { margin: 0 0 10px; font-size: 13px; font-weight: 500; color: var(--md-on-surface-variant); }
-.deck-stats .legend { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
 button.deck-mini {
   width: 100%; border: none; background: transparent; color: inherit; text-align: left;
   cursor: pointer; border-radius: var(--radius-s); grid-template-columns: auto minmax(0, 1fr) auto;
