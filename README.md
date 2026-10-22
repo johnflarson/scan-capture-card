@@ -76,7 +76,7 @@ asks). The pages:
   only identify and price cards (nothing is written, not even the background
   price refresh); **Clear** empties the session list to start fresh (saved
   cards stay saved). **Top 5** shows the session's most expensive cards by
-  TCGplayer and by Card Kingdom price; the × on a card hides it from there
+  TCGplayer and by Card Kingdom price, each with its price; the × on a card hides it from there
   (e.g. a mis-scan) without touching the collection. When the printing is uncertain the
   card waits under **To review** instead: accept it, pick the right printing
   from thumbnails, or discard it (`[recognition] review_uncertain = false`

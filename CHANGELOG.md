@@ -13,7 +13,7 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 ### Added
 - Top 5 on the Scan page (#51): beside the session list (under it on narrower screens), this
   session's five most expensive cards by TCGplayer price and by Card Kingdom price, as card
-  images (each printing once; hover for the full-size card, click for Scryfall). The × on a card
+  images with that store's price under each (each printing once; hover for the full-size card, click for Scryfall). The × on a card
   hides it from both lists, e.g. a mis-scan, without changing the collection or the session
   list; **Show hidden** brings them back, and **Clear** starts the lists over.
 - Scan without saving, and start fresh (#49). The Scan page has a **Save to collection** switch:

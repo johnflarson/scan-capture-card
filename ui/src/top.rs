@@ -1,5 +1,5 @@
 //! Scan page "Top 5" box: this session's most expensive cards by TCGplayer
-//! and by Card Kingdom price, as card images. A card can be hidden (e.g. a
+//! and by Card Kingdom price, as card images with that store's price. A card can be hidden (e.g. a
 //! mis-scan); that only changes this box, never the collection.
 
 use leptos::prelude::*;
@@ -90,6 +90,7 @@ fn TopList(
                                             None => view! { <div class="noimg">{c.name.clone()}</div> }.into_any(),
                                         }}
                                     </a>
+                                    <span class=format!("top-price {kind}")>{usd(price(&c))}</span>
                                     <button
                                         class="top-hide"
                                         title="Hide from the top 5 (e.g. a mis-scan); the collection is unchanged"

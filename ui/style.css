@@ -229,6 +229,9 @@ main { padding: 20px 24px 40px; max-width: 1800px; margin: 0 auto; }
 .top-card { position: relative; }
 .top-card a { display: block; }
 .top-card img, .top-card .noimg { display: block; width: 100%; aspect-ratio: 63 / 88; border-radius: 4.75% / 3.5%; object-fit: cover; background: var(--md-surface-container-highest); }
+.top-price { display: block; margin-top: 4px; text-align: center; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.top-price.tcg { color: var(--md-primary); }
+.top-price.ck { color: var(--md-secondary); }
 .top-card .noimg { display: flex; align-items: center; justify-content: center; padding: 6px; text-align: center; font-size: 12px; color: var(--md-on-surface-variant); }
 .top-hide {
   position: absolute; top: 4px; right: 4px; width: 26px; height: 26px; padding: 0; border: none; border-radius: 50%;
