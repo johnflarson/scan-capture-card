@@ -324,6 +324,96 @@ impl DeckOwnership {
     }
 }
 
+/// A deck that uses a card, in any printing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeckUse {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    /// Copies in the deck (maybeboard not counted).
+    pub quantity: u32,
+    /// The boards the card is on, in board order.
+    pub boards: Vec<Board>,
+    /// Scryfall IDs of the printings the deck lists.
+    pub printings: Vec<String>,
+}
+
+impl DeckUse {
+    /// Only considered (maybeboard), not played.
+    pub fn maybe_only(&self) -> bool {
+        self.boards.iter().all(|b| !b.counts())
+    }
+
+    /// "Commander", "2 · Sideboard", "Maybeboard"; empty for one copy in the
+    /// main deck.
+    pub fn detail(&self) -> String {
+        let boards: Vec<&str> = self
+            .boards
+            .iter()
+            .filter(|b| **b != Board::Main)
+            .map(|b| b.label())
+            .collect();
+        let copies = (self.quantity > 1).then(|| self.quantity.to_string());
+        copies
+            .into_iter()
+            .chain(boards.iter().map(|b| b.to_string()))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+}
+
+/// Which decks use each card: by lowercase card name (so any printing
+/// counts), the decks in play first, then those with it only on the
+/// maybeboard, each by deck name.
+pub fn decks_by_card<'a>(
+    decks: impl IntoIterator<Item = &'a DeckView>,
+) -> HashMap<String, Vec<DeckUse>> {
+    let mut index: HashMap<String, Vec<DeckUse>> = HashMap::new();
+    for deck in decks {
+        for card in &deck.cards {
+            let uses = index.entry(name_key(&card.name)).or_default();
+            let i = match uses.iter().position(|u| u.id == deck.summary.id) {
+                Some(i) => i,
+                None => {
+                    uses.push(DeckUse {
+                        id: deck.summary.id.clone(),
+                        name: deck.summary.name.clone(),
+                        url: deck.summary.url.clone(),
+                        quantity: 0,
+                        boards: Vec::new(),
+                        printings: Vec::new(),
+                    });
+                    uses.len() - 1
+                }
+            };
+            let used = &mut uses[i];
+            if card.board.counts() {
+                used.quantity += card.quantity;
+            }
+            if !used.boards.contains(&card.board) {
+                used.boards.push(card.board);
+                used.boards.sort();
+            }
+            if !used.printings.contains(&card.scryfall_id) {
+                used.printings.push(card.scryfall_id.clone());
+            }
+        }
+    }
+    for uses in index.values_mut() {
+        uses.sort_by(|a, b| {
+            a.maybe_only()
+                .cmp(&b.maybe_only())
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+    }
+    index
+}
+
+/// The decks using the card called `name` (see [`decks_by_card`]).
+pub fn decks_using<'a>(index: &'a HashMap<String, Vec<DeckUse>>, name: &str) -> &'a [DeckUse] {
+    index.get(&name_key(name)).map_or(&[], Vec::as_slice)
+}
+
 /// Deck statistics for the landing page.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeckStats {
@@ -390,6 +480,60 @@ mod tests {
             tcgplayer: tcg,
             cardkingdom: tcg.map(|p| p * 2.0),
         }
+    }
+
+    fn deck(id: &str, name: &str, cards: Vec<DeckCard>) -> DeckView {
+        DeckView {
+            summary: DeckSummary {
+                id: id.into(),
+                name: name.into(),
+                ..summary()
+            },
+            cards,
+            warning: None,
+        }
+    }
+
+    #[test]
+    fn decks_by_card_lists_each_deck_once_any_printing() {
+        let decks = [
+            deck(
+                "z",
+                "Zombies",
+                vec![
+                    card(Board::Main, 1, "bolt-m10", "Lightning Bolt", None),
+                    card(Board::Side, 2, "bolt-2xm", "Lightning Bolt", None),
+                ],
+            ),
+            deck(
+                "m",
+                "maybe pile",
+                vec![card(Board::Maybe, 1, "bolt-m10", "Lightning Bolt", None)],
+            ),
+            deck(
+                "a",
+                "Arcane",
+                vec![
+                    card(Board::Commander, 1, "bolt-m10", "Lightning Bolt", None),
+                    card(Board::Main, 1, "x", "Counterspell", None),
+                ],
+            ),
+        ];
+        let index = decks_by_card(&decks);
+        let bolt = decks_using(&index, " LIGHTNING bolt");
+        let names: Vec<_> = bolt.iter().map(|u| u.name.as_str()).collect();
+        // In play first, by name; the maybeboard-only deck last.
+        assert_eq!(names, ["Arcane", "Zombies", "maybe pile"]);
+        assert_eq!(bolt[1].quantity, 3);
+        assert_eq!(bolt[1].boards, [Board::Main, Board::Side]);
+        assert_eq!(bolt[1].printings, ["bolt-m10", "bolt-2xm"]);
+        assert_eq!(bolt[1].detail(), "3 · Sideboard");
+        assert_eq!(bolt[0].detail(), "Commander");
+        assert!(bolt[2].maybe_only());
+        assert_eq!(bolt[2].quantity, 0);
+        assert_eq!(bolt[2].detail(), "Maybeboard");
+        assert_eq!(decks_using(&index, "Counterspell")[0].detail(), "");
+        assert!(decks_using(&index, "Sol Ring").is_empty());
     }
 
     fn owned(id: &str, name: &str, quantity: u32) -> CollectionRow {

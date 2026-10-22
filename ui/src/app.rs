@@ -5,14 +5,15 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
     CardOutcome, CardView, ClientCommand, CollectionRow, CollectionView, EditResult, Finish, Mode,
-    PrintingView, RowEdit, ServerEvent, StateView, Totals, usd,
+    PrintingView, RowEdit, ServerEvent, StateView, Totals, decks_by_card, usd,
 };
 
 use crate::add::AddDialog;
 use crate::decks::{DeckCache, DecksPage};
 use crate::filters::{
-    CollectionPrefs, ColorCell, FilterBar, GroupHead, Item, RarityCell, TypeCell, items,
+    CollectionPrefs, ColorCell, FilterBar, GroupHead, Item, Layout, RarityCell, TypeCell, items,
 };
+use crate::gallery::CardGrid;
 use crate::home::HomePage;
 use crate::preview::{CardLink, Preview, PreviewLayer};
 use crate::review::ReviewList;
@@ -269,7 +270,7 @@ pub fn App() -> impl IntoView {
                 }
                 Tab::Scan => view! { <LivePage state cards hidden send epoch /> }.into_any(),
                 Tab::Collection => {
-                    view! { <CollectionPage state cache prefs notify /> }.into_any()
+                    view! { <CollectionPage state cache prefs decks notify /> }.into_any()
                 }
                 Tab::Decks => view! { <DecksPage decks cache notify /> }.into_any(),
                 Tab::Settings => view! { <SettingsPage decks notify /> }.into_any(),
@@ -607,9 +608,18 @@ fn CollectionPage(
     state: RwSignal<Option<StateView>>,
     cache: CollectionCache,
     prefs: CollectionPrefs,
+    decks: DeckCache,
     notify: Callback<(String, bool)>,
 ) -> impl IntoView {
     let data = cache.data;
+    let layout = prefs.layout;
+    // The card view shows which decks use each card, so it needs the decks.
+    Effect::new(move |_| {
+        if layout.get() == Layout::Cards {
+            decks.ensure(notify);
+        }
+    });
+    let index = Memo::new(move |_| decks.details.with(|d| decks_by_card(d.values())));
     let loading = cache.loading;
     let filter = prefs.filter;
     let group_by = prefs.group_by;
@@ -672,11 +682,11 @@ fn CollectionPage(
     });
     let shown_totals =
         Signal::derive(move || shown.with(|rows: &Vec<CollectionRow>| Totals::of(rows)));
-    let lines = move || {
+    let lines = Signal::derive(move || {
         prefs
             .collapsed
             .with(|c| items(shown.get(), group_by.get(), c))
-    };
+    });
 
     view! {
         <div class="collection-head">
@@ -689,6 +699,23 @@ fn CollectionPage(
                 prop:value=move || filter.with(|f| f.text.clone())
                 on:input=move |ev| filter.update(|f| f.text = event_target_value(&ev))
             />
+            <div class="segmented view-switch" role="group" aria-label="View">
+                <button
+                    class:selected=move || layout.get() == Layout::Table
+                    aria-pressed=move || (layout.get() == Layout::Table).to_string()
+                    on:click=move |_| layout.set(Layout::Table)
+                >
+                    "Table"
+                </button>
+                <button
+                    class:selected=move || layout.get() == Layout::Cards
+                    aria-pressed=move || (layout.get() == Layout::Cards).to_string()
+                    title="Card images; hover one for the decks it is in"
+                    on:click=move |_| layout.set(Layout::Cards)
+                >
+                    "Cards"
+                </button>
+            </div>
             <button class="btn tonal" disabled=move || loading.get() on:click=move |_| load()>
                 {move || if loading.get() { "Loading…" } else { "Refresh" }}
             </button>
@@ -726,42 +753,48 @@ fn CollectionPage(
         }}
         <FilterBar prefs data shown=shown_totals rows=shown.into() />
         <section class="card">
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th class="num">"Qty"</th>
-                            <th>"Name"</th>
-                            <th>"Type"</th>
-                            <th>"Rarity"</th>
-                            <th>"Color"</th>
-                            <th>"Set"</th>
-                            <th>"#"</th>
-                            <th>"Finish"</th>
-                            <th class="num">"TCGplayer"</th>
-                            <th class="num">"Card Kingdom"</th>
-                            <th class="num">"CK buylist"</th>
-                            <th>"Priced"</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <For
-                            each=lines
-                            key=Item::key
-                            children=move |item| match item {
-                                Item::Group { facet, label, totals, collapsed } => {
-                                    view! { <GroupHead facet label totals collapsed prefs /> }
-                                        .into_any()
-                                }
-                                Item::Card(row) => {
-                                    view! { <Row row on_edit locked=dry_run /> }.into_any()
-                                }
-                            }
-                        />
-                    </tbody>
-                </table>
-            </div>
+            {move || match layout.get() {
+                Layout::Table => view! {
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th class="num">"Qty"</th>
+                                    <th>"Name"</th>
+                                    <th>"Type"</th>
+                                    <th>"Rarity"</th>
+                                    <th>"Color"</th>
+                                    <th>"Set"</th>
+                                    <th>"#"</th>
+                                    <th>"Finish"</th>
+                                    <th class="num">"TCGplayer"</th>
+                                    <th class="num">"Card Kingdom"</th>
+                                    <th class="num">"CK buylist"</th>
+                                    <th>"Priced"</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <For
+                                    each=move || lines.get()
+                                    key=Item::key
+                                    children=move |item| match item {
+                                        Item::Group { facet, label, totals, collapsed } => {
+                                            view! { <GroupHead facet label totals collapsed prefs /> }
+                                                .into_any()
+                                        }
+                                        Item::Card(row) => {
+                                            view! { <Row row on_edit locked=dry_run /> }.into_any()
+                                        }
+                                    }
+                                />
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                .into_any(),
+                Layout::Cards => view! { <CardGrid lines prefs decks index /> }.into_any(),
+            }}
             <Show when=move || data.with(|d| d.as_ref().is_some_and(|d| d.rows.is_empty()))>
                 <div class="empty">"No cards yet. Scan some on the Scan tab."</div>
             </Show>

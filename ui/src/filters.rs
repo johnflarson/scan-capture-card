@@ -11,10 +11,19 @@ use mtg_scan_shared::{
 use crate::mana::{ManaSymbols, group_symbol};
 use crate::pie::GroupPie;
 
-/// The Collection page's search, picks, grouping and collapsed groups.
+/// How the Collection page shows the cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    Table,
+    /// Card images with their names (see `gallery`).
+    Cards,
+}
+
+/// The Collection page's view, search, picks, grouping and collapsed groups.
 /// Lives in `App` so they survive switching tabs.
 #[derive(Clone, Copy)]
 pub struct CollectionPrefs {
+    pub layout: RwSignal<Layout>,
     pub filter: RwSignal<RowFilter>,
     pub group_by: RwSignal<Option<Facet>>,
     /// Collapsed groups, per grouping column, so each grouping keeps its own.
@@ -24,6 +33,7 @@ pub struct CollectionPrefs {
 impl CollectionPrefs {
     pub fn new() -> Self {
         Self {
+            layout: RwSignal::new(Layout::Table),
             filter: RwSignal::new(RowFilter::default()),
             group_by: RwSignal::new(None),
             collapsed: RwSignal::new(HashSet::new()),
@@ -135,29 +145,44 @@ pub fn GroupHead(
     collapsed: bool,
     prefs: CollectionPrefs,
 ) -> impl IntoView {
-    let toggle = label.clone();
     view! {
         <tr class="group-head" class:collapsed=collapsed>
             <td colspan="13">
-                <button
-                    class="group-toggle"
-                    aria-expanded=(!collapsed).to_string()
-                    title=if collapsed { "Show this group" } else { "Hide this group" }
-                    on:click=move |_| prefs.toggle_group(facet, &toggle)
-                >
-                    <span class="chevron" aria-hidden="true"></span>
-                    <span class="group-label">{facet_label(facet, &label)}</span>
-                    <span class="muted">
-                        {format!(
-                            "{} · {} · {}",
-                            count(totals.cards as usize, "card"),
-                            count(totals.printings, "printing"),
-                            usd(Some(totals.tcgplayer)),
-                        )}
-                    </span>
-                </button>
+                <GroupToggle facet label totals collapsed prefs />
             </td>
         </tr>
+    }
+}
+
+/// A group's name, card count, printings and value; a click collapses or
+/// expands the group. Used by the table and the card grid.
+#[component]
+pub fn GroupToggle(
+    facet: Facet,
+    label: String,
+    totals: Totals,
+    collapsed: bool,
+    prefs: CollectionPrefs,
+) -> impl IntoView {
+    let toggle = label.clone();
+    view! {
+        <button
+            class="group-toggle"
+            aria-expanded=(!collapsed).to_string()
+            title=if collapsed { "Show this group" } else { "Hide this group" }
+            on:click=move |_| prefs.toggle_group(facet, &toggle)
+        >
+            <span class="chevron" aria-hidden="true"></span>
+            <span class="group-label">{facet_label(facet, &label)}</span>
+            <span class="muted">
+                {format!(
+                    "{} · {} · {}",
+                    count(totals.cards as usize, "card"),
+                    count(totals.printings, "printing"),
+                    usd(Some(totals.tcgplayer)),
+                )}
+            </span>
+        </button>
     }
 }
 

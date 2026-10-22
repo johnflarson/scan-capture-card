@@ -759,6 +759,15 @@ pub fn usd(v: Option<f64>) -> String {
         .unwrap_or_else(|| "—".into())
 }
 
+/// A printing's front image ("normal", 488×680) straight from Scryfall's
+/// image CDN. Grids use it rather than the API's image redirect, which
+/// counts against the API rate limit.
+pub fn card_image(scryfall_id: &str) -> String {
+    let mut chars = scryfall_id.chars();
+    let (a, b) = (chars.next().unwrap_or('0'), chars.next().unwrap_or('0'));
+    format!("https://cards.scryfall.io/normal/front/{a}/{b}/{scryfall_id}.jpg")
+}
+
 /// "42%", or "<1%" for a share that would round to 0%.
 pub fn percent(share: f64) -> String {
     if share > 0.0 && share < 0.005 {
@@ -965,6 +974,14 @@ mod tests {
         assert_eq!(whole[0].path, "M0 -48A48 48 0 1 1 0 48A48 48 0 1 1 0 -48Z");
         assert!(pie(&[]).is_empty());
         assert!(pie(&[v("Rare", 0)]).is_empty());
+    }
+
+    #[test]
+    fn card_images_come_from_the_cdn() {
+        assert_eq!(
+            card_image("4cbc6901-6a4a-4d0a-83ea-7eefa3b35021"),
+            "https://cards.scryfall.io/normal/front/4/c/4cbc6901-6a4a-4d0a-83ea-7eefa3b35021.jpg"
+        );
     }
 
     #[test]

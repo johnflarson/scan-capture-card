@@ -1827,6 +1827,7 @@ dependencies = [
  "mtg-scan-shared",
  "serde",
  "serde_json",
+ "web-sys",
 ]
 
 [[package]]
