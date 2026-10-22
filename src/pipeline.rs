@@ -287,7 +287,8 @@ impl Pipeline {
                 return Ok((CardResult { rect, outcome }, false));
             }
         };
-        let replace = force_llm && self.last_was_single;
+        // Not saving: nothing is written, so the previous add stays.
+        let replace = force_llm && self.last_was_single && !dry_run;
         let previous = std::mem::take(&mut self.last_added);
         let outcome = match self.record(id, finish, dry_run) {
             Ok(outcome) => outcome,
@@ -368,6 +369,14 @@ impl Pipeline {
     /// Forget the previous table pass so every card is added again.
     pub fn reset_memory(&mut self) {
         self.seen.clear();
+    }
+
+    /// Start fresh: forget the previous table pass and what the last scan
+    /// added, so neither Undo nor "Retry with LLM" touches those cards.
+    pub fn clear(&mut self) {
+        self.seen.clear();
+        self.last_added.clear();
+        self.last_was_single = false;
     }
 
     /// Remove the cards added by the most recent scan.

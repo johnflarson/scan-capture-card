@@ -234,6 +234,7 @@ fn to_server_event(engine: &Engine, e: EngineEvent) -> Option<ServerEvent> {
         EngineEvent::State => ServerEvent::State(engine.view()),
         EngineEvent::Card(card) => ServerEvent::Card(*card),
         EngineEvent::Undone { seqs, .. } => ServerEvent::Undone { seqs },
+        EngineEvent::Cleared => ServerEvent::Cleared,
         EngineEvent::Ready(message) | EngineEvent::Info(message) => ServerEvent::Info {
             message,
             error: false,
