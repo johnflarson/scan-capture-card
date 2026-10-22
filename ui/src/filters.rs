@@ -9,6 +9,7 @@ use mtg_scan_shared::{
 };
 
 use crate::mana::{ManaSymbols, group_symbol};
+use crate::pie::GroupPie;
 
 /// The Collection page's search, picks, grouping and collapsed groups.
 /// Lives in `App` so they survive switching tabs.
@@ -193,13 +194,16 @@ pub fn ColorCell(row: CollectionRow) -> impl IntoView {
 }
 
 /// Chips for each column's values (OR within a column, AND across columns),
-/// group-by, and a summary of what is hidden.
+/// group-by (with a pie of the groups' shares), and a summary of what is
+/// hidden.
 #[component]
 pub fn FilterBar(
     prefs: CollectionPrefs,
     data: RwSignal<Option<CollectionView>>,
     /// Printings and copies shown after filtering.
     shown: Signal<Totals>,
+    /// The rows shown after filtering.
+    rows: Signal<Vec<CollectionRow>>,
 ) -> impl IntoView {
     let filter = prefs.filter;
     let group_by = prefs.group_by;
@@ -256,6 +260,7 @@ pub fn FilterBar(
 
     view! {
         <section class="card filters">
+            <div class="filter-rows">
             {Facet::ALL
                 .into_iter()
                 .map(|facet| {
@@ -339,6 +344,8 @@ pub fn FilterBar(
                     </button>
                 </Show>
             </div>
+            </div>
+            {move || group_by.get().map(|facet| view! { <GroupPie facet rows /> })}
         </section>
     }
 }

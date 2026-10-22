@@ -11,6 +11,10 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 ## [Unreleased]
 
 ### Added
+- Group-by pie on the Collection page (#55): while the table is grouped by type, rarity or color,
+  a small pie in the filter box shows each group's share of the cards, following the search and
+  filter chips. Its key lists every group with its percentage; hovering a slice or key entry
+  highlights it and shows the card count.
 - Table mode finds cards on a dark playmat too (#53). On a black mat the card's black border
   disappears into the mat, so the border detector found nothing and every pass fell back to the
   vision LLM (~13 s). A second pass now looks for the light frame inside the border and grows it
