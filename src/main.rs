@@ -915,7 +915,28 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
             if to == from && target.storage.sqlite_path() == cfg.storage.sqlite_path() {
                 bail!("that is the database already in use: pass --to and, for SQLite, --file");
             }
-            let source = App::new(cfg)?;
+            // Copying only reads, so a PostgreSQL source may be an older schema
+            // (e.g. a 0.x database still used by a 0.x install): it isn't upgraded.
+            let source: Box<dyn CollectionStore> = match from {
+                StorageBackend::Postgres => {
+                    let store = PostgresStore::open(
+                        cfg.storage.resolved_connection()?,
+                        schema,
+                        scryfall.clone(),
+                    )?;
+                    let (version, latest) =
+                        (store.schema_version()?, store::postgres::latest_migration());
+                    if version > latest {
+                        bail!(
+                            "{} is at schema version {version}, newer than this mtg-scan supports \
+                             ({latest}): update mtg-scan",
+                            store.location()
+                        );
+                    }
+                    Box::new(store)
+                }
+                _ => App::new(cfg)?.store,
+            };
             let mut dest = App::new(&target)?;
             let existing = dest.store.entries()?.len();
             if existing > 0 && !merge {
@@ -925,12 +946,8 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
                     dest.store.location()
                 );
             }
-            println!(
-                "Copying {} → {}…",
-                source.store.location(),
-                dest.store.location()
-            );
-            let (rows, points) = store::copy(source.store.as_ref(), dest.store.as_mut())?;
+            println!("Copying {} → {}…", source.location(), dest.store.location());
+            let (rows, points) = store::copy(source.as_ref(), dest.store.as_mut())?;
             println!(
                 "Copied {rows} rows and {points} price points. Card data rebuilds itself there \
                  (or run db sync-cards against it)."

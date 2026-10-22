@@ -226,6 +226,11 @@ mtg-scan db copy --to postgres        # move the collection and its price histor
 mtg-scan --storage postgres db copy --to sqlite --file collection.db   # ...or back
 ```
 
+Coming from 0.x with PostgreSQL? `db copy --to sqlite` reads the 0.x database
+without upgrading it, so 0.x keeps working while you try 1.0 on the copy.
+`mtg-scan db migrate` upgrades the PostgreSQL database itself for 1.0 (0.x
+then refuses it).
+
 ### Markdown
 
 `collection.md` (`[storage] backend = "markdown"`) is a readable Markdown table
