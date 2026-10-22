@@ -96,7 +96,12 @@ button, input { font: inherit; color: inherit; }
 
 /* ----------------------------------------------------------- layout --- */
 main { padding: 20px 24px 40px; max-width: 1800px; margin: 0 auto; }
-.live { display: grid; grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr); gap: 20px; align-items: start; }
+.live { display: grid; grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr) minmax(260px, 1.2fr); gap: 20px; align-items: start; }
+/* Below 1500 px the top 5 goes under the session list, beside the camera. */
+@media (max-width: 1500px) {
+  .live { grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr); }
+  .live > :first-child { grid-row: span 2; }
+}
 
 .card {
   background: var(--md-surface-container);
@@ -212,6 +217,28 @@ main { padding: 20px 24px 40px; max-width: 1800px; margin: 0 auto; }
   animation: arrive 0.35s ease-out;
 }
 .tile:hover { background: var(--md-surface-container-high); }
+
+/* Scan page top 5: card images only, ranked by each store's price. */
+.top-list { padding: 12px 16px 16px; }
+.top-list + .top-list { border-top: 1px solid var(--md-outline-variant); }
+.top-list h3 { margin: 0 0 10px; font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+.top-list h3.tcg { color: var(--md-primary); }
+.top-list h3.ck { color: var(--md-secondary); }
+.top-list p { margin: 0; }
+.top-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 8px; }
+.top-card { position: relative; }
+.top-card a { display: block; }
+.top-card img, .top-card .noimg { display: block; width: 100%; aspect-ratio: 63 / 88; border-radius: 4.75% / 3.5%; object-fit: cover; background: var(--md-surface-container-highest); }
+.top-price { display: block; margin-top: 4px; text-align: center; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.top-price.tcg { color: var(--md-primary); }
+.top-price.ck { color: var(--md-secondary); }
+.top-card .noimg { display: flex; align-items: center; justify-content: center; padding: 6px; text-align: center; font-size: 12px; color: var(--md-on-surface-variant); }
+.top-hide {
+  position: absolute; top: 4px; right: 4px; width: 26px; height: 26px; padding: 0; border: none; border-radius: 50%;
+  background: rgb(0 0 0 / 0.7); color: #fff; font-size: 18px; line-height: 26px; cursor: pointer; opacity: 0; transition: opacity 0.15s;
+}
+.top-card:hover .top-hide, .top-hide:focus-visible { opacity: 1; }
+@media (hover: none) { .top-hide { opacity: 1; } }
 .tile.undone { opacity: 0.45; }
 .tile.undone .tile-name { text-decoration: line-through; }
 @keyframes arrive { from { background: var(--md-primary-container); } to { background: transparent; } }
@@ -523,6 +550,7 @@ button.brand { cursor: pointer; }
 /* Laptop widths: stack the session list under the camera on narrow screens. */
 @media (max-width: 1100px) {
   .live, .home { grid-template-columns: 1fr; }
+  .live > :first-child { grid-row: auto; }
   .launch { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .launch-btn { flex-direction: column; align-items: flex-start; min-height: 0; }
   .card-list { max-height: none; }

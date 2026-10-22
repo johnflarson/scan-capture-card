@@ -17,6 +17,7 @@ use crate::home::HomePage;
 use crate::preview::{CardLink, Preview, PreviewLayer};
 use crate::review::ReviewList;
 use crate::settings::SettingsPage;
+use crate::top::TopCards;
 
 use crate::api;
 
@@ -102,6 +103,8 @@ impl CollectionCache {
 pub fn App() -> impl IntoView {
     let state = RwSignal::new(None::<StateView>);
     let cards = RwSignal::new(Vec::<CardView>::new());
+    // Cards hidden from the Scan page's top 5 (see `top`), kept across tabs.
+    let hidden = RwSignal::new(Vec::<String>::new());
     let connected = RwSignal::new(false);
     // Bumped on every reconnect so the camera stream is reopened.
     let epoch = RwSignal::new(0u32);
@@ -180,7 +183,10 @@ pub fn App() -> impl IntoView {
                     }
                 })
             }
-            ServerEvent::Cleared => cards.set(Vec::new()),
+            ServerEvent::Cleared => {
+                cards.set(Vec::new());
+                hidden.set(Vec::new());
+            }
             ServerEvent::Info { message, error } => notify.run((message, error)),
         },
         move |ok| {
@@ -261,7 +267,7 @@ pub fn App() -> impl IntoView {
                     let go = Callback::new(move |t: Tab| tab.set(t));
                     view! { <HomePage state cache decks notify go /> }.into_any()
                 }
-                Tab::Scan => view! { <LivePage state cards send epoch /> }.into_any(),
+                Tab::Scan => view! { <LivePage state cards hidden send epoch /> }.into_any(),
                 Tab::Collection => {
                     view! { <CollectionPage state cache prefs notify /> }.into_any()
                 }
@@ -287,6 +293,7 @@ pub fn App() -> impl IntoView {
 fn LivePage(
     state: RwSignal<Option<StateView>>,
     cards: RwSignal<Vec<CardView>>,
+    hidden: RwSignal<Vec<String>>,
     send: Callback<ClientCommand>,
     epoch: RwSignal<u32>,
 ) -> impl IntoView {
@@ -454,6 +461,7 @@ fn LivePage(
                 </div>
             </section>
             <SessionPanel cards send />
+            <TopCards cards hidden />
         </div>
     }
 }
@@ -464,9 +472,7 @@ fn SessionPanel(cards: RwSignal<Vec<CardView>>, send: Callback<ClientCommand>) -
     let kept = move || {
         cards.with(|list| {
             list.iter()
-                .filter(|c| {
-                    !c.undone && matches!(c.outcome, CardOutcome::Added | CardOutcome::Priced)
-                })
+                .filter(|c| c.kept())
                 .cloned()
                 .collect::<Vec<_>>()
         })

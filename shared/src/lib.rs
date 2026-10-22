@@ -112,6 +112,48 @@ pub struct CardView {
     pub undone: bool,
 }
 
+impl CardView {
+    /// The printing and finish, e.g. to hide every copy of one card.
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.scryfall_id, self.finish.label())
+    }
+
+    /// Kept this session: saved, or priced while not saving.
+    pub fn kept(&self) -> bool {
+        !self.undone && matches!(self.outcome, CardOutcome::Added | CardOutcome::Priced)
+    }
+}
+
+/// The `n` most expensive kept cards by `price`, most expensive first: each
+/// printing and finish once, without cards whose key is in `hidden` or that
+/// have no price.
+pub fn top_cards(
+    cards: &[CardView],
+    price: fn(&CardView) -> Option<f64>,
+    hidden: &[String],
+    n: usize,
+) -> Vec<CardView> {
+    let mut ranked: Vec<&CardView> = cards
+        .iter()
+        .filter(|c| c.kept() && price(c).is_some() && !hidden.contains(&c.key()))
+        .collect();
+    ranked.sort_by(|a, b| {
+        price(b)
+            .partial_cmp(&price(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut top: Vec<CardView> = Vec::new();
+    for c in ranked {
+        if top.len() == n {
+            break;
+        }
+        if !top.iter().any(|t| t.key() == c.key()) {
+            top.push(c.clone());
+        }
+    }
+    top
+}
+
 /// Everything the UI needs when it (re)connects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionView {
@@ -792,6 +834,57 @@ mod tests {
             tcgplayer_url: None,
             cardkingdom_url: None,
         }
+    }
+
+    fn scanned(seq: u64, id: &str, tcg: Option<f64>, outcome: CardOutcome) -> CardView {
+        CardView {
+            seq,
+            time: String::new(),
+            outcome,
+            scryfall_id: id.into(),
+            name: id.into(),
+            set_code: String::new(),
+            set_name: String::new(),
+            number: String::new(),
+            rarity: String::new(),
+            finish: Finish::Nonfoil,
+            quantity: None,
+            tcgplayer: tcg,
+            cardkingdom: None,
+            cardkingdom_buylist: None,
+            tcgplayer_url: None,
+            cardkingdom_url: None,
+            scryfall_url: String::new(),
+            image_url: None,
+            method: String::new(),
+            quality: String::new(),
+            needs_review: false,
+            note: None,
+            undone: false,
+        }
+    }
+
+    #[test]
+    fn top_cards_rank_kept_cards_once_each() {
+        use CardOutcome::*;
+        let mut undone = scanned(6, "undone", Some(99.0), Added);
+        undone.undone = true;
+        let cards = vec![
+            scanned(1, "a", Some(5.0), Added),
+            scanned(2, "b", Some(20.0), Priced),
+            scanned(3, "a", Some(5.0), Added),
+            scanned(4, "held", Some(50.0), Held),
+            scanned(5, "noprice", None, Added),
+            undone,
+            scanned(7, "c", Some(12.5), Added),
+        ];
+        let tcg = |c: &CardView| c.tcgplayer;
+        let names = |v: Vec<CardView>| v.into_iter().map(|c| c.name).collect::<Vec<_>>();
+        assert_eq!(names(top_cards(&cards, tcg, &[], 5)), ["b", "c", "a"]);
+        assert_eq!(names(top_cards(&cards, tcg, &[], 2)), ["b", "c"]);
+        let hidden = vec![cards[1].key()];
+        assert_eq!(names(top_cards(&cards, tcg, &hidden, 5)), ["c", "a"]);
+        assert!(top_cards(&cards, |c| c.cardkingdom, &[], 5).is_empty());
     }
 
     #[test]

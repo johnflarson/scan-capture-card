@@ -11,6 +11,7 @@ mod mana;
 mod preview;
 mod review;
 mod settings;
+mod top;
 
 fn main() {
     console_error_panic_hook::set_once();
