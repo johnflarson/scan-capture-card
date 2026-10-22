@@ -110,6 +110,10 @@ asks). The pages:
   - **Startup:** whether auto-scan is on when `mtg-scan ui` starts, single-card or
     table mode, and the default finish. `--manual`, `--table` and `--finish` override
     them for one run, and the page says so.
+  - **Prices and cards:** the headline currency (USD from TCGplayer or EUR from
+    Cardmarket) for totals, group values and the most valuable cards; Card Kingdom
+    prices on or off; and the language your cards are printed in (scans record
+    that printing when Scryfall has it).
   - **Moxfield account.**
   - **Decks:** Show / Hide for each deck. Hidden (e.g. retired) decks are left off
     the Decks page and out of the deck statistics.

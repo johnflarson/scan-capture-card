@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use leptos::prelude::*;
 use mtg_scan_shared::{
-    CollectionRow, CollectionView, ColorGroup, Facet, RowFilter, Totals, UNKNOWN, usd,
+    CollectionRow, CollectionView, ColorGroup, Currency, Facet, RowFilter, Totals, UNKNOWN,
 };
 
 use crate::mana::{ManaSymbols, group_symbol};
@@ -166,6 +166,9 @@ pub fn GroupToggle(
     prefs: CollectionPrefs,
 ) -> impl IntoView {
     let toggle = label.clone();
+    let currency = use_context::<RwSignal<Currency>>()
+        .map(|c| c.get_untracked())
+        .unwrap_or_default();
     view! {
         <button
             class="group-toggle"
@@ -180,7 +183,7 @@ pub fn GroupToggle(
                     "{} · {} · {}",
                     count(totals.cards as usize, "card"),
                     count(totals.printings, "printing"),
-                    usd(Some(totals.tcgplayer)),
+                    currency.format(Some(currency.total(&totals))),
                 )}
             </span>
         </button>

@@ -12,6 +12,7 @@ use crate::llm::{NormBox, VisionLlm};
 use crate::model::{Card, CollectionEntry, Finish, Prices};
 use crate::printing::{correlation, signature};
 use crate::recognize::{Identification, Recognizer};
+use crate::scryfall::CardRef;
 
 /// Extra margin around detected boxes; LLM boxes tend to be slightly tight.
 const BOX_MARGIN: f32 = 0.04;
@@ -176,6 +177,9 @@ pub struct Pipeline {
     /// them (`[recognition] review_uncertain`; only front ends with a review
     /// list turn it on).
     pub hold_uncertain: bool,
+    /// Record the printing in this language when Scryfall has it
+    /// (`[recognition] card_language`).
+    card_language: String,
 }
 
 impl Pipeline {
@@ -193,6 +197,7 @@ impl Pipeline {
             last_added: Vec::new(),
             last_was_single: false,
             hold_uncertain: false,
+            card_language: cfg.recognition.card_language.clone(),
         })
     }
 
@@ -225,7 +230,36 @@ impl Pipeline {
         }
     }
 
+    /// The same printing (set and collector number) in the card language,
+    /// when that isn't English and Scryfall has it; otherwise `id` as it is,
+    /// with a note saying why.
+    fn in_card_language(&self, mut id: Identification) -> Identification {
+        let lang = self.card_language.as_str();
+        if lang == "en" || id.card.lang == lang {
+            return id;
+        }
+        let wanted = CardRef::SetNumber {
+            set: id.card.set_code.to_lowercase(),
+            number: id.card.collector_number.clone(),
+            lang: Some(lang.to_string()),
+        };
+        let note = match self.app.scryfall.by_ref(&wanted) {
+            Ok(Some(card)) => {
+                id.card = card;
+                format!("the {lang} printing")
+            }
+            Ok(None) => format!("no {lang} printing of this card on Scryfall: recorded this one"),
+            Err(e) => format!("couldn't look up the {lang} printing ({e:#})"),
+        };
+        id.note = Some(match id.note.take() {
+            Some(before) => format!("{before}; {note}"),
+            None => note,
+        });
+        id
+    }
+
     fn record(&mut self, id: Identification, finish: Finish, dry_run: bool) -> Result<Outcome> {
+        let id = self.in_card_language(id);
         if dry_run {
             let f = id.card.best_finish(finish);
             let prices = self.app.prices.price(&id.card, f);

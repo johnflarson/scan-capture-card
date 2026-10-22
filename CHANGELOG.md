@@ -26,6 +26,14 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- Prices and cards settings (#68), on the Settings page and in `mtg-scan.toml`:
+  - **Currency** (`[prices] currency = "usd" | "eur"`): totals, group values, the Home page's
+    collection value and most valuable cards, and which Top 5 list comes first use TCGplayer's
+    dollars or Cardmarket's euros. Both columns are always shown.
+  - **Card Kingdom** (`[prices] card_kingdom`) on or off.
+  - **Card language** (`[recognition] card_language`, e.g. `ja`): a scan records the same set and
+    number printed in that language when Scryfall has it (its note says so), for collections of
+    non-English cards. Those printings rarely have prices.
 - `mtg-scan db copy --to sqlite|postgres [--file <db>]` (#67): copies the collection and its whole
   price history into the other kind of database, e.g. a 0.x PostgreSQL collection into a SQLite
   file. It refuses a database that already holds cards unless `--merge`. Card data isn't copied:

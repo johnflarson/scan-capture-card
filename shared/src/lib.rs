@@ -624,7 +624,8 @@ pub struct Stats {
 }
 
 impl Stats {
-    pub fn of(rows: &[CollectionRow]) -> Stats {
+    /// Statistics of `rows`; "most valuable" is ranked in `currency`.
+    pub fn of(rows: &[CollectionRow], currency: Currency) -> Stats {
         fn tally<K: Ord + Clone>(
             rows: &[CollectionRow],
             key: impl Fn(&CollectionRow) -> K,
@@ -694,12 +695,13 @@ impl Stats {
 
         let mut most_valuable: Vec<CollectionRow> = rows
             .iter()
-            .filter(|r| r.tcgplayer.is_some())
+            .filter(|r| currency.row_price(r).is_some())
             .cloned()
             .collect();
         most_valuable.sort_by(|a, b| {
-            b.tcgplayer
-                .partial_cmp(&a.tcgplayer)
+            currency
+                .row_price(b)
+                .partial_cmp(&currency.row_price(a))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         most_valuable.truncate(5);
@@ -773,6 +775,66 @@ pub fn usd(v: Option<f64>) -> String {
     // `+ 0.0` turns -0.0 (an empty f64 sum) into 0.0, so it isn't shown as "$-0.00".
     v.map(|p| format!("${:.2}", p + 0.0))
         .unwrap_or_else(|| "—".into())
+}
+
+/// The currency headline values (totals, most valuable, group values) are
+/// shown in: TCGplayer's US dollars or Cardmarket's euros. Both columns are
+/// always shown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Currency {
+    #[default]
+    Usd,
+    Eur,
+}
+
+impl Currency {
+    pub const ALL: [Currency; 2] = [Currency::Usd, Currency::Eur];
+
+    /// "USD", "EUR".
+    pub fn code(self) -> &'static str {
+        match self {
+            Currency::Usd => "USD",
+            Currency::Eur => "EUR",
+        }
+    }
+
+    /// Where prices in this currency come from.
+    pub fn source(self) -> &'static str {
+        match self {
+            Currency::Usd => "TCGplayer",
+            Currency::Eur => "Cardmarket",
+        }
+    }
+
+    /// `$1.23` or `€1.23`, or an em dash when unknown.
+    pub fn format(self, v: Option<f64>) -> String {
+        match self {
+            Currency::Usd => usd(v),
+            Currency::Eur => eur(v),
+        }
+    }
+
+    pub fn row_price(self, r: &CollectionRow) -> Option<f64> {
+        match self {
+            Currency::Usd => r.tcgplayer,
+            Currency::Eur => r.cardmarket,
+        }
+    }
+
+    pub fn card_price(self, c: &CardView) -> Option<f64> {
+        match self {
+            Currency::Usd => c.tcgplayer,
+            Currency::Eur => c.cardmarket,
+        }
+    }
+
+    pub fn total(self, t: &Totals) -> f64 {
+        match self {
+            Currency::Usd => t.tcgplayer,
+            Currency::Eur => t.cardmarket,
+        }
+    }
 }
 
 /// `€1.23`, or an em dash when unknown.
@@ -1017,6 +1079,26 @@ mod tests {
     }
 
     #[test]
+    fn currencies_pick_their_store_and_symbol() {
+        let t = Totals {
+            tcgplayer: 10.0,
+            cardmarket: 8.5,
+            ..Totals::default()
+        };
+        assert_eq!(
+            (Currency::Usd.total(&t), Currency::Eur.total(&t)),
+            (10.0, 8.5)
+        );
+        assert_eq!(Currency::Eur.format(Some(8.5)), "€8.50");
+        assert_eq!(Currency::Usd.format(None), "—");
+        assert_eq!(
+            serde_json::to_string(&Currency::Eur).unwrap(),
+            "\"eur\"",
+            "stored as usd / eur"
+        );
+    }
+
+    #[test]
     fn color_groups() {
         let c = |s: &[&str]| ColorGroup::of(&s.iter().map(|x| x.to_string()).collect::<Vec<_>>());
         assert_eq!(c(&[]), ColorGroup::Colorless);
@@ -1067,8 +1149,14 @@ mod tests {
         ring.rarity = "uncommon".into();
         ring.set_code = "C21".into();
         ring.added = "2026-10-10".into();
+        // Cardmarket ranks the cards differently: Sol Ring first in euros.
+        let mut eur_rows = [bolt.clone(), sheoldred.clone(), ring.clone()];
+        eur_rows[2].cardmarket = Some(500.0);
+        let in_eur = Stats::of(&eur_rows, Currency::Eur);
+        assert_eq!(in_eur.most_valuable[0].name, "Sol Ring");
+        assert_eq!(in_eur.most_valuable.len(), 1, "only rows with a euro price");
 
-        let s = Stats::of(&[bolt, sheoldred, ring]);
+        let s = Stats::of(&[bolt, sheoldred, ring], Currency::Usd);
         assert_eq!(s.totals.cards, 7);
         assert_eq!(s.by_color.len(), 7, "every color group is listed");
         let color = |g| s.by_color.iter().find(|(c, _)| *c == g).unwrap().1.cards;
@@ -1227,7 +1315,7 @@ mod tests {
         assert_eq!(last, "Unknown");
         assert_eq!(Facet::Type.group(&rows).last().unwrap().0, "Unknown");
         // Statistics don't count it as colorless.
-        let s = Stats::of(&rows);
+        let s = Stats::of(&rows, Currency::Usd);
         let colorless = s.by_color.iter().find(|(g, _)| *g == ColorGroup::Colorless);
         assert_eq!(colorless.unwrap().1.cards, 2);
     }

@@ -56,7 +56,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 |---|---|
 | `main.rs` | clap CLI; config overrides; small commands (add/remove/price/list/reprice/history/movers/db) |
 | `movers.rs` | `mtg-scan movers`: ranks `CollectionStore::price_moves` (price then vs now per row) by change for the copies owned |
-| `config.rs` | `mtg-scan.toml` (`Config`, `StorageConfig`, `RecognitionMode`, `LlmProvider`, `UiConfig` / `DecksConfig` for the Settings page), provider defaults; `save_settings` rewrites only `[ui]` and `[decks]` via `toml_edit` (comments kept) |
+| `config.rs` | `mtg-scan.toml` (`Config`, `StorageConfig`, `RecognitionMode`, `LlmProvider`, `UiConfig` / `DecksConfig` / `PricesConfig` (`currency`, `card_kingdom`) / `[recognition] card_language` for the Settings page), provider defaults; `save_settings` rewrites only those via `toml_edit` (comments kept) |
 | `camera.rs` | nokhwa/Media Foundation capture; picks the camera mode itself; MJPEG/NV12/YUYV decode |
 | `engine/` | Scanning engine shared by both front ends: capture thread (camera, `Watcher` auto-scan trigger, preview frames via `draw`) and worker thread (`Pipeline`, background reprice); `Command`s in, `EngineEvent` broadcast + `StateView` out. `StateView::save` (Scan page switch, runtime only) picks per scan job whether to add or only price; while off the reprice pauses, so nothing is written. `Command::Clear` empties the session list and `Pipeline::clear`s table memory and undo |
 | `live.rs` | Desktop front end (minifb window, keys), console logger, `scan_table_once` |

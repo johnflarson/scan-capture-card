@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::model::Finish;
+use mtg_scan_shared::Currency;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -85,9 +86,16 @@ pub struct DecksConfig {
     pub hidden: Vec<String>,
 }
 
-/// Save the Settings page's sections into `path`, keeping everything else in
-/// the file (other sections, comments, ordering) as it is.
-pub fn save_settings(path: &Path, ui: &UiConfig, decks: &DecksConfig) -> Result<()> {
+/// Save the Settings page's settings (`[ui]`, `[decks]`, `[prices]` and
+/// `[recognition] card_language`) into `path`, keeping everything else in
+/// the file (other settings, comments, ordering) as it is.
+pub fn save_settings(
+    path: &Path,
+    ui: &UiConfig,
+    decks: &DecksConfig,
+    prices: &PricesConfig,
+    card_language: &str,
+) -> Result<()> {
     use toml_edit::{Array, DocumentMut, Item, Table, value};
 
     let text = match std::fs::read_to_string(path) {
@@ -119,6 +127,16 @@ pub fn save_settings(path: &Path, ui: &UiConfig, decks: &DecksConfig) -> Result<
     }
     t["hidden"] = value(decks.hidden.iter().map(String::as_str).collect::<Array>());
 
+    let t = section(&mut doc, "prices", path)?;
+    t["currency"] = value(match prices.currency {
+        Currency::Usd => "usd",
+        Currency::Eur => "eur",
+    });
+    t["card_kingdom"] = value(prices.card_kingdom);
+
+    let t = section(&mut doc, "recognition", path)?;
+    t["card_language"] = value(card_language);
+
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string())
         .with_context(|| format!("failed to write {}", tmp.display()))?;
@@ -127,9 +145,12 @@ pub fn save_settings(path: &Path, ui: &UiConfig, decks: &DecksConfig) -> Result<
 
 /// Where prices come from besides Scryfall (TCGplayer USD, Cardmarket EUR
 /// and MTGO tix, always on).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct PricesConfig {
+    /// The currency headline values are shown in (`usd` = TCGplayer,
+    /// `eur` = Cardmarket).
+    pub currency: Currency,
     /// Also record Card Kingdom retail and buylist prices, from its public
     /// price list (~70 MB, downloaded at most daily).
     pub card_kingdom: bool,
@@ -424,6 +445,9 @@ pub struct RecognitionConfig {
     /// Web UI: hold matches whose printing is uncertain in a review list
     /// instead of saving them right away.
     pub review_uncertain: bool,
+    /// Scryfall language code of the cards being scanned (`en`, `ja`, ...):
+    /// a scan records the printing in this language when Scryfall has one.
+    pub card_language: String,
 }
 
 impl Default for RecognitionConfig {
@@ -433,6 +457,7 @@ impl Default for RecognitionConfig {
             detection: Detection::Auto,
             save_scans: None,
             review_uncertain: true,
+            card_language: "en".into(),
         }
     }
 }
@@ -746,7 +771,7 @@ mod tests {
             moxfield_user: Some("https://moxfield.com/users/Someone".into()),
             hidden: vec!["abc".into(), "d-e_f".into()],
         };
-        save_settings(&path, &ui, &decks).unwrap();
+        save_settings(&path, &ui, &decks, &PricesConfig::default(), "en").unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
         for kept in [
@@ -763,7 +788,14 @@ mod tests {
         assert_eq!(cfg.decks, decks);
 
         // Clearing the user removes the key, so .env applies again.
-        save_settings(&path, &ui, &DecksConfig::default()).unwrap();
+        save_settings(
+            &path,
+            &ui,
+            &DecksConfig::default(),
+            &PricesConfig::default(),
+            "en",
+        )
+        .unwrap();
         let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(cfg.decks, DecksConfig::default());
     }
@@ -779,9 +811,22 @@ mod tests {
     fn save_settings_creates_a_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("new.toml");
-        save_settings(&path, &UiConfig::default(), &DecksConfig::default()).unwrap();
+        let prices = PricesConfig {
+            currency: Currency::Eur,
+            card_kingdom: true,
+        };
+        save_settings(
+            &path,
+            &UiConfig::default(),
+            &DecksConfig::default(),
+            &prices,
+            "ja",
+        )
+        .unwrap();
         let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(cfg.ui, UiConfig::default());
+        assert_eq!(cfg.prices, prices);
+        assert_eq!(cfg.recognition.card_language, "ja");
     }
 
     #[test]
