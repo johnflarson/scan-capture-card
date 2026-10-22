@@ -2,7 +2,8 @@
 //!
 //! Moxfield has no documented public API; this uses the JSON endpoints its
 //! own site calls on `api2.moxfield.com`:
-//! - `GET /v2/decks/search?authorUserNames=<user>` lists a user's public decks;
+//! - `GET /v2/decks/search?authorUserNames=<user>&showIllegal=true` lists a
+//!   user's public decks, including those not legal in their format;
 //! - `GET /v3/decks/all/<publicId>` returns one deck with its cards (Scryfall
 //!   IDs, type lines and prices included).
 //!
@@ -169,10 +170,7 @@ impl Moxfield {
         let mut decks = Vec::new();
         let mut page = 1;
         loop {
-            let reply: SearchPage = self.get(&format!(
-                "/v2/decks/search?authorUserNames={user}&pageNumber={page}&pageSize={PAGE_SIZE}\
-                 &sortType=updated&sortDirection=descending"
-            ))?;
+            let reply: SearchPage = self.get(&search_path(user, page))?;
             // The search matches authors loosely; keep only this user's decks.
             decks.extend(
                 reply
@@ -223,6 +221,17 @@ impl Moxfield {
             },
         }
     }
+}
+
+/// One page of `user`'s decks. Without `showIllegal=true` the search leaves
+/// out decks Moxfield marks as not legal in their format (a 101-card
+/// Commander deck, a banned card), which is often a third of a collection.
+/// Private and unlisted decks need a Moxfield sign-in, so they never appear.
+fn search_path(user: &str, page: u32) -> String {
+    format!(
+        "/v2/decks/search?authorUserNames={user}&pageNumber={page}&pageSize={PAGE_SIZE}\
+         &sortType=updated&sortDirection=descending&showIllegal=true"
+    )
 }
 
 #[derive(Deserialize)]
@@ -438,6 +447,14 @@ mod tests {
         assert_eq!(choose(Some(""), env()), None);
         assert_eq!(choose(None, Some("  ".into())), None);
         assert_eq!(choose(None, None), None);
+    }
+
+    #[test]
+    fn deck_search_includes_decks_moxfield_marks_illegal() {
+        let path = search_path("Johnfredone", 2);
+        assert!(path.contains("authorUserNames=Johnfredone"), "{path}");
+        assert!(path.contains("pageNumber=2"), "{path}");
+        assert!(path.contains("&showIllegal=true"), "{path}");
     }
 
     #[test]

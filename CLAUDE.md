@@ -162,8 +162,9 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
 - **TCGplayer** `https://mpapi.tcgplayer.com/v2/product/{id}/pricepoints` needs no key.
   `printingType` is "Normal" or "Foil". Etched cards use `tcgplayer_etched_id`.
 - **Moxfield** has no documented API. The site's own endpoints work without a key:
-  `api2.moxfield.com/v2/decks/search?authorUserNames=<user>` (deck list; `/v2/users/<u>/decks`
-  and `/v3/users/...` are 404) and `/v3/decks/all/<publicId>` (cards with `scryfall_id`, type line
+  `api2.moxfield.com/v2/decks/search?authorUserNames=<user>&showIllegal=true` (deck list;
+  without `showIllegal` it silently drops decks not legal in their format, 21 of 57 for the
+  user; private/unlisted decks need a sign-in; `/v2/users/<u>/decks` and `/v3/users/...` are 404) and `/v3/decks/all/<publicId>` (cards with `scryfall_id`, type line
   and prices: `usd`/`usd_foil` = TCGplayer, `ck`/`ck_foil` = Card Kingdom). Double-faced cards
   have empty top-level `colors`; take them from `card_faces`. The server only serves decks of the
   configured user, so it isn't a general proxy.
