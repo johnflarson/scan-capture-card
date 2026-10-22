@@ -22,8 +22,10 @@ schema = "mtg_scan"
 
 [prices]
 # Prices come from Scryfall's daily data: TCGplayer (USD), Cardmarket (EUR)
-# and MTGO tix. Also record Card Kingdom retail + buylist prices (its public
-# ~70 MB price list, downloaded at most daily):
+# and MTGO tix. Totals and the most valuable cards use: usd | eur
+currency = "usd"
+# Also record Card Kingdom retail + buylist prices (its public ~70 MB price
+# list, downloaded at most daily):
 card_kingdom = false
 
 [camera]
@@ -53,6 +55,9 @@ detection = "auto"
 # Web UI: when the printing is uncertain (amber), hold the card in a review
 # list (accept, pick another printing, or discard) instead of saving it.
 review_uncertain = true
+# Language your cards are printed in (Scryfall code: en, de, fr, it, es, pt,
+# ja, ko, ru, zhs, zht): scans record that printing when Scryfall has it.
+card_language = "en"
 
 [llm]
 # none | ollama | lmstudio | openrouter | openai

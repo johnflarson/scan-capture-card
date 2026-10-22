@@ -3,7 +3,8 @@
 
 use leptos::prelude::*;
 use mtg_scan_shared::{
-    CollectionRow, DeckOwnership, Finish, Mode, Slice, StateView, Stats, ValueChange, eur, usd,
+    CollectionRow, Currency, DeckOwnership, Finish, Mode, Slice, StateView, Stats, ValueChange,
+    eur, usd,
 };
 
 use crate::app::{CollectionCache, Metric, Tab};
@@ -22,7 +23,14 @@ pub fn HomePage(
 ) -> impl IntoView {
     decks.ensure(notify);
     let owned = ownership(decks, cache);
-    let stats = Memo::new(move |_| cache.data.with(|d| d.as_ref().map(|d| Stats::of(&d.rows))));
+    let currency =
+        use_context::<RwSignal<Currency>>().unwrap_or_else(|| RwSignal::new(Currency::Usd));
+    let stats = Memo::new(move |_| {
+        let currency = currency.get();
+        cache
+            .data
+            .with(|d| d.as_ref().map(|d| Stats::of(&d.rows, currency)))
+    });
     let value_change = move || {
         cache
             .data
@@ -47,7 +55,7 @@ pub fn HomePage(
             "{} cards · {} printings · {}",
             s.totals.cards,
             s.totals.printings,
-            usd(Some(s.totals.tcgplayer))
+            currency.get().format(Some(currency.get().total(&s.totals)))
         ),
         None => "Loading…".into(),
     });
@@ -336,7 +344,10 @@ fn CardList(rows: Vec<CollectionRow>, show_price: bool) -> impl IntoView {
                 r.scryfall_id
             );
             let right = if show_price {
-                usd(r.tcgplayer)
+                let currency = use_context::<RwSignal<Currency>>()
+                    .map(|c| c.get_untracked())
+                    .unwrap_or_default();
+                currency.format(currency.row_price(&r))
             } else {
                 r.added.clone()
             };

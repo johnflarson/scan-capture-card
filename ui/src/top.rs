@@ -4,7 +4,7 @@
 //! mis-scan); that only changes this box, never the collection.
 
 use leptos::prelude::*;
-use mtg_scan_shared::{CardView, eur, top_cards, usd};
+use mtg_scan_shared::{CardView, Currency, eur, top_cards, usd};
 
 use crate::preview::Preview;
 
@@ -16,6 +16,8 @@ pub fn TopCards(
     /// Keys ([`CardView::key`]) of the cards hidden from this box.
     hidden: RwSignal<Vec<String>>,
 ) -> impl IntoView {
+    let currency =
+        use_context::<RwSignal<Currency>>().unwrap_or_else(|| RwSignal::new(Currency::Usd));
     view! {
         <section class="card top-cards">
             <div class="card-header">
@@ -31,8 +33,20 @@ pub fn TopCards(
                     </button>
                 </Show>
             </div>
-            <TopList title="TCGplayer" kind="tcg" price=|c| c.tcgplayer money=usd cards hidden />
-            <TopList title="Cardmarket" kind="cm" price=|c| c.cardmarket money=eur cards hidden />
+            // The headline currency's store first.
+            {move || {
+                let tcg = view! {
+                    <TopList title="TCGplayer" kind="tcg" price=|c| c.tcgplayer money=usd cards hidden />
+                };
+                let cm = view! {
+                    <TopList title="Cardmarket" kind="cm" price=|c| c.cardmarket money=eur cards hidden />
+                };
+                if currency.get() == Currency::Eur {
+                    view! { {cm} {tcg} }.into_any()
+                } else {
+                    view! { {tcg} {cm} }.into_any()
+                }
+            }}
             <Show when=move || cards.with(|list| list.iter().any(|c| c.cardkingdom.is_some()))>
                 <TopList title="Card Kingdom" kind="ck" price=|c| c.cardkingdom money=usd cards hidden />
             </Show>

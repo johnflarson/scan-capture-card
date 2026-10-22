@@ -13,11 +13,14 @@ use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use mtg_scan_shared::{Connection, DatabaseView, InfoRow, SettingsChange, SettingsView, Startup};
+use mtg_scan_shared::{
+    CARD_LANGUAGES, Connection, DatabaseView, InfoRow, PriceSettings, SettingsChange, SettingsView,
+    Startup,
+};
 
 use super::{AppState, access, blocking, lan_ip};
 use crate::app;
-use crate::config::{self, Config, DecksConfig, StorageBackend, UiConfig};
+use crate::config::{self, Config, DecksConfig, PricesConfig, StorageBackend, UiConfig};
 use crate::moxfield;
 use crate::scryfall::Scryfall;
 use crate::store::CardCache;
@@ -28,6 +31,8 @@ use crate::store::sqlite::SqliteStore;
 pub struct Settings {
     ui: UiConfig,
     decks: DecksConfig,
+    prices: PricesConfig,
+    card_language: String,
     file: PathBuf,
     /// Command-line flags that overrode a startup setting for this run.
     overridden: Vec<String>,
@@ -38,6 +43,8 @@ impl Settings {
         Mutex::new(Self {
             ui: cfg.ui.clone(),
             decks: cfg.decks.clone(),
+            prices: cfg.prices.clone(),
+            card_language: cfg.recognition.card_language.clone(),
             file: cfg.settings_file(),
             overridden,
         })
@@ -92,6 +99,8 @@ fn apply(st: &AppState, change: SettingsChange) -> Result<()> {
     let mut settings = lock(&st.settings);
     let mut ui = settings.ui.clone();
     let mut decks = settings.decks.clone();
+    let mut prices = settings.prices.clone();
+    let mut card_language = settings.card_language.clone();
     match change {
         SettingsChange::Startup(s) => {
             ui.auto_scan = s.auto_scan;
@@ -117,10 +126,22 @@ fn apply(st: &AppState, change: SettingsChange) -> Result<()> {
                 decks.hidden.push(id);
             }
         }
+        SettingsChange::Prices(p) => {
+            prices.currency = p.currency;
+            prices.card_kingdom = p.card_kingdom;
+        }
+        SettingsChange::CardLanguage { code } => {
+            if !CARD_LANGUAGES.iter().any(|(c, _)| *c == code) {
+                bail!("\"{code}\" isn't a card language mtg-scan knows");
+            }
+            card_language = code;
+        }
     }
-    config::save_settings(&settings.file, &ui, &decks)?;
+    config::save_settings(&settings.file, &ui, &decks, &prices, &card_language)?;
     settings.ui = ui;
     settings.decks = decks;
+    settings.prices = prices;
+    settings.card_language = card_language;
     Ok(())
 }
 
@@ -148,6 +169,11 @@ fn view(st: &AppState, peer: SocketAddr) -> SettingsView {
         }),
         moxfield: configured.map(|(v, _)| v).unwrap_or_default(),
         hidden_decks: settings.decks.hidden.clone(),
+        prices: PriceSettings {
+            currency: settings.prices.currency,
+            card_kingdom: settings.prices.card_kingdom,
+        },
+        card_language: settings.card_language.clone(),
         file: std::path::absolute(&settings.file)
             .unwrap_or_else(|_| settings.file.clone())
             .display()

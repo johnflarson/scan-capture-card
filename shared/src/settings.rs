@@ -3,7 +3,31 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Finish;
+use crate::{Currency, Finish};
+
+/// Card languages a collection can be scanned in: Scryfall's language codes
+/// with their names. Scans pick the printing in this language when Scryfall
+/// has one.
+pub const CARD_LANGUAGES: [(&str, &str); 11] = [
+    ("en", "English"),
+    ("de", "German"),
+    ("fr", "French"),
+    ("it", "Italian"),
+    ("es", "Spanish"),
+    ("pt", "Portuguese"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("ru", "Russian"),
+    ("zhs", "Simplified Chinese"),
+    ("zht", "Traditional Chinese"),
+];
+
+/// Prices: the headline currency and the optional Card Kingdom source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriceSettings {
+    pub currency: Currency,
+    pub card_kingdom: bool,
+}
 
 /// How `mtg-scan ui` starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +51,9 @@ pub struct SettingsView {
     pub moxfield_source: Option<String>,
     /// Moxfield deck IDs hidden from the Decks page and deck statistics.
     pub hidden_decks: Vec<String>,
+    pub prices: PriceSettings,
+    /// Scryfall language code of the cards being scanned, e.g. `en`, `ja`.
+    pub card_language: String,
     /// The file changes are saved to.
     pub file: String,
     /// Why changes can't be saved right now (a dry run).
@@ -46,6 +73,11 @@ pub enum SettingsChange {
     DeckHidden {
         id: String,
         hidden: bool,
+    },
+    Prices(PriceSettings),
+    /// A code from [`CARD_LANGUAGES`].
+    CardLanguage {
+        code: String,
     },
 }
 

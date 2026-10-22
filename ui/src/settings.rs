@@ -1,12 +1,13 @@
-//! Settings page (the cog in the top bar): how `mtg-scan ui` starts, the
-//! Moxfield account, which decks are hidden, and read-only database and
-//! connection details. Changes are saved in the settings file
+//! Settings page (the cog in the top bar): how `mtg-scan ui` starts, prices
+//! and the card language, the Moxfield account, which decks are hidden, and
+//! read-only database and connection details. Changes are saved in the settings file
 //! (`mtg-scan.toml`); passwords stay in `.env` and are never shown.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    DatabaseView, DecksView, Finish, InfoRow, Mode, SettingsChange, SettingsView, Startup,
+    CARD_LANGUAGES, Currency, DatabaseView, DecksView, Finish, InfoRow, Mode, PriceSettings,
+    SettingsChange, SettingsView, Startup,
 };
 
 use crate::api;
@@ -21,6 +22,7 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
     let database = RwSignal::new(None::<Result<DatabaseView, String>>);
     let all_decks = RwSignal::new(None::<Result<DecksView, String>>);
     let saving = RwSignal::new(false);
+    let currency = use_context::<RwSignal<Currency>>();
 
     let load_decks =
         move || spawn_local(async move { all_decks.set(Some(api::all_decks().await)) });
@@ -41,6 +43,9 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
     // Decks page and deck statistics pick up account and visibility changes.
     let save = Callback::new(move |change: SettingsChange| {
         saving.set(true);
+        // Card Kingdom as saved before this change, to tell whether it changed.
+        let card_kingdom_before =
+            settings.with_untracked(|s| s.as_ref().map(|s| s.prices.card_kingdom));
         spawn_local(async move {
             match api::change_settings(&change).await {
                 Ok(view) => {
@@ -57,6 +62,25 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
                             decks.load(false, notify);
                         }
                         SettingsChange::DeckHidden { .. } => decks.load(false, notify),
+                        SettingsChange::Prices(p) => {
+                            let card_kingdom_changed = card_kingdom_before != Some(p.card_kingdom);
+                            if let Some(c) = currency {
+                                c.set(p.currency);
+                            }
+                            notify.run((
+                                if card_kingdom_changed {
+                                    "Saved. Card Kingdom prices start or stop the next time mtg-scan starts."
+                                } else {
+                                    "Saved"
+                                }
+                                .into(),
+                                false,
+                            ));
+                        }
+                        SettingsChange::CardLanguage { .. } => notify.run((
+                            "Saved. Scans use it the next time mtg-scan starts.".into(),
+                            false,
+                        )),
                     }
                 }
                 Err(e) => notify.run((e, true)),
@@ -93,6 +117,7 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
             <div class="settings-grid">
                 <div class="settings-column">
                     <StartupCard settings save saving />
+                    <PricesCard settings save saving />
                     <MoxfieldCard settings save saving />
                     <DeckVisibility settings all_decks save saving />
                 </div>
@@ -102,6 +127,94 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
                 </div>
             </div>
         </Show>
+    }
+}
+
+/// The headline currency, the optional Card Kingdom prices and the
+/// language of the cards being scanned.
+#[component]
+fn PricesCard(
+    settings: RwSignal<Option<SettingsView>>,
+    save: Callback<SettingsChange>,
+    saving: RwSignal<bool>,
+) -> impl IntoView {
+    let prices = Memo::new(move |_| settings.with(|s| s.as_ref().map(|s| s.prices)));
+    let language = move || settings.with(|s| s.as_ref().map(|s| s.card_language.clone()));
+    let update = move |apply: &dyn Fn(&mut PriceSettings)| {
+        if let Some(mut p) = prices.get_untracked() {
+            apply(&mut p);
+            save.run(SettingsChange::Prices(p));
+        }
+    };
+    let currency = move || prices.get().map(|p| p.currency);
+    view! {
+        <section class="card">
+            <div class="card-header">
+                <h2>"Prices and cards"</h2>
+            </div>
+            <div class="card-body">
+                <div class="field">
+                    <span class="control-label">"Currency"</span>
+                    <div class="segmented" role="group" aria-label="Currency">
+                        {Currency::ALL
+                            .into_iter()
+                            .map(|c| {
+                                view! {
+                                    <button
+                                        class:selected=move || currency() == Some(c)
+                                        disabled=move || saving.get()
+                                        on:click=move |_| update(&|p| p.currency = c)
+                                    >
+                                        {format!("{} ({})", c.code(), c.source())}
+                                    </button>
+                                }
+                            })
+                            .collect_view()}
+                    </div>
+                </div>
+                <p class="small muted">
+                    "Totals, group values and the most valuable cards use this store's prices. "
+                    "Both columns are always shown. Prices come from Scryfall's daily data."
+                </p>
+                <div class="field">
+                    <span class="control-label">"Card Kingdom"</span>
+                    <label class="switch">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || prices.get().is_some_and(|p| p.card_kingdom)
+                            disabled=move || saving.get()
+                            on:change=move |ev| {
+                                let on = event_target_checked(&ev);
+                                update(&|p| p.card_kingdom = on);
+                            }
+                        />
+                        "Also record Card Kingdom retail and buylist prices"
+                    </label>
+                </div>
+                <div class="field">
+                    <span class="control-label">"Card language"</span>
+                    <select
+                        class="text-input"
+                        disabled=move || saving.get()
+                        prop:value=move || language().unwrap_or_default()
+                        on:change=move |ev| {
+                            save.run(SettingsChange::CardLanguage {
+                                code: event_target_value(&ev),
+                            })
+                        }
+                    >
+                        {CARD_LANGUAGES
+                            .into_iter()
+                            .map(|(code, name)| view! { <option value=code>{name}</option> })
+                            .collect_view()}
+                    </select>
+                </div>
+                <p class="small muted">
+                    "The language your cards are printed in: scans record that printing when "
+                    "Scryfall has it (prices are mostly for English printings)."
+                </p>
+            </div>
+        </section>
     }
 }
 

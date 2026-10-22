@@ -4,8 +4,8 @@ use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    CardOutcome, CardView, ClientCommand, CollectionRow, CollectionView, EditResult, Finish, Mode,
-    PrintingView, RowEdit, ServerEvent, StateView, Totals, decks_by_card, eur, usd,
+    CardOutcome, CardView, ClientCommand, CollectionRow, CollectionView, Currency, EditResult,
+    Finish, Mode, PrintingView, RowEdit, ServerEvent, StateView, Totals, decks_by_card, eur, usd,
 };
 
 use crate::add::AddDialog;
@@ -115,6 +115,14 @@ pub fn App() -> impl IntoView {
     let cache = CollectionCache::new();
     let preview = Preview::new();
     provide_context(preview);
+    // The currency headline values are shown in (Settings, "Prices and cards").
+    let currency = RwSignal::new(Currency::Usd);
+    provide_context(currency);
+    spawn_local(async move {
+        if let Ok(view) = api::settings().await {
+            currency.set(view.prices.currency);
+        }
+    });
     let prefs = CollectionPrefs::new();
     let decks = DeckCache::new();
     let snack = RwSignal::new(None::<(String, bool, u64)>);
