@@ -1,8 +1,9 @@
 # mtg-scan
 
-Scan Magic: The Gathering cards with a webcam, keep the collection in a Markdown
-file, and price every card with **TCGplayer** (market price) and **Card Kingdom**
-(retail + buylist).
+Scan Magic: The Gathering cards with a webcam, keep the collection in SQLite (or
+your own PostgreSQL), and price every card with Scryfall's daily prices:
+**TCGplayer** (USD), **Cardmarket** (EUR) and MTGO tix, plus **Card Kingdom**
+(retail + buylist) if you switch it on.
 
 Built in Rust for Windows and tested with an **Insta360 Link 2 Pro**. Any UVC
 webcam works.
@@ -24,7 +25,7 @@ camera frame ─┬─ single card in guide ────────────
                                                            ▼
      name / set / number ─→ Scryfall (corrects misreads, picks printing)
                                                            ▼
-           TCGplayer + Card Kingdom prices ─→ collection.md
+   TCGplayer / Cardmarket prices (Scryfall) ─→ SQLite or PostgreSQL
 ```
 
 * **Hands-free.** The camera watches continuously. When something new holds
@@ -82,7 +83,7 @@ asks). The pages:
   only identify and price cards (nothing is written, not even the background
   price refresh); **Clear** empties the session list to start fresh (saved
   cards stay saved). **Top 5** shows the session's most expensive cards by
-  TCGplayer and by Card Kingdom price, each with its price; the × on a card hides it from there
+  TCGplayer and by Cardmarket price (and Card Kingdom, when on), each with its price; the × on a card hides it from there
   (e.g. a mis-scan) without touching the collection. When the printing is uncertain the
   card waits under **To review** instead: accept it, pick the right printing
   from thumbnails, or discard it (`[recognition] review_uncertain = false`
@@ -268,11 +269,17 @@ read and write rows but can't change or drop tables. The schema owner's login
 is kept separately in `.env` as `MTG_SCAN_DB_ADMIN_USER` / `_ADMIN_PASSWORD`,
 and is only used for `db migrate` and `db setup-app-user`.
 
-**Automatic price refresh.** When `scan` or `scan-all` starts, mtg-scan reprices
-any card not yet priced today in the background, one card at a time while it
-waits for scans. No OS scheduler is involved. That adds a daily point to the
-price history whenever you use the app. `mtg-scan reprice` refreshes everything
-on demand.
+**Automatic price refresh.** While `mtg-scan ui` (or the desktop window) runs,
+it copies Scryfall's daily card data and then records that day's prices for
+every card you own: TCGplayer (USD), Cardmarket (EUR) and MTGO tix, in one
+step and without a request per card. No OS scheduler is involved. That adds a
+daily point to the price history whenever you use the app. `mtg-scan reprice`
+does it now. Nothing is written while the Scan page's Save switch is off.
+
+**Card Kingdom (optional).** `[prices] card_kingdom = true` also records Card
+Kingdom's retail and buylist prices, from its public price list (about 70 MB,
+downloaded at most once a day). The Card Kingdom columns, totals and Top 5 list
+appear when those prices exist.
 
 ## Development
 

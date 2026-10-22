@@ -1,31 +1,42 @@
 //! `mtg-scan movers`: which cards gained or lost the most value over a
-//! period, from the PostgreSQL price history.
+//! period, from the price history.
 
 use chrono::NaiveDate;
 
-use crate::model::PricePoint;
+use crate::model::{PricePoint, format_eur, format_usd};
 use crate::store::PriceMove;
 
 /// Where a price comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Tcgplayer,
+    Cardmarket,
     CardKingdom,
 }
 
 impl Source {
-    pub const ALL: [Source; 2] = [Source::Tcgplayer, Source::CardKingdom];
+    pub const ALL: [Source; 3] = [Source::Tcgplayer, Source::Cardmarket, Source::CardKingdom];
 
     pub fn label(self) -> &'static str {
         match self {
             Source::Tcgplayer => "TCGplayer",
+            Source::Cardmarket => "Cardmarket",
             Source::CardKingdom => "Card Kingdom",
+        }
+    }
+
+    /// An amount in this source's currency: `$1.23` or `€1.23`.
+    pub fn money(self, v: f64) -> String {
+        match self {
+            Source::Cardmarket => format_eur(Some(v)),
+            _ => format_usd(Some(v)),
         }
     }
 
     fn price(self, p: &PricePoint) -> Option<f64> {
         match self {
             Source::Tcgplayer => p.tcgplayer,
+            Source::Cardmarket => p.cardmarket,
             Source::CardKingdom => p.cardkingdom,
         }
     }
@@ -136,6 +147,8 @@ mod tests {
         PricePoint {
             date: NaiveDate::from_ymd_opt(2026, 10, day).unwrap(),
             tcgplayer: tcg,
+            cardmarket: None,
+            tix: None,
             cardkingdom: ck,
             cardkingdom_buylist: None,
         }
@@ -181,8 +194,10 @@ mod tests {
         assert_eq!(tcg.fallers[0].total(), -5.0);
         assert_eq!(tcg.risers[1].percent(), Some(30.0));
 
+        // No Cardmarket prices at all: nothing to report.
+        assert_eq!((r[1].source, r[1].rows), (Source::Cardmarket, 0));
         // Card Kingdom skips the row with no price back then.
-        let ck = &r[1];
+        let ck = &r[2];
         assert_eq!(ck.rows, 3);
         assert_eq!(rows(&ck.fallers), [1]);
         assert!(ck.risers.is_empty());

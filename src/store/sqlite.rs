@@ -40,6 +40,11 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "card_cache",
         include_str!("../../migrations/sqlite/0002_card_cache.sql"),
     ),
+    (
+        3,
+        "price_sources",
+        include_str!("../../migrations/sqlite/0003_price_sources.sql"),
+    ),
 ];
 
 pub fn latest_migration() -> i32 {
@@ -205,7 +210,8 @@ impl SqliteStore {
 
     fn stored_rows(&self, filter: Option<(&str, Finish)>) -> Result<Vec<StoredRow>> {
         const SELECT: &str = "select c.scryfall_id, c.finish, c.quantity, c.added_at,
-                p.price_tcg, p.price_ck, p.price_ck_buylist, p.price_date
+                p.price_tcg, p.price_cardmarket, p.price_tix, p.price_ck, p.price_ck_buylist,
+                p.price_date
              from collection c
              left join price_history p
                on p.scryfall_id = c.scryfall_id and p.finish = c.finish
@@ -420,36 +426,22 @@ impl CollectionStore for SqliteStore {
 
     fn price_history(&self, scryfall_id: &str, finish: Finish) -> Result<Vec<PricePoint>> {
         let mut stmt = self.conn.prepare(
-            "select price_date, price_tcg, price_ck, price_ck_buylist
+            "select price_date, price_tcg, price_cardmarket, price_tix, price_ck, price_ck_buylist
              from price_history
              where scryfall_id = ?1 and finish = ?2
              order by price_date",
         )?;
-        let rows = stmt.query_map(params![scryfall_id, finish.as_str()], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<i64>>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-            ))
-        })?;
-        rows.map(|r| {
-            let (date, tcg, ck, ckb) = r?;
-            Ok(PricePoint {
-                date: parse_date(&date)?,
-                tcgplayer: dollars(tcg),
-                cardkingdom: dollars(ck),
-                cardkingdom_buylist: dollars(ckb),
-            })
-        })
-        .collect()
+        let rows = stmt.query_map(params![scryfall_id, finish.as_str()], |r| point_at(r, 0))?;
+        rows.map(|r| price_point(r?)).collect()
     }
 
     fn price_moves(&self, since: NaiveDate) -> Result<Vec<PriceMove>> {
         let mut stmt = self.conn.prepare(
             "select c.scryfall_id, c.finish, c.quantity,
-                    old.price_date, old.price_tcg, old.price_ck, old.price_ck_buylist,
-                    cur.price_date, cur.price_tcg, cur.price_ck, cur.price_ck_buylist
+                    old.price_date, old.price_tcg, old.price_cardmarket, old.price_tix,
+                    old.price_ck, old.price_ck_buylist,
+                    cur.price_date, cur.price_tcg, cur.price_cardmarket, cur.price_tix,
+                    cur.price_ck, cur.price_ck_buylist
              from collection c
              join price_history old
                on old.scryfall_id = c.scryfall_id and old.finish = c.finish
@@ -463,33 +455,22 @@ impl CollectionStore for SqliteStore {
              where cur.price_date > old.price_date",
         )?;
         let rows = stmt.query_map(params![date_text(since)], |r| {
-            let point = |at: usize| -> rusqlite::Result<(String, [Option<i64>; 3])> {
-                Ok((r.get(at)?, [r.get(at + 1)?, r.get(at + 2)?, r.get(at + 3)?]))
-            };
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, u32>(2)?,
-                point(3)?,
-                point(7)?,
+                point_at(r, 3)?,
+                point_at(r, 9)?,
             ))
         })?;
         rows.map(|r| {
             let (scryfall_id, finish, quantity, then, now) = r?;
-            let point = |(date, [tcg, ck, ckb]): (String, [Option<i64>; 3])| -> Result<_> {
-                Ok(PricePoint {
-                    date: parse_date(&date)?,
-                    tcgplayer: dollars(tcg),
-                    cardkingdom: dollars(ck),
-                    cardkingdom_buylist: dollars(ckb),
-                })
-            };
             Ok(PriceMove {
                 scryfall_id,
                 finish: finish.parse()?,
                 quantity,
-                then: point(then)?,
-                now: point(now)?,
+                then: price_point(then)?,
+                now: price_point(now)?,
             })
         })
         .collect()
@@ -519,6 +500,31 @@ impl CollectionStore for SqliteStore {
             now: now as f64 / 100.0,
             rows,
         }))
+    }
+
+    fn record_cached_prices(&mut self, date: NaiveDate) -> Result<usize> {
+        let tx = self.write()?;
+        let n = tx.execute(
+            "insert into price_history
+               (scryfall_id, finish, price_date, price_tcg, price_cardmarket, price_tix, captured_at)
+             select c.scryfall_id, c.finish, ?1,
+                    case c.finish when 'foil' then p.usd_foil
+                                  when 'etched' then p.usd_etched else p.usd end,
+                    case c.finish when 'foil' then p.eur_foil
+                                  when 'etched' then null else p.eur end,
+                    p.tix, ?2
+             from collection c
+             join card_printing p on p.scryfall_id = c.scryfall_id
+             where coalesce(p.usd, p.usd_foil, p.usd_etched, p.eur, p.eur_foil, p.tix) is not null
+             on conflict (scryfall_id, finish, price_date) do update set
+               price_tcg = coalesce(excluded.price_tcg, price_history.price_tcg),
+               price_cardmarket = coalesce(excluded.price_cardmarket, price_history.price_cardmarket),
+               price_tix = coalesce(excluded.price_tix, price_history.price_tix),
+               captured_at = excluded.captured_at",
+            params![date_text(date), now()],
+        )?;
+        tx.commit()?;
+        Ok(n)
     }
 
     fn location(&self) -> String {
@@ -676,7 +682,9 @@ fn card_from_row(r: &Row<'_>) -> rusqlite::Result<Card> {
     })
 }
 
-/// Upsert `date`'s price point. Skipped when no price is known.
+/// Upsert `date`'s price point. Skipped when no price is known. A price
+/// missing here keeps the one already recorded that day, so sources recorded
+/// separately (Scryfall's daily data, then Card Kingdom) don't erase each other.
 fn record_price(
     tx: &Transaction<'_>,
     scryfall_id: &str,
@@ -685,6 +693,8 @@ fn record_price(
     prices: &Prices,
 ) -> Result<()> {
     if prices.tcgplayer.is_none()
+        && prices.cardmarket.is_none()
+        && prices.tix.is_none()
         && prices.cardkingdom.is_none()
         && prices.cardkingdom_buylist.is_none()
     {
@@ -692,18 +702,25 @@ fn record_price(
     }
     tx.execute(
         "insert into price_history
-           (scryfall_id, finish, price_date, price_tcg, price_ck, price_ck_buylist, captured_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           (scryfall_id, finish, price_date, price_tcg, price_cardmarket, price_tix, price_ck,
+            price_ck_buylist, captured_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          on conflict (scryfall_id, finish, price_date)
-         do update set price_tcg = excluded.price_tcg,
-                       price_ck = excluded.price_ck,
-                       price_ck_buylist = excluded.price_ck_buylist,
+         do update set price_tcg = coalesce(excluded.price_tcg, price_history.price_tcg),
+                       price_cardmarket = coalesce(excluded.price_cardmarket,
+                                                   price_history.price_cardmarket),
+                       price_tix = coalesce(excluded.price_tix, price_history.price_tix),
+                       price_ck = coalesce(excluded.price_ck, price_history.price_ck),
+                       price_ck_buylist = coalesce(excluded.price_ck_buylist,
+                                                   price_history.price_ck_buylist),
                        captured_at = excluded.captured_at",
         params![
             scryfall_id,
             finish.as_str(),
             date_text(date),
             cents(prices.tcgplayer),
+            cents(prices.cardmarket),
+            cents(prices.tix),
             cents(prices.cardkingdom),
             cents(prices.cardkingdom_buylist),
             now()
@@ -712,12 +729,41 @@ fn record_price(
     Ok(())
 }
 
+/// A price point as stored: its date and the five prices in cents
+/// (TCGplayer, Cardmarket, tix, Card Kingdom, CK buylist).
+type RawPoint = (String, [Option<i64>; 5]);
+
+/// The date and five prices starting at column `at`.
+fn point_at(r: &Row<'_>, at: usize) -> rusqlite::Result<RawPoint> {
+    Ok((
+        r.get(at)?,
+        [
+            r.get(at + 1)?,
+            r.get(at + 2)?,
+            r.get(at + 3)?,
+            r.get(at + 4)?,
+            r.get(at + 5)?,
+        ],
+    ))
+}
+
+fn price_point((date, [tcg, cm, tix, ck, ckb]): RawPoint) -> Result<PricePoint> {
+    Ok(PricePoint {
+        date: parse_date(&date)?,
+        tcgplayer: dollars(tcg),
+        cardmarket: dollars(cm),
+        tix: dollars(tix),
+        cardkingdom: dollars(ck),
+        cardkingdom_buylist: dollars(ckb),
+    })
+}
+
 type RawRow = (
     String,
     String,
     u32,
     String,
-    [Option<i64>; 3],
+    [Option<i64>; 5],
     Option<String>,
 );
 
@@ -727,13 +773,13 @@ fn raw_row(r: &Row<'_>) -> rusqlite::Result<RawRow> {
         r.get(1)?,
         r.get(2)?,
         r.get(3)?,
-        [r.get(4)?, r.get(5)?, r.get(6)?],
-        r.get(7)?,
+        [r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?],
+        r.get(9)?,
     ))
 }
 
 fn stored_row(
-    (scryfall_id, finish, quantity, added, [tcg, ck, ckb], price_date): RawRow,
+    (scryfall_id, finish, quantity, added, [tcg, cm, tix, ck, ckb], price_date): RawRow,
 ) -> Result<StoredRow> {
     Ok(StoredRow {
         scryfall_id,
@@ -742,10 +788,11 @@ fn stored_row(
         added: parse_date(&added)?,
         prices: Prices {
             tcgplayer: dollars(tcg),
+            cardmarket: dollars(cm),
+            tix: dollars(tix),
             cardkingdom: dollars(ck),
             cardkingdom_buylist: dollars(ckb),
-            tcgplayer_url: None,
-            cardkingdom_url: None,
+            ..Prices::default()
         },
         price_date: price_date.as_deref().map(parse_date).transpose()?,
     })

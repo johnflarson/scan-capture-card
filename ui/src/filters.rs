@@ -75,8 +75,8 @@ impl Item {
                 totals.printings, totals.cards, totals.tcgplayer
             ),
             Item::Card(r) => format!(
-                "{}|{:?}|{}|{:?}|{:?}",
-                r.scryfall_id, r.finish, r.quantity, r.tcgplayer, r.cardkingdom
+                "{}|{:?}|{}|{:?}|{:?}|{:?}",
+                r.scryfall_id, r.finish, r.quantity, r.tcgplayer, r.cardmarket, r.cardkingdom
             ),
         }
     }
@@ -147,7 +147,8 @@ pub fn GroupHead(
 ) -> impl IntoView {
     view! {
         <tr class="group-head" class:collapsed=collapsed>
-            <td colspan="13">
+            // Spans every column, however many price columns are shown.
+            <td colspan="99">
                 <GroupToggle facet label totals collapsed prefs />
             </td>
         </tr>

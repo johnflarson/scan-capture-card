@@ -4,15 +4,14 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use reqwest::blocking::Client;
 
 use crate::config::{Config, StorageBackend};
-use crate::model::{Card, CollectionEntry, Finish, Prices, format_usd};
+use crate::model::{Card, CollectionEntry, Finish, Prices, format_eur, format_usd};
 use crate::pricing::PriceService;
 use crate::scryfall::Scryfall;
 use crate::store::CollectionStore;
-use crate::store::markdown::MarkdownStore;
 use crate::store::postgres::PostgresStore;
 use crate::store::sqlite::SqliteStore;
 
@@ -42,12 +41,17 @@ impl App {
                 cfg.storage.sqlite_path(),
                 Some(scryfall.clone()),
             )?),
-            StorageBackend::Markdown => Box::new(MarkdownStore::open(&cfg.collection)?),
+            StorageBackend::Markdown => bail!(
+                "since 1.0 a Markdown file is no longer a storage backend (it can't keep the card \
+                 data or the daily prices): set [storage] backend = \"sqlite\" (the default) and \
+                 run `mtg-scan db import {}` to copy it in",
+                cfg.collection.display()
+            ),
             StorageBackend::Postgres => Box::new(connect_postgres(cfg, scryfall.clone())?),
         };
         Ok(Self {
             scryfall,
-            prices: PriceService::new(http),
+            prices: PriceService::new(http, &cfg.prices),
             store,
         })
     }
@@ -89,10 +93,17 @@ pub fn describe_card(card: &Card, finish: Finish) -> String {
 }
 
 pub fn describe_prices(p: &Prices) -> String {
-    format!(
-        "TCGplayer {} · Card Kingdom {} (buylist {})",
+    let mut text = format!(
+        "TCGplayer {} · Cardmarket {}",
         format_usd(p.tcgplayer),
-        format_usd(p.cardkingdom),
-        format_usd(p.cardkingdom_buylist)
-    )
+        format_eur(p.cardmarket)
+    );
+    if p.cardkingdom.is_some() || p.cardkingdom_buylist.is_some() {
+        text += &format!(
+            " · Card Kingdom {} (buylist {})",
+            format_usd(p.cardkingdom),
+            format_usd(p.cardkingdom_buylist)
+        );
+    }
+    text
 }

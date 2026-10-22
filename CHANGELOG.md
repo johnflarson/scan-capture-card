@@ -12,6 +12,19 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 
 The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
 
+### Changed
+- Prices come from Scryfall (#65): TCGplayer (USD), **Cardmarket (EUR)** and MTGO tix, from the
+  daily card data, for scans and for the daily price refresh. The direct lookup on TCGplayer's
+  internal price endpoint is gone. The daily refresh records every owned card's prices in one
+  step after the card data sync (no request per card) and pauses while the Save switch is off.
+  Card Kingdom is optional (`[prices] card_kingdom = true`); its columns, totals and Top 5 list
+  appear when its prices exist. The Collection page, Scan page, Home page, `list`, `history`,
+  `movers` and `reprice` show Cardmarket next to TCGplayer. Migration 3 adds the Cardmarket and
+  tix columns to the price history.
+- A Markdown file is no longer a storage backend (#65): it can't hold the card data or the daily
+  prices. `mtg-scan db import collection.md` copies one into SQLite or PostgreSQL, and
+  `db export` writes one.
+
 ### Added
 - Local card data from Scryfall's daily bulk file (#64): every paper printing's name, set,
   number, rarity, colors, type, images and Scryfall's daily prices (TCGplayer USD, Cardmarket EUR,

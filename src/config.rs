@@ -16,6 +16,7 @@ pub struct Config {
     /// default target of `db import` / `db export`.
     pub collection: PathBuf,
     pub storage: StorageConfig,
+    pub prices: PricesConfig,
     pub camera: CameraConfig,
     pub recognition: RecognitionConfig,
     pub llm: LlmConfig,
@@ -32,6 +33,7 @@ impl Default for Config {
         Self {
             collection: PathBuf::from("collection.md"),
             storage: StorageConfig::default(),
+            prices: PricesConfig::default(),
             camera: CameraConfig::default(),
             recognition: RecognitionConfig::default(),
             llm: LlmConfig::default(),
@@ -121,6 +123,16 @@ pub fn save_settings(path: &Path, ui: &UiConfig, decks: &DecksConfig) -> Result<
     std::fs::write(&tmp, doc.to_string())
         .with_context(|| format!("failed to write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("failed to update {}", path.display()))
+}
+
+/// Where prices come from besides Scryfall (TCGplayer USD, Cardmarket EUR
+/// and MTGO tix, always on).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PricesConfig {
+    /// Also record Card Kingdom retail and buylist prices, from its public
+    /// price list (~70 MB, downloaded at most daily).
+    pub card_kingdom: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]

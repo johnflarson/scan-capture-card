@@ -21,7 +21,6 @@ use crate::config::{self, Config, DecksConfig, StorageBackend, UiConfig};
 use crate::moxfield;
 use crate::scryfall::Scryfall;
 use crate::store::CardCache;
-use crate::store::markdown::MarkdownStore;
 use crate::store::postgres::{self, PostgresStore};
 use crate::store::sqlite::SqliteStore;
 
@@ -191,7 +190,16 @@ pub async fn database(State(st): State<Arc<AppState>>) -> Response {
         Ok(match cfg.storage.backend {
             StorageBackend::Sqlite => sqlite_view(&cfg),
             StorageBackend::Postgres => postgres_view(&cfg),
-            StorageBackend::Markdown => markdown_view(&cfg),
+            StorageBackend::Markdown => DatabaseView {
+                backend: "Markdown file".into(),
+                settings: vec![InfoRow::new("File", cfg.collection.display().to_string())],
+                status: Vec::new(),
+                error: Some(
+                    "Since 1.0 a Markdown file is no longer a storage backend: set [storage] \
+                     backend = \"sqlite\" and run mtg-scan db import to copy it in."
+                        .into(),
+                ),
+            },
         })
     })
     .await
@@ -341,51 +349,6 @@ fn ssl_mode(mode: ::postgres::config::SslMode) -> &'static str {
         SslMode::Require => "require",
         _ => "other",
     }
-}
-
-fn markdown_view(cfg: &Config) -> DatabaseView {
-    let path = std::path::absolute(&cfg.collection).unwrap_or_else(|_| cfg.collection.clone());
-    let mut view = DatabaseView {
-        backend: "Markdown file".into(),
-        settings: vec![InfoRow::new("File", path.display().to_string())],
-        status: Vec::new(),
-        error: None,
-    };
-    let entries = MarkdownStore::open(&path).and_then(|store| {
-        use crate::store::CollectionStore;
-        store.entries()
-    });
-    match entries {
-        Ok(entries) => {
-            view.status = vec![
-                InfoRow::new("Printings", entries.len().to_string()),
-                InfoRow::new(
-                    "Cards",
-                    entries
-                        .iter()
-                        .map(|e| u64::from(e.quantity))
-                        .sum::<u64>()
-                        .to_string(),
-                ),
-            ];
-            if let Ok(meta) = std::fs::metadata(&path) {
-                view.status.push(InfoRow::new(
-                    "Size",
-                    format!("{:.1} KB", meta.len() as f64 / 1024.0),
-                ));
-                if let Ok(modified) = meta.modified() {
-                    view.status.push(InfoRow::new(
-                        "Last changed",
-                        chrono::DateTime::<chrono::Local>::from(modified)
-                            .format("%Y-%m-%d %H:%M")
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-        Err(e) => view.error = Some(format!("{e:#}")),
-    }
-    view
 }
 
 #[cfg(test)]

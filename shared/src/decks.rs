@@ -549,6 +549,7 @@ mod tests {
             finish: Finish::Nonfoil,
             quantity,
             tcgplayer: None,
+            cardmarket: None,
             cardkingdom: None,
             cardkingdom_buylist: None,
             added: String::new(),

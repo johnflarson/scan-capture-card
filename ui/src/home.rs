@@ -3,7 +3,7 @@
 
 use leptos::prelude::*;
 use mtg_scan_shared::{
-    CollectionRow, DeckOwnership, Finish, Mode, Slice, StateView, Stats, ValueChange, usd,
+    CollectionRow, DeckOwnership, Finish, Mode, Slice, StateView, Stats, ValueChange, eur, usd,
 };
 
 use crate::app::{CollectionCache, Metric, Tab};
@@ -178,7 +178,7 @@ fn StatsBody(
         None => (
             "—".to_string(),
             "",
-            "Appears once a week of daily prices has been recorded (PostgreSQL storage)".into(),
+            "Appears once a week of daily prices has been recorded".into(),
         ),
     };
     let rarity_class = |label: &str| format!("rarity-{}", label.to_lowercase());
@@ -188,7 +188,9 @@ fn StatsBody(
             <Metric label="Cards" value=t.cards.to_string() kind="" />
             <Metric label="Printings" value=t.printings.to_string() kind="" />
             <Metric label="TCGplayer" value=usd(Some(t.tcgplayer)) kind="tcg" />
-            <Metric label="Card Kingdom" value=usd(Some(t.cardkingdom)) kind="ck" />
+            <Metric label="Cardmarket" value=eur(Some(t.cardmarket)) kind="cm" />
+            {(t.cardkingdom > 0.0)
+                .then(|| view! { <Metric label="Card Kingdom" value=usd(Some(t.cardkingdom)) kind="ck" /> })}
             <div class="metric" title=change_title>
                 <div class="label">"Last 7 days"</div>
                 <div class=format!("value {change_kind}")>{change_value}</div>
