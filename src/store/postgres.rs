@@ -476,6 +476,41 @@ impl CollectionStore for PostgresStore {
         )
     }
 
+    fn all_price_points(&self) -> Result<Vec<(String, Finish, PricePoint)>> {
+        let rows = self.client.borrow_mut().query(
+            "select scryfall_id::text, finish, price_date, price_tcg::float8,
+                    price_cardmarket::float8, price_tix::float8, price_ck::float8,
+                    price_ck_buylist::float8
+             from price_history
+             order by scryfall_id, finish, price_date",
+            &[],
+        )?;
+        rows.iter()
+            .map(|r| {
+                let finish: String = r.get(1);
+                Ok((r.get(0), finish.parse()?, point_at(r, 2)))
+            })
+            .collect()
+    }
+
+    fn import_price_points(&mut self, points: &[(String, Finish, PricePoint)]) -> Result<usize> {
+        let mut client = self.client.borrow_mut();
+        let mut tx = client.transaction()?;
+        for (id, finish, p) in points {
+            let prices = Prices {
+                tcgplayer: p.tcgplayer,
+                cardmarket: p.cardmarket,
+                tix: p.tix,
+                cardkingdom: p.cardkingdom,
+                cardkingdom_buylist: p.cardkingdom_buylist,
+                ..Prices::default()
+            };
+            record_price(&mut tx, id, *finish, p.date, &prices)?;
+        }
+        tx.commit()?;
+        Ok(points.len())
+    }
+
     fn price_history(&self, scryfall_id: &str, finish: Finish) -> Result<Vec<PricePoint>> {
         let mut client = self.client.borrow_mut();
         let rows = client.query(
@@ -952,6 +987,16 @@ mod tests {
         crate::store::conformance(&mut store);
         let rows = store.entries().unwrap();
         assert_eq!(rows[0].name, "Lightning Bolt", "details come from Scryfall");
+
+        // Copying into SQLite keeps every row and price point.
+        let mut lite = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        let (copied, points) = crate::store::copy(&store, &mut lite).unwrap();
+        assert_eq!(copied, rows.len());
+        assert_eq!(points, store.all_price_points().unwrap().len());
+        assert_eq!(
+            store.all_price_points().unwrap(),
+            lite.all_price_points().unwrap()
+        );
 
         let status = store.status().unwrap();
         assert_eq!(status.schema_version, latest_migration());

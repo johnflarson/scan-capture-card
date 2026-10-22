@@ -89,6 +89,18 @@ pub trait CollectionStore {
         bail!("this storage backend has no card cache")
     }
 
+    /// Every price point of every printing + finish, owned or not (for
+    /// copying a database).
+    fn all_price_points(&self) -> Result<Vec<(String, Finish, PricePoint)>> {
+        bail!("price history is only kept by the sqlite and postgres storage backends")
+    }
+
+    /// Write price points as they are (for copying a database). Returns how
+    /// many were written.
+    fn import_price_points(&mut self, _points: &[(String, Finish, PricePoint)]) -> Result<usize> {
+        bail!("price history is only kept by the sqlite and postgres storage backends")
+    }
+
     /// Price points over time, oldest first.
     fn price_history(&self, _scryfall_id: &str, _finish: Finish) -> Result<Vec<PricePoint>> {
         bail!("price history is only kept by the sqlite and postgres storage backends")
@@ -222,6 +234,15 @@ pub fn totals(entries: &[CollectionEntry]) -> Totals {
         t.cardkingdom_buylist += e.prices.cardkingdom_buylist.unwrap_or(0.0) * q;
         t
     })
+}
+
+/// Copy a collection and its whole price history from `from` into `to`
+/// (e.g. SQLite to PostgreSQL). Quantities are set, not added, and the card
+/// cache isn't copied: it rebuilds itself. Returns (rows, price points).
+pub fn copy(from: &dyn CollectionStore, to: &mut dyn CollectionStore) -> Result<(usize, usize)> {
+    let rows = to.import(&from.entries()?)?;
+    let points = to.import_price_points(&from.all_price_points()?)?;
+    Ok((rows, points))
 }
 
 /// A collection row as the databases store it: no card details.

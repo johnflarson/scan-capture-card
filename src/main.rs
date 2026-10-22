@@ -237,6 +237,19 @@ enum DbCommand {
         /// Markdown file (default: the configured collection file)
         file: Option<PathBuf>,
     },
+    /// Copy this collection and its price history into another database
+    /// (e.g. PostgreSQL into a SQLite file)
+    Copy {
+        /// The kind of database to copy into
+        #[arg(long, value_enum)]
+        to: StorageBackend,
+        /// SQLite file to copy into (default: the configured SQLite file)
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Copy even if the other database already holds cards (quantities are set, not added)
+        #[arg(long)]
+        merge: bool,
+    },
     /// Copy Scryfall's latest card data (details and prices) into the database
     SyncCards {
         /// Copy it even if this file was copied already
@@ -888,6 +901,39 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
                 "Imported {n} rows from {} into {}",
                 path.display(),
                 store.location()
+            );
+        }
+        (DbCommand::Copy { to, file, merge }, from) => {
+            let mut target = cfg.clone();
+            target.storage.backend = to;
+            if let Some(file) = file {
+                target.storage.path = Some(file);
+            }
+            if to == StorageBackend::Markdown {
+                bail!("copy into sqlite or postgres; `db export` writes a Markdown file");
+            }
+            if to == from && target.storage.sqlite_path() == cfg.storage.sqlite_path() {
+                bail!("that is the database already in use: pass --to and, for SQLite, --file");
+            }
+            let source = App::new(cfg)?;
+            let mut dest = App::new(&target)?;
+            let existing = dest.store.entries()?.len();
+            if existing > 0 && !merge {
+                bail!(
+                    "{} already holds {existing} rows; --merge copies anyway (quantities are set \
+                     to this collection's, other rows are kept)",
+                    dest.store.location()
+                );
+            }
+            println!(
+                "Copying {} → {}…",
+                source.store.location(),
+                dest.store.location()
+            );
+            let (rows, points) = store::copy(source.store.as_ref(), dest.store.as_mut())?;
+            println!(
+                "Copied {rows} rows and {points} price points. Card data rebuilds itself there \
+                 (or run db sync-cards against it)."
             );
         }
         (DbCommand::SyncCards { force }, _) => {
