@@ -60,6 +60,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `../ui/` | `mtg-scan-ui`: Leptos 0.8 CSR app (`app.rs` components, `home.rs` landing page, `filters.rs` Collection filters, `mana.rs` mana symbols, `api.rs` fetch + EventSource), `style.css` Material 3 tokens |
 | `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo; with `hold_uncertain` (web UI, `[recognition] review_uncertain`) uncertain matches become `Outcome::Held`, which the engine saves on `Command::Accept` or drops on `Discard` |
 | `recognize.rs` | `Recognizer` (OCR, then LLM, then visual refine), `resolve()` hints to a Scryfall printing, `NameIndex`, `MatchQuality` |
+| `detect.rs` | Table-mode card detection without an LLM: straight edges (LSD-style region growing, collinear pieces joined), facing pairs → 63:88 rectangles, side check (dark border inside, lighter table outside, edge on the side), then size consensus. `mtg-scan detect-dump <photo> --out x.png` draws the boxes and edges |
 | `ocr.rs` | Windows OCR wrapper; returns lines with normalised boxes |
 | `llm.rs` | Vision LLM: `read_card`, `detect_cards` (bbox_2d, 0-1000). OpenAI wire format, or Ollama native `/api/chat` |
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
@@ -154,6 +155,13 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
   `think: false` (about 3 s per card, about 13 s to detect 10 cards on an RTX 3080 Ti).
 - **Whole-table name reading with an 8B model fails**: it loops. Detect boxes on the full frame,
   then read each crop.
+- **Classical detection (`detect.rs`) pitfalls**, each seen on the desk photos: glare greys a
+  border (so contrast is relative, and 3 of 4 sides suffice); the camera squashes cards ~4% off
+  63:88 (so the free side length is searched ±8%); a card's art window and "title + art" look like
+  sideways cards, and a card plus its neighbour's inner border edge makes a bigger card-shaped
+  rectangle (so nested rectangles and the size consensus decide, in that order: drop the inner
+  one when the outer scores about as well, then drop widths >12% off the typical card, then
+  resolve overlaps). Rules keyed on "all four sides" or "crosswise" broke other photos.
 - **nokhwa `RequestedFormatType::Closest` picked a 1 fps mode**, and Media Foundation reports
   the active fps as 1. `camera::choose_format` selects the exact mode instead (4K MJPEG
   actually delivers about 19-30 fps).

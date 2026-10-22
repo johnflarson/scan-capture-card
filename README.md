@@ -11,7 +11,8 @@ webcam works.
 
 ```
 camera frame ─┬─ single card in guide ─────────────────────┐
-              └─ whole table ─ vision LLM finds each card ─┤
+              └─ whole table ─ black borders → each card ──┤
+                               (vision LLM if none found)  │
                                                            ▼
               Windows OCR (fast, offline) ─→ vision LLM (fallback)
                                                            ▼
@@ -166,6 +167,11 @@ recognised.
   camera stays still. An overhead or desk-view mount works best.
 * `scan-all` captures at 4K. OCR reads cards that fill a good part of the frame.
   Smaller cards are read by the LLM.
+* `scan-all` finds the cards by their black borders, in under a second and
+  without an LLM. Lay them out flat, near upright or sideways (up to about 25°
+  off), not overlapping. A busy playmat is fine. Only when it finds nothing
+  does the vision LLM look for cards; `[recognition] detection = "llm"` always
+  uses the LLM instead (slower, but it copes with fanned piles).
 
 ## Configuration
 

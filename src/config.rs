@@ -364,10 +364,23 @@ pub enum RecognitionMode {
     Auto,
 }
 
+/// How table mode (`scan-all`) finds the cards in the photo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Detection {
+    /// By their black borders; the vision LLM only when that finds none.
+    Auto,
+    /// By their black borders only (no LLM needed).
+    Classical,
+    /// The vision LLM finds them.
+    Llm,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct RecognitionConfig {
     pub mode: RecognitionMode,
+    pub detection: Detection,
     /// Save each captured card image into this folder (for debugging).
     pub save_scans: Option<PathBuf>,
     /// Web UI: hold matches whose printing is uncertain in a review list
@@ -379,6 +392,7 @@ impl Default for RecognitionConfig {
     fn default() -> Self {
         Self {
             mode: RecognitionMode::Auto,
+            detection: Detection::Auto,
             save_scans: None,
             review_uncertain: true,
         }
@@ -530,6 +544,7 @@ mod tests {
             Some("http://localhost:11434")
         );
         assert_eq!(cfg.recognition.mode, RecognitionMode::Auto);
+        assert_eq!(cfg.recognition.detection, Detection::Auto);
         assert!(
             cfg.recognition.review_uncertain,
             "held for review by default"
@@ -537,6 +552,14 @@ mod tests {
         assert_eq!(cfg.camera.width, 1920);
         assert_eq!(cfg.storage.backend, StorageBackend::Markdown);
         assert_eq!(cfg.storage.schema, "mtg_scan");
+    }
+
+    #[test]
+    fn table_detection_can_be_chosen() {
+        let cfg: Config = toml::from_str("[recognition]\ndetection = \"llm\"").unwrap();
+        assert_eq!(cfg.recognition.detection, Detection::Llm);
+        let cfg: Config = toml::from_str("[recognition]\ndetection = \"classical\"").unwrap();
+        assert_eq!(cfg.recognition.detection, Detection::Classical);
     }
 
     #[test]

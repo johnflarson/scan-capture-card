@@ -33,6 +33,11 @@ guide_height = 0.85
 # llm  = vision LLM only
 # auto = OCR first, LLM when OCR can't pin down the card
 mode = "auto"
+# How table mode (`scan-all`) finds the cards:
+# auto      = by their black borders; the vision LLM only when that finds none
+# classical = by their black borders only (no LLM)
+# llm       = the vision LLM (slower; copes with fanned piles)
+detection = "auto"
 # Save every captured image here (handy for tuning recognition).
 # save_scans = "scans"
 # Web UI: when the printing is uncertain (amber), hold the card in a review
