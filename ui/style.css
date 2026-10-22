@@ -332,7 +332,32 @@ tr.group-head.collapsed .chevron { transform: rotate(-45deg); }
 tr.group-head.collapsed td { border-bottom-color: var(--md-outline-variant); }
 
 /* Filter chips and group-by. */
-.filters { padding: 14px 18px; margin-bottom: 16px; display: grid; gap: 10px; }
+.filters { padding: 14px 18px; margin-bottom: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 14px 28px; }
+.filter-rows { flex: 1 1 560px; min-width: 0; display: grid; gap: 10px; }
+/* Group-by pie: each group's share of the shown cards, right of the filter rows. */
+.group-pie { flex: none; margin: 0; display: flex; align-items: center; gap: 16px; }
+.pie { width: 112px; height: 112px; flex: none; }
+.pie path { fill: var(--slice); stroke: var(--md-surface-container); stroke-width: 1.8; stroke-linejoin: round; transition: opacity 120ms; }
+.pie path.dim, .pie-key li.dim { opacity: 0.3; }
+.group-pie figcaption { display: grid; gap: 6px; min-width: 0; }
+.pie-title { font-size: 12px; font-weight: 500; color: var(--md-on-surface-variant); text-transform: uppercase; letter-spacing: 0.06em; }
+.pie-key { list-style: none; margin: 0; padding: 0; display: grid; grid-auto-flow: column; grid-template-rows: repeat(5, auto); gap: 3px 18px; font-size: 13px; }
+.pie-key li { display: flex; align-items: center; gap: 6px; cursor: default; transition: opacity 120ms; }
+.pie-key i { width: 10px; height: 10px; border-radius: 2px; background: var(--slice); flex: none; }
+.pie-pct { margin-left: auto; padding-left: 10px; color: var(--md-on-surface-variant); font-variant-numeric: tabular-nums; }
+.pie-detail { font-size: 12px; color: var(--md-on-surface-variant); font-variant-numeric: tabular-nums; }
+.group-pie :is(.w, .u, .b, .r, .g, .m, .c) { --slice: var(--mana); }
+.group-pie [class*="rarity-"] { --slice: var(--rarity); }
+/* Card types, in CARD_TYPES order: a categorical palette checked for color-blind separation on the dark surface. */
+.group-pie .t1 { --slice: #3987e5; }
+.group-pie .t2 { --slice: #d95926; }
+.group-pie .t3 { --slice: #199e70; }
+.group-pie .t4 { --slice: #c98500; }
+.group-pie .t5 { --slice: #d55181; }
+.group-pie .t6 { --slice: #008300; }
+.group-pie .t7 { --slice: #9085e9; }
+.group-pie .t8 { --slice: #e66767; }
+.group-pie .none { --slice: var(--md-outline); }
 .filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .filter-label { width: 80px; flex: none; color: var(--md-on-surface-variant); font-size: 13px; }
 .chip.filter { cursor: pointer; background: transparent; font-size: 13px; padding: 4px 12px; border-radius: var(--radius-s); }

@@ -759,6 +759,67 @@ pub fn usd(v: Option<f64>) -> String {
         .unwrap_or_else(|| "—".into())
 }
 
+/// "42%", or "<1%" for a share that would round to 0%.
+pub fn percent(share: f64) -> String {
+    if share > 0.0 && share < 0.005 {
+        "<1%".into()
+    } else {
+        format!("{:.0}%", share * 100.0)
+    }
+}
+
+/// One slice of a pie chart: a value's share of the cards.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PieSlice {
+    pub label: String,
+    pub cards: u32,
+    /// Share of all cards, 0-1.
+    pub share: f64,
+    /// SVG path in a `-50 -50 100 100` view box, clockwise from 12 o'clock.
+    pub path: String,
+}
+
+const PIE_RADIUS: f64 = 48.0;
+
+/// `(value, cards)` as pie slices, in the given order; values with no cards
+/// are left out.
+pub fn pie(values: &[(String, u32)]) -> Vec<PieSlice> {
+    let total: u32 = values.iter().map(|(_, n)| n).sum();
+    let mut done = 0;
+    values
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(label, n)| {
+            let start = done as f64 / total as f64;
+            done += n;
+            let end = done as f64 / total as f64;
+            PieSlice {
+                label: label.clone(),
+                cards: *n,
+                share: end - start,
+                path: pie_path(start, end),
+            }
+        })
+        .collect()
+}
+
+/// The wedge from `start` to `end` (fractions of the circle).
+fn pie_path(start: f64, end: f64) -> String {
+    let r = PIE_RADIUS;
+    if end - start >= 1.0 {
+        // An arc can't end where it starts, so a whole circle is two halves.
+        return format!("M0 -{r}A{r} {r} 0 1 1 0 {r}A{r} {r} 0 1 1 0 -{r}Z");
+    }
+    let point = |f: f64| {
+        let a = f * std::f64::consts::TAU;
+        // Rounded first, and `+ 0.0` so a tiny negative isn't "-0.00".
+        let c = |v: f64| (v * 100.0).round() / 100.0 + 0.0;
+        format!("{:.2} {:.2}", c(r * a.sin()), c(-r * a.cos()))
+    };
+    let large = u8::from(end - start > 0.5);
+    format!("M0 0L{}A{r} {r} 0 {large} 1 {}Z", point(start), point(end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -885,6 +946,33 @@ mod tests {
         let hidden = vec![cards[1].key()];
         assert_eq!(names(top_cards(&cards, tcg, &hidden, 5)), ["c", "a"]);
         assert!(top_cards(&cards, |c| c.cardkingdom, &[], 5).is_empty());
+    }
+
+    #[test]
+    fn pie_slices_split_the_circle_in_order() {
+        let v = |l: &str, n| (l.to_string(), n);
+        let slices = pie(&[v("Creature", 3), v("Land", 0), v("Instant", 1)]);
+        let labels: Vec<_> = slices.iter().map(|s| (s.label.as_str(), s.cards)).collect();
+        assert_eq!(labels, [("Creature", 3), ("Instant", 1)]);
+        assert_eq!(slices[0].share, 0.75);
+        assert_eq!(slices[1].share, 0.25);
+        // From 12 o'clock clockwise to 9 o'clock: the large arc.
+        assert_eq!(slices[0].path, "M0 0L0.00 -48.00A48 48 0 1 1 -48.00 0.00Z");
+        assert_eq!(slices[1].path, "M0 0L-48.00 0.00A48 48 0 0 1 0.00 -48.00Z");
+
+        let whole = pie(&[v("Rare", 2)]);
+        assert_eq!(whole[0].share, 1.0);
+        assert_eq!(whole[0].path, "M0 -48A48 48 0 1 1 0 48A48 48 0 1 1 0 -48Z");
+        assert!(pie(&[]).is_empty());
+        assert!(pie(&[v("Rare", 0)]).is_empty());
+    }
+
+    #[test]
+    fn percents_round_but_never_show_zero_for_some() {
+        assert_eq!(percent(0.4249), "42%");
+        assert_eq!(percent(1.0), "100%");
+        assert_eq!(percent(0.003), "<1%");
+        assert_eq!(percent(0.0), "0%");
     }
 
     #[test]

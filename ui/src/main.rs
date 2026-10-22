@@ -8,6 +8,7 @@ mod decks;
 mod filters;
 mod home;
 mod mana;
+mod pie;
 mod preview;
 mod review;
 mod settings;

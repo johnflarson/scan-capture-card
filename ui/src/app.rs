@@ -724,7 +724,7 @@ fn CollectionPage(
                     }
                 })
         }}
-        <FilterBar prefs data shown=shown_totals />
+        <FilterBar prefs data shown=shown_totals rows=shown.into() />
         <section class="card">
             <div class="table-wrap">
                 <table>
