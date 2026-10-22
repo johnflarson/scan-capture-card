@@ -36,8 +36,9 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
     non-English cards. Those printings rarely have prices.
 - `mtg-scan db copy --to sqlite|postgres [--file <db>]` (#67): copies the collection and its whole
   price history into the other kind of database, e.g. a 0.x PostgreSQL collection into a SQLite
-  file. It refuses a database that already holds cards unless `--merge`. Card data isn't copied:
-  it rebuilds itself.
+  file. A 0.x PostgreSQL database is read as it is, without upgrading it, so a 0.x install can
+  keep using it. It refuses a database that already holds cards unless `--merge`. Card data
+  isn't copied: it rebuilds itself.
 - Local card data from Scryfall's daily bulk file (#64): every paper printing's name, set,
   number, rarity, colors, type, images and Scryfall's daily prices (TCGplayer USD, Cardmarket EUR,
   MTGO tix) are copied into the database (`card_printing`, migration 2). The Collection page

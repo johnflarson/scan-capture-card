@@ -52,6 +52,10 @@ pub struct PostgresStore {
     scryfall: Rc<Scryfall>,
     schema: String,
     location: String,
+    /// The schema version when opened. [`Self::open`] also opens older
+    /// schemas (e.g. a 0.x database, to copy it without upgrading it); reads
+    /// then leave out what that version doesn't have.
+    version: i32,
 }
 
 /// Result of [`PostgresStore::setup_app_role`].
@@ -126,12 +130,25 @@ impl PostgresStore {
             .connect(tls)
             .with_context(|| format!("failed to connect to {location}"))?;
         client.batch_execute(&format!("set search_path to {schema}"))?;
-        Ok(Self {
+        let store = Self {
             client: RefCell::new(client),
             scryfall,
             schema: schema.to_string(),
             location,
-        })
+            version: 0,
+        };
+        let version = store.schema_version()?;
+        Ok(Self { version, ..store })
+    }
+
+    /// The Cardmarket and tix price columns (migration 3), or nulls in an
+    /// older schema. `prefix` is a table alias with its dot, or empty.
+    fn newer_prices(&self, prefix: &str) -> String {
+        if self.version >= 3 {
+            format!("{prefix}price_cardmarket::float8, {prefix}price_tix::float8")
+        } else {
+            "null::float8, null::float8".into()
+        }
     }
 
     /// Highest applied migration, or 0 for an empty schema.
@@ -258,17 +275,19 @@ impl PostgresStore {
     }
 
     fn stored_rows(&self, filter: Option<(&str, Finish)>) -> Result<Vec<StoredRow>> {
-        const SELECT: &str = "select scryfall_id::text, finish, quantity, added_at,
-                price_tcg::float8, price_cardmarket::float8, price_tix::float8, price_ck::float8,
-                price_ck_buylist::float8, price_date
-             from collection_value";
+        let select = format!(
+            "select scryfall_id::text, finish, quantity, added_at, price_tcg::float8, {},
+                    price_ck::float8, price_ck_buylist::float8, price_date
+             from collection_value",
+            self.newer_prices("")
+        );
         let mut client = self.client.borrow_mut();
         let rows = match filter {
             Some((id, finish)) => client.query(
-                &format!("{SELECT} where scryfall_id = $1::text::uuid and finish = $2"),
+                &format!("{select} where scryfall_id = $1::text::uuid and finish = $2"),
                 &[&id, &finish.as_str()],
             )?,
-            None => client.query(SELECT, &[])?,
+            None => client.query(&select, &[])?,
         };
         rows.iter().map(stored_row).collect()
     }
@@ -478,11 +497,13 @@ impl CollectionStore for PostgresStore {
 
     fn all_price_points(&self) -> Result<Vec<(String, Finish, PricePoint)>> {
         let rows = self.client.borrow_mut().query(
-            "select scryfall_id::text, finish, price_date, price_tcg::float8,
-                    price_cardmarket::float8, price_tix::float8, price_ck::float8,
-                    price_ck_buylist::float8
-             from price_history
-             order by scryfall_id, finish, price_date",
+            &format!(
+                "select scryfall_id::text, finish, price_date, price_tcg::float8, {},
+                        price_ck::float8, price_ck_buylist::float8
+                 from price_history
+                 order by scryfall_id, finish, price_date",
+                self.newer_prices("")
+            ),
             &[],
         )?;
         rows.iter()
@@ -617,7 +638,8 @@ impl CollectionStore for PostgresStore {
     }
 
     fn card_cache(&self) -> Option<&dyn CardCache> {
-        Some(self)
+        // Migration 2 added the cache.
+        (self.version >= 2).then_some(self as &dyn CardCache)
     }
 }
 
@@ -1000,6 +1022,56 @@ mod tests {
 
         let status = store.status().unwrap();
         assert_eq!(status.schema_version, latest_migration());
+
+        // A 0.x database (schema version 1) copies into SQLite without being upgraded.
+        let legacy = format!("{schema}_v1");
+        admin
+            .client
+            .borrow_mut()
+            .batch_execute(&format!(
+                "create schema {legacy}; set search_path to {legacy};
+                 create table schema_migrations (version integer primary key, name text not null,
+                   applied_at timestamptz not null default now());
+                 {}
+                 insert into schema_migrations (version, name) values (1, 'init');
+                 insert into collection (scryfall_id, finish, quantity, added_at)
+                   values ('e768c957-3a1f-42f5-853a-96942f645df5', 'foil', 2, '2026-10-01');
+                 insert into price_history (scryfall_id, finish, price_date, price_tcg, price_ck)
+                   values ('e768c957-3a1f-42f5-853a-96942f645df5', 'foil', '2026-10-01', 9.10, 11.99);
+                 set search_path to {schema};",
+                MIGRATIONS[0].2
+            ))
+            .unwrap();
+        let old = PostgresStore::open(
+            config.clone(),
+            &legacy,
+            Rc::new(Scryfall::new(crate::app::http_client().unwrap())),
+        )
+        .unwrap();
+        assert!(
+            old.card_cache().is_none(),
+            "no card cache before migration 2"
+        );
+        let mut lite = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        assert_eq!(crate::store::copy(&old, &mut lite).unwrap(), (1, 1));
+        let row = &lite.entries().unwrap()[0];
+        assert_eq!((row.finish, row.quantity), (Finish::Foil, 2));
+        let point = &lite.all_price_points().unwrap()[0].2;
+        assert_eq!(
+            (point.tcgplayer, point.cardkingdom, point.cardmarket),
+            (Some(9.10), Some(11.99), None)
+        );
+        assert_eq!(
+            old.schema_version().unwrap(),
+            1,
+            "the old database is left as it was"
+        );
+        drop(old);
+        admin
+            .client
+            .borrow_mut()
+            .batch_execute(&format!("drop schema {legacy} cascade"))
+            .unwrap();
         assert_eq!(status.cards, 6);
 
         drop(store);
