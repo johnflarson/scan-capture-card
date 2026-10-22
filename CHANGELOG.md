@@ -13,6 +13,14 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
 
 ### Added
+- Local card data from Scryfall's daily bulk file (#64): every paper printing's name, set,
+  number, rarity, colors, type, images and Scryfall's daily prices (TCGplayer USD, Cardmarket EUR,
+  MTGO tix) are copied into the database (`card_printing`, migration 2). The Collection page
+  and the CLI read card details from it instead of asking Scryfall's API every time, as Scryfall
+  asks apps that need many cards to do. The app checks for a new file every hour while it runs
+  (the first copy is ~80 MB, ~110,000 printings, ~20 s); `mtg-scan db sync-cards` does it now.
+  Cards not copied yet are still looked up and then kept. `db status` and the Settings page show
+  the copy's size and last sync.
 - SQLite storage, the default (#66): one file with the same tables and daily price history as
   PostgreSQL, no server needed. It lives in the data folder (`%LOCALAPPDATA%\mtg-scan`, or
   `MTG_SCAN_DATA_DIR`), or `[storage] path` / `--db <file>`; it is created and upgraded

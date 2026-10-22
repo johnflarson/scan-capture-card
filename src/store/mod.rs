@@ -9,9 +9,9 @@ pub mod sqlite;
 use std::collections::HashMap;
 
 use anyhow::{Result, bail};
-use chrono::{Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 
-use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
+use crate::model::{Card, CollectionEntry, Finish, PricePoint, Prices};
 use crate::scryfall::Scryfall;
 
 /// TCGplayer value of the cards owned now, at the prices of `since` and at
@@ -100,6 +100,97 @@ pub trait CollectionStore {
 
     /// Human-readable location, e.g. a file path.
     fn location(&self) -> String;
+
+    /// The local copy of Scryfall's card data (database stores only).
+    fn card_cache(&self) -> Option<&dyn CardCache> {
+        None
+    }
+}
+
+/// The local copy of Scryfall's card data, and the bookkeeping of
+/// background jobs that keep it current (see `bulk`).
+pub trait CardCache {
+    /// The cached printings among `ids`.
+    fn cached_cards(&self, ids: &[String]) -> Result<HashMap<String, Card>>;
+
+    /// Insert or replace printings. Returns how many were written.
+    fn store_cards(&self, cards: &[Card]) -> Result<usize>;
+
+    /// How many printings are cached.
+    fn cached_count(&self) -> Result<i64>;
+
+    /// When a job last finished, and what it noted.
+    fn job(&self, name: &str) -> Result<Option<Job>>;
+
+    /// Record that a job finished now.
+    fn finish_job(&self, name: &str, detail: &str) -> Result<()>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Job {
+    pub done_at: DateTime<Utc>,
+    pub detail: String,
+}
+
+/// Card details for `ids`: from the cache, then Scryfall's API for those
+/// not cached yet (which are then cached). Errors only cost details, so they
+/// are reported and skipped.
+pub(crate) fn card_details(
+    cache: Option<&dyn CardCache>,
+    scryfall: Option<&Scryfall>,
+    ids: &[String],
+) -> HashMap<String, Card> {
+    let mut cards = match cache.map(|c| c.cached_cards(ids)).transpose() {
+        Ok(cards) => cards.unwrap_or_default(),
+        Err(e) => {
+            eprintln!("  ! could not read the card cache ({e:#})");
+            HashMap::new()
+        }
+    };
+    let mut missing: Vec<String> = ids
+        .iter()
+        .filter(|id| !cards.contains_key(*id))
+        .cloned()
+        .collect();
+    missing.sort();
+    missing.dedup();
+    if let (false, Some(scryfall)) = (missing.is_empty(), scryfall) {
+        match scryfall.cards_by_id(&missing) {
+            Ok(fetched) => {
+                if let Some(cache) = cache {
+                    let new: Vec<Card> = fetched.values().cloned().collect();
+                    if let Err(e) = cache.store_cards(&new) {
+                        eprintln!("  ! could not cache card details ({e:#})");
+                    }
+                }
+                cards.extend(fetched);
+            }
+            Err(e) => eprintln!("  ! could not fetch card details from Scryfall ({e:#})"),
+        }
+    }
+    cards
+}
+
+/// `['W', 'U']` as stored: `"WU"`.
+pub(crate) fn colors_text(colors: &[String]) -> String {
+    colors.concat()
+}
+
+pub(crate) fn colors_from_text(text: &str) -> Vec<String> {
+    text.chars().map(|c| c.to_string()).collect()
+}
+
+/// Finishes as stored: `"nonfoil,foil"`.
+pub(crate) fn finishes_text(finishes: &[Finish]) -> String {
+    finishes
+        .iter()
+        .map(|f| f.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(crate) fn finishes_from_text(text: &str) -> Vec<Finish> {
+    text.split(',').filter_map(|f| f.parse().ok()).collect()
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -133,18 +224,15 @@ pub(crate) struct StoredRow {
     pub price_date: Option<NaiveDate>,
 }
 
-/// Fill in card details from Scryfall (when given), sorted by name. Falls
-/// back to placeholders when Scryfall is unreachable so the collection can
-/// still be listed.
-pub(crate) fn hydrate(scryfall: Option<&Scryfall>, rows: Vec<StoredRow>) -> Vec<CollectionEntry> {
+/// Fill in card details (see [`card_details`]), sorted by name. Rows whose
+/// card is unknown get placeholders, so the collection can still be listed.
+pub(crate) fn hydrate(
+    cache: Option<&dyn CardCache>,
+    scryfall: Option<&Scryfall>,
+    rows: Vec<StoredRow>,
+) -> Vec<CollectionEntry> {
     let ids: Vec<String> = rows.iter().map(|r| r.scryfall_id.clone()).collect();
-    let cards = match scryfall {
-        Some(scryfall) => scryfall.cards_by_id(&ids).unwrap_or_else(|e| {
-            eprintln!("  ! could not fetch card details from Scryfall ({e:#})");
-            HashMap::new()
-        }),
-        None => HashMap::new(),
-    };
+    let cards = card_details(cache, scryfall, &ids);
     let mut entries: Vec<CollectionEntry> = rows
         .into_iter()
         .map(|r| {
@@ -188,13 +276,14 @@ pub(crate) fn hydrate(scryfall: Option<&Scryfall>, rows: Vec<StoredRow>) -> Vec<
     entries
 }
 
-/// A row that was just deleted (quantity 0), described from Scryfall alone.
+/// A row that was just deleted (quantity 0), described from the card data alone.
 pub(crate) fn removed_entry(
+    cache: Option<&dyn CardCache>,
     scryfall: Option<&Scryfall>,
     scryfall_id: &str,
     finish: Finish,
 ) -> CollectionEntry {
-    let card = scryfall.and_then(|s| s.by_id(scryfall_id).ok().flatten());
+    let card = card_details(cache, scryfall, &[scryfall_id.to_string()]).remove(scryfall_id);
     CollectionEntry {
         scryfall_id: scryfall_id.to_string(),
         name: card
@@ -367,4 +456,43 @@ pub(crate) fn conformance(store: &mut dyn CollectionStore) {
         .update_prices(m11, Finish::Nonfoil, Prices::default())
         .unwrap();
     assert_eq!(store.price_history(m11, Finish::Nonfoil).unwrap().len(), 2);
+
+    // Listings take card details from the card cache when it has them.
+    if let Some(cache) = store.card_cache() {
+        let card = Card {
+            scryfall_id: m11.into(),
+            oracle_id: Some("4457ed35-7c10-48c8-9776-456485fdf070".into()),
+            name: "Lightning Bolt".into(),
+            lang: "en".into(),
+            set_code: "m11".into(),
+            set_name: "Cached Set".into(),
+            collector_number: "149".into(),
+            rarity: "common".into(),
+            colors: vec!["R".into()],
+            type_line: "Instant".into(),
+            finishes: vec![Finish::Nonfoil, Finish::Foil],
+            tcgplayer_id: Some(37301),
+            tcgplayer_etched_id: None,
+            cardmarket_id: Some(22337),
+            image_small: Some("small.jpg".into()),
+            image_normal: None,
+            scryfall_usd: Some(1.13),
+            scryfall_usd_foil: Some(9.1),
+            scryfall_usd_etched: None,
+            scryfall_eur: Some(0.95),
+            scryfall_eur_foil: None,
+            scryfall_tix: Some(0.02),
+        };
+        assert_eq!(cache.store_cards(std::slice::from_ref(&card)).unwrap(), 1);
+        assert_eq!(cache.cached_cards(&[m11.into()]).unwrap()[m11], card);
+        let row = &store.entries().unwrap()[0];
+        assert_eq!(
+            (row.set_name.as_str(), row.collector_number.as_str()),
+            ("Cached Set", "149")
+        );
+        assert!(cache.cached_count().unwrap() >= 1);
+        cache.finish_job("conformance", "x").unwrap();
+        cache.finish_job("conformance", "y").unwrap();
+        assert_eq!(cache.job("conformance").unwrap().unwrap().detail, "y");
+    }
 }

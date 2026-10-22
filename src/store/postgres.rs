@@ -8,15 +8,20 @@
 //! (schema owner) account; the app itself runs as a least-privilege role.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDate, Utc};
+use postgres::types::ToSql;
 use postgres::{Client, GenericClient, Row};
 use postgres_native_tls::MakeTlsConnector;
 
-use super::{CollectionStore, PriceMove, StoredRow, ValueChange, hydrate, removed_entry};
-use crate::model::{CollectionEntry, Finish, PricePoint, Prices};
+use super::{
+    CardCache, CollectionStore, Job, PriceMove, StoredRow, ValueChange, colors_from_text,
+    colors_text, finishes_from_text, finishes_text, hydrate, removed_entry,
+};
+use crate::model::{Card, CollectionEntry, Finish, PricePoint, Prices};
 use crate::scryfall::Scryfall;
 
 pub fn latest_migration() -> i32 {
@@ -24,11 +29,18 @@ pub fn latest_migration() -> i32 {
 }
 
 /// (version, name, sql). Append new migrations; never edit applied ones.
-const MIGRATIONS: &[(i32, &str, &str)] = &[(
-    1,
-    "init",
-    include_str!("../../migrations/postgres/0001_init.sql"),
-)];
+const MIGRATIONS: &[(i32, &str, &str)] = &[
+    (
+        1,
+        "init",
+        include_str!("../../migrations/postgres/0001_init.sql"),
+    ),
+    (
+        2,
+        "card_cache",
+        include_str!("../../migrations/postgres/0002_card_cache.sql"),
+    ),
+];
 
 pub struct PostgresStore {
     client: RefCell<Client>,
@@ -258,7 +270,11 @@ impl PostgresStore {
 
 impl CollectionStore for PostgresStore {
     fn entries(&self) -> Result<Vec<CollectionEntry>> {
-        Ok(hydrate(Some(&self.scryfall), self.stored_rows(None)?))
+        Ok(hydrate(
+            Some(self),
+            Some(&self.scryfall),
+            self.stored_rows(None)?,
+        ))
     }
 
     fn add(&mut self, entry: CollectionEntry) -> Result<CollectionEntry> {
@@ -333,10 +349,13 @@ impl CollectionStore for PostgresStore {
         };
         if remaining > 0 {
             let rows = self.stored_rows(Some((scryfall_id, finish)))?;
-            return Ok(hydrate(Some(&self.scryfall), rows).into_iter().next());
+            return Ok(hydrate(Some(self), Some(&self.scryfall), rows)
+                .into_iter()
+                .next());
         }
         // Row is gone; describe it from Scryfall alone.
         Ok(Some(removed_entry(
+            Some(self),
             Some(&self.scryfall),
             scryfall_id,
             finish,
@@ -361,7 +380,9 @@ impl CollectionStore for PostgresStore {
             return Ok(None);
         }
         let rows = self.stored_rows(Some((scryfall_id, finish)))?;
-        Ok(hydrate(Some(&self.scryfall), rows).into_iter().next())
+        Ok(hydrate(Some(self), Some(&self.scryfall), rows)
+            .into_iter()
+            .next())
     }
 
     fn relocate(
@@ -543,6 +564,186 @@ impl CollectionStore for PostgresStore {
     fn location(&self) -> String {
         self.location.clone()
     }
+
+    fn card_cache(&self) -> Option<&dyn CardCache> {
+        Some(self)
+    }
+}
+
+/// `card_printing` columns in the order [`card_from_row`] reads them.
+const CARD_COLUMNS: &str = "scryfall_id::text, oracle_id::text, name, lang, set_code, set_name,
+    collector_number, rarity, type_line, colors, finishes, tcgplayer_id, tcgplayer_etched_id,
+    cardmarket_id, image_small, image_normal, usd::float8, usd_foil::float8,
+    usd_etched::float8, eur::float8, eur_foil::float8, tix::float8";
+
+/// Rows per multi-row upsert (22 parameters each; PostgreSQL allows 65535).
+const CARD_BATCH: usize = 500;
+
+impl CardCache for PostgresStore {
+    fn cached_cards(&self, ids: &[String]) -> Result<HashMap<String, Card>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = self.client.borrow_mut().query(
+            &format!(
+                "select {CARD_COLUMNS} from card_printing
+                 where scryfall_id = any($1::text[]::uuid[])"
+            ),
+            &[&ids],
+        )?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let card = card_from_row(r);
+                (card.scryfall_id.clone(), card)
+            })
+            .collect())
+    }
+
+    fn store_cards(&self, cards: &[Card]) -> Result<usize> {
+        let mut client = self.client.borrow_mut();
+        let mut tx = client.transaction()?;
+        for chunk in cards.chunks(CARD_BATCH) {
+            let mut values = Vec::with_capacity(chunk.len());
+            let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::with_capacity(chunk.len() * 22);
+            for (i, c) in chunk.iter().enumerate() {
+                let n = i * 22;
+                let p = |k: usize| format!("${}", n + k);
+                values.push(format!(
+                    "({}::text::uuid, {}::text::uuid, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, \
+                     {}, {}, {}, {}::float8, {}::float8, {}::float8, {}::float8, {}::float8, \
+                     {}::float8, now())",
+                    p(1),
+                    p(2),
+                    p(3),
+                    p(4),
+                    p(5),
+                    p(6),
+                    p(7),
+                    p(8),
+                    p(9),
+                    p(10),
+                    p(11),
+                    p(12),
+                    p(13),
+                    p(14),
+                    p(15),
+                    p(16),
+                    p(17),
+                    p(18),
+                    p(19),
+                    p(20),
+                    p(21),
+                    p(22),
+                ));
+                params.push(Box::new(c.scryfall_id.clone()));
+                params.push(Box::new(c.oracle_id.clone()));
+                params.push(Box::new(c.name.clone()));
+                params.push(Box::new(c.lang.clone()));
+                params.push(Box::new(c.set_code.clone()));
+                params.push(Box::new(c.set_name.clone()));
+                params.push(Box::new(c.collector_number.clone()));
+                params.push(Box::new(c.rarity.clone()));
+                params.push(Box::new(c.type_line.clone()));
+                params.push(Box::new(colors_text(&c.colors)));
+                params.push(Box::new(finishes_text(&c.finishes)));
+                params.push(Box::new(c.tcgplayer_id.map(|v| v as i64)));
+                params.push(Box::new(c.tcgplayer_etched_id.map(|v| v as i64)));
+                params.push(Box::new(c.cardmarket_id.map(|v| v as i64)));
+                params.push(Box::new(c.image_small.clone()));
+                params.push(Box::new(c.image_normal.clone()));
+                params.push(Box::new(c.scryfall_usd));
+                params.push(Box::new(c.scryfall_usd_foil));
+                params.push(Box::new(c.scryfall_usd_etched));
+                params.push(Box::new(c.scryfall_eur));
+                params.push(Box::new(c.scryfall_eur_foil));
+                params.push(Box::new(c.scryfall_tix));
+            }
+            let sql = format!(
+                "insert into card_printing (scryfall_id, oracle_id, name, lang, set_code,
+                   set_name, collector_number, rarity, type_line, colors, finishes, tcgplayer_id,
+                   tcgplayer_etched_id, cardmarket_id, image_small, image_normal, usd, usd_foil,
+                   usd_etched, eur, eur_foil, tix, synced_at)
+                 values {}
+                 on conflict (scryfall_id) do update set
+                   oracle_id = excluded.oracle_id, name = excluded.name, lang = excluded.lang,
+                   set_code = excluded.set_code, set_name = excluded.set_name,
+                   collector_number = excluded.collector_number, rarity = excluded.rarity,
+                   type_line = excluded.type_line, colors = excluded.colors,
+                   finishes = excluded.finishes, tcgplayer_id = excluded.tcgplayer_id,
+                   tcgplayer_etched_id = excluded.tcgplayer_etched_id,
+                   cardmarket_id = excluded.cardmarket_id, image_small = excluded.image_small,
+                   image_normal = excluded.image_normal, usd = excluded.usd,
+                   usd_foil = excluded.usd_foil, usd_etched = excluded.usd_etched,
+                   eur = excluded.eur, eur_foil = excluded.eur_foil, tix = excluded.tix,
+                   synced_at = excluded.synced_at",
+                values.join(", ")
+            );
+            let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p.as_ref()).collect();
+            tx.execute(&sql, &refs)?;
+        }
+        tx.commit()?;
+        Ok(cards.len())
+    }
+
+    fn cached_count(&self) -> Result<i64> {
+        Ok(self
+            .client
+            .borrow_mut()
+            .query_one("select count(*) from card_printing", &[])?
+            .get(0))
+    }
+
+    fn job(&self, name: &str) -> Result<Option<Job>> {
+        Ok(self
+            .client
+            .borrow_mut()
+            .query_opt(
+                "select done_at, detail from app_job where name = $1",
+                &[&name],
+            )?
+            .map(|r| Job {
+                done_at: r.get(0),
+                detail: r.get(1),
+            }))
+    }
+
+    fn finish_job(&self, name: &str, detail: &str) -> Result<()> {
+        self.client.borrow_mut().execute(
+            "insert into app_job (name, done_at, detail) values ($1, now(), $2)
+             on conflict (name) do update set done_at = excluded.done_at, detail = excluded.detail",
+            &[&name, &detail],
+        )?;
+        Ok(())
+    }
+}
+
+fn card_from_row(r: &Row) -> Card {
+    let id = |at: usize| r.get::<_, Option<i64>>(at).map(|v| v as u64);
+    Card {
+        scryfall_id: r.get(0),
+        oracle_id: r.get(1),
+        name: r.get(2),
+        lang: r.get(3),
+        set_code: r.get(4),
+        set_name: r.get(5),
+        collector_number: r.get(6),
+        rarity: r.get(7),
+        type_line: r.get(8),
+        colors: colors_from_text(r.get(9)),
+        finishes: finishes_from_text(r.get(10)),
+        tcgplayer_id: id(11),
+        tcgplayer_etched_id: id(12),
+        cardmarket_id: id(13),
+        image_small: r.get(14),
+        image_normal: r.get(15),
+        scryfall_usd: r.get(16),
+        scryfall_usd_foil: r.get(17),
+        scryfall_usd_etched: r.get(18),
+        scryfall_eur: r.get(19),
+        scryfall_eur_foil: r.get(20),
+        scryfall_tix: r.get(21),
+    }
 }
 
 /// Upsert today's (or `date`'s) price point. Skipped when no price is known.
@@ -686,7 +887,7 @@ mod tests {
         assert!(err.to_string().contains("db migrate"));
         let (admin, applied) =
             PostgresStore::connect_admin(config.clone(), &schema, scryfall.clone()).unwrap();
-        assert_eq!(applied, vec![1]);
+        assert_eq!(applied, (1..=latest_migration()).collect::<Vec<_>>());
         // Applying again is a no-op.
         assert!(admin.migrate().unwrap().is_empty());
 
@@ -711,7 +912,7 @@ mod tests {
         assert_eq!(rows[0].name, "Lightning Bolt", "details come from Scryfall");
 
         let status = store.status().unwrap();
-        assert_eq!(status.schema_version, 1);
+        assert_eq!(status.schema_version, latest_migration());
         assert_eq!(status.cards, 6);
 
         drop(store);

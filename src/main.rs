@@ -1,4 +1,5 @@
 mod app;
+mod bulk;
 mod cache;
 mod camera;
 mod config;
@@ -235,6 +236,12 @@ enum DbCommand {
     Import {
         /// Markdown file (default: the configured collection file)
         file: Option<PathBuf>,
+    },
+    /// Copy Scryfall's latest card data (details and prices) into the database
+    SyncCards {
+        /// Copy it even if this file was copied already
+        #[arg(long)]
+        force: bool,
     },
     /// Write the database collection out as Markdown
     Export {
@@ -807,6 +814,7 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
             let store = SqliteStore::open(cfg.storage.sqlite_path(), None)?;
             let s = store.status()?;
             println!("Opened {}", store.location());
+            print_cache(&store);
             println!("  engine           SQLite {}", s.sqlite_version);
             if let Ok(meta) = std::fs::metadata(store.path()) {
                 println!(
@@ -827,6 +835,9 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
             let store = PostgresStore::open(cfg.storage.resolved_connection()?, schema, scryfall)?;
             let s = store.status()?;
             println!("Connected to {}", store.location());
+            if s.schema_version >= 2 {
+                print_cache(&store);
+            }
             println!("  server           PostgreSQL {}", s.server_version);
             println!(
                 "  logged in as     {}{}",
@@ -862,6 +873,32 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
                 store.location()
             );
         }
+        (DbCommand::SyncCards { force }, _) => {
+            let app = App::new(cfg)?;
+            let cache = app
+                .store
+                .card_cache()
+                .context("this storage backend has no card cache")?;
+            println!("Checking Scryfall's bulk data…");
+            let r = bulk::sync(&app.scryfall, cache, force)?;
+            if r.skipped {
+                println!(
+                    "Already up to date (Scryfall's file of {}); --force copies it again",
+                    r.file_date
+                );
+            } else {
+                println!(
+                    "Copied {} printings from Scryfall's file of {}{}",
+                    r.cards,
+                    r.file_date,
+                    if r.unreadable > 0 {
+                        format!(" ({} lines skipped)", r.unreadable)
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+        }
         (DbCommand::Export { file }, _) => {
             let store = App::new(cfg)?.store;
             let path = file.unwrap_or_else(|| cfg.collection.clone());
@@ -872,6 +909,27 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The card cache's size and when it was last synced.
+fn print_cache(store: &dyn store::CardCache) {
+    let synced = store
+        .job(bulk::JOB)
+        .ok()
+        .flatten()
+        .map(|j| {
+            format!(
+                ", synced {}",
+                j.done_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+            )
+        })
+        .unwrap_or_else(|| ", not synced yet (db sync-cards)".into());
+    match store.cached_count() {
+        Ok(n) => println!("  card cache       {n} printings{synced}"),
+        Err(e) => println!("  card cache       unavailable ({e:#})"),
+    }
 }
 
 fn print_counts(
