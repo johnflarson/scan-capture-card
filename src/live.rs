@@ -138,7 +138,7 @@ pub fn spawn_console_logger(engine: &Engine) -> JoinHandle<()> {
                         println!("  [{}] {}", results.len(), last.summary());
                     }
                 }
-                Ok(EngineEvent::State | EngineEvent::Card(_)) => {}
+                Ok(EngineEvent::State | EngineEvent::Card(_) | EngineEvent::Cleared) => {}
                 Err(RecvError::Lagged(_)) => {}
                 Err(RecvError::Closed) => break,
             }

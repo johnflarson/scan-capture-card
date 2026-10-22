@@ -11,6 +11,12 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 ## [Unreleased]
 
 ### Added
+- Scan without saving, and start fresh (#49). The Scan page has a **Save to collection** switch:
+  off, cards are identified and priced but not added, and the background price refresh pauses,
+  so nothing is written to the database (a "Not saving scans" chip shows in the top bar). It
+  lasts until switched back or the app restarts. **Clear** empties the session list and totals
+  and forgets the last scan (table memory, Undo); cards already saved stay in the collection.
+  Cards waiting for review are dropped, so then it asks for a second click.
 - Table mode finds cards without an LLM (#5): by their black borders, at any position and up to
   ~25° off upright or sideways, in under a second (the LLM took ~13 s). On the 10-card desk photo
   it finds all 10 with no false boxes, including cards greyed by glare and a tilted one, on a

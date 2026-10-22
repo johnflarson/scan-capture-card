@@ -180,6 +180,7 @@ main { padding: 20px 24px 40px; max-width: 1800px; margin: 0 auto; }
   background: var(--md-outline); transition: transform 0.15s, background 0.15s; }
 .switch input:checked { background: var(--md-primary); border-color: var(--md-primary); }
 .switch input:checked::after { transform: translateX(20px); background: var(--md-on-primary); }
+.switch:has(input:disabled), .switch input:disabled { opacity: 0.5; cursor: default; }
 
 /* Chips */
 .chip {

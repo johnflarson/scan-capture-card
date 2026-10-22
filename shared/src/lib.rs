@@ -49,7 +49,11 @@ pub struct StateView {
     pub auto: bool,
     pub mode: Mode,
     pub finish: Finish,
+    /// Started with `--dry-run`: nothing is ever saved.
     pub dry_run: bool,
+    /// Scans are added to the collection (the "Save to collection" switch).
+    /// Off: cards are identified and priced only, and nothing is written.
+    pub save: bool,
     /// One-line human-readable status.
     pub status: String,
     pub camera: String,
@@ -128,6 +132,8 @@ pub enum ServerEvent {
     Undone {
         seqs: Vec<u64>,
     },
+    /// The session list was cleared: start fresh.
+    Cleared,
     /// Background progress or a problem worth showing briefly.
     Info {
         message: String,
@@ -154,6 +160,13 @@ pub enum ClientCommand {
     SetMode {
         mode: Mode,
     },
+    /// Add scans to the collection, or only identify and price them.
+    SetSave {
+        save: bool,
+    },
+    /// Empty the session list and forget the last scan (table memory, undo).
+    /// Cards already saved stay in the collection.
+    Clear,
     /// Save a held card (seq from its [`CardView`]) as this printing and finish:
     /// the identified one, or another the user picked.
     Accept {
@@ -745,6 +758,16 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&CardOutcome::Held).unwrap(),
             r#""held""#
+        );
+        let s: ClientCommand = serde_json::from_str(r#"{"type":"set_save","save":false}"#).unwrap();
+        assert_eq!(s, ClientCommand::SetSave { save: false });
+        assert_eq!(
+            serde_json::to_string(&ClientCommand::Clear).unwrap(),
+            r#"{"type":"clear"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ServerEvent::Cleared).unwrap(),
+            r#"{"type":"cleared"}"#
         );
     }
 

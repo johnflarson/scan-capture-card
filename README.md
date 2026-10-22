@@ -72,7 +72,10 @@ asks). The pages:
 - **Scan**: the camera with the guide or detected-card boxes; mode, finish
   and auto-scan controls; Scan now / Retry with LLM / Rescan all / Undo; and
   each card the moment it is saved, with its image, set, price links and
-  match confidence, plus session totals. When the printing is uncertain the
+  match confidence, plus session totals. Switch **Save to collection** off to
+  only identify and price cards (nothing is written, not even the background
+  price refresh); **Clear** empties the session list to start fresh (saved
+  cards stay saved). When the printing is uncertain the
   card waits under **To review** instead: accept it, pick the right printing
   from thumbnails, or discard it (`[recognition] review_uncertain = false`
   turns this off).

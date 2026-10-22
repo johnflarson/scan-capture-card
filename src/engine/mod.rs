@@ -57,6 +57,10 @@ pub enum Command {
     SetFinish(Finish),
     SetAuto(bool),
     SetMode(Mode),
+    /// Add scans to the collection, or only identify and price them.
+    SetSave(bool),
+    /// Empty the session list and forget the last scan.
+    Clear,
     /// Save a held card as this printing and finish.
     Accept {
         seq: u64,
@@ -79,6 +83,8 @@ impl From<mtg_scan_shared::ClientCommand> for Command {
             C::SetFinish { finish } => Command::SetFinish(finish.into()),
             C::SetAuto { auto } => Command::SetAuto(auto),
             C::SetMode { mode } => Command::SetMode(mode),
+            C::SetSave { save } => Command::SetSave(save),
+            C::Clear => Command::Clear,
             C::Accept {
                 seq,
                 scryfall_id,
@@ -135,6 +141,8 @@ pub enum EngineEvent {
         seqs: Vec<u64>,
         message: String,
     },
+    /// The session list was emptied.
+    Cleared,
     Info(String),
     Error(String),
 }
@@ -144,6 +152,7 @@ struct State {
     finish: Finish,
     auto: bool,
     dry_run: bool,
+    save: bool,
     ready: bool,
     busy: bool,
     status: String,
@@ -165,6 +174,7 @@ impl State {
             mode: self.mode,
             finish: self.finish.into(),
             dry_run: self.dry_run,
+            save: self.save,
             status: self.status.clone(),
             camera: self.camera.clone(),
             recognizer: self.recognizer.clone(),
@@ -204,13 +214,19 @@ enum Job {
         finish: Finish,
         force_llm: bool,
         auto: bool,
+        save: bool,
     },
     Table {
         frame: RgbImage,
         finish: Finish,
+        save: bool,
     },
     Undo,
     Reset,
+    Clear,
+    /// Saving was switched on or off: forget the last table pass, and wake
+    /// the worker so the background price refresh pauses or resumes.
+    SaveChanged,
     Accept {
         seq: u64,
         scryfall_id: String,
@@ -239,6 +255,7 @@ impl Engine {
                 finish: opts.finish,
                 auto: opts.auto,
                 dry_run: opts.dry_run,
+                save: !opts.dry_run,
                 ready: false,
                 busy: true,
                 status: "loading…".into(),
@@ -454,6 +471,27 @@ fn capture_loop(
                 Ok(Command::Discard(seq)) => {
                     let _ = jobs.send(Job::Discard(seq));
                 }
+                Ok(Command::Clear) if can_scan => {
+                    watcher.forget_scanned();
+                    ctx.update(|s| {
+                        s.busy = true;
+                        s.boxes.clear();
+                    });
+                    let _ = jobs.send(Job::Clear);
+                }
+                // `--dry-run` never saves.
+                Ok(Command::SetSave(save)) if !ctx.lock().dry_run => {
+                    ctx.update(|s| s.save = save);
+                    ctx.emit(EngineEvent::Info(
+                        if save {
+                            "Saving scans to the collection"
+                        } else {
+                            "Not saving: scans are identified and priced only"
+                        }
+                        .into(),
+                    ));
+                    let _ = jobs.send(Job::SaveChanged);
+                }
                 Ok(Command::SetFinish(f)) => ctx.update(|s| s.finish = f),
                 Ok(Command::SetAuto(a)) => ctx.update(|s| {
                     s.auto = a;
@@ -533,7 +571,10 @@ fn capture_loop(
         }
 
         if let Some((force_llm, is_auto)) = trigger {
-            let finish = ctx.lock().finish;
+            let (finish, save) = {
+                let s = ctx.lock();
+                (s.finish, s.save)
+            };
             ctx.update(|s| {
                 s.busy = true;
                 s.status = "scanning…".into();
@@ -548,12 +589,14 @@ fn capture_loop(
                     finish,
                     force_llm,
                     auto: is_auto,
+                    save,
                 },
                 Mode::Table => {
                     ctx.emit(EngineEvent::Info("Scanning table…".into()));
                     Job::Table {
                         frame: frame.clone(),
                         finish,
+                        save,
                     }
                 }
             };
@@ -588,6 +631,7 @@ fn capture_loop(
 
 fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) -> Result<()> {
     let dry_run = opts.dry_run;
+    let saving = |ctx: &Ctx| ctx.lock().save;
     let mut pipeline = match Pipeline::new(&cfg) {
         Ok(p) => p,
         Err(e) => {
@@ -642,7 +686,8 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
     // Session cards added by the most recent scan, for Undo.
     let mut last_scan: Vec<u64> = Vec::new();
     loop {
-        let job = if repricer.is_done() {
+        // The price refresh writes price history, so it waits while not saving.
+        let job = if repricer.is_done() || !saving(&ctx) {
             match jobs.recv() {
                 Ok(job) => job,
                 Err(_) => break,
@@ -677,7 +722,8 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
                 finish,
                 force_llm,
                 auto,
-            } => match pipeline.scan_single(&image, finish, force_llm, dry_run) {
+                save,
+            } => match pipeline.scan_single(&image, finish, force_llm, !save) {
                 Ok((r, replaced)) => {
                     if replaced {
                         // The retry replaced the previous single-card add.
@@ -692,9 +738,13 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
                 }
                 Err(e) => fail(&ctx, e),
             },
-            Job::Table { frame, finish } => {
+            Job::Table {
+                frame,
+                finish,
+                save,
+            } => {
                 last_scan.clear();
-                let result = pipeline.scan_table(&frame, finish, dry_run, |partial| {
+                let result = pipeline.scan_table(&frame, finish, !save, |partial| {
                     if let Some(newest) = partial.last()
                         && let Some(seq) = record_card(&ctx, newest)
                     {
@@ -782,6 +832,21 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
                 }
                 None => ctx.emit(EngineEvent::Info("That card was already reviewed.".into())),
             },
+            Job::Clear => {
+                pipeline.clear();
+                last_scan.clear();
+                ctx.update(|s| {
+                    s.cards.clear();
+                    s.busy = false;
+                    s.boxes.clear();
+                    s.guide_color = draw::IDLE;
+                    s.status = "cleared — starting fresh".into();
+                });
+                ctx.emit(EngineEvent::Cleared);
+            }
+            // Cards on the table that were only priced get added on the
+            // next pass once saving is back on.
+            Job::SaveChanged => pipeline.reset_memory(),
             Job::Reset => {
                 pipeline.reset_memory();
                 let message = "memory cleared — every card will be added on the next pass";

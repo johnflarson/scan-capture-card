@@ -180,6 +180,7 @@ pub fn App() -> impl IntoView {
                     }
                 })
             }
+            ServerEvent::Cleared => cards.set(Vec::new()),
             ServerEvent::Info { message, error } => notify.run((message, error)),
         },
         move |ok| {
@@ -226,6 +227,12 @@ pub fn App() -> impl IntoView {
                         .get()
                         .filter(|s| s.dry_run)
                         .map(|_| view! { <span class="chip warning">"Dry run: nothing is saved"</span> })
+                }}
+                {move || {
+                    state
+                        .get()
+                        .filter(|s| !s.dry_run && !s.save)
+                        .map(|_| view! { <span class="chip warning">"Not saving scans"</span> })
                 }}
                 <span
                     class="bar-location"
@@ -286,6 +293,24 @@ fn LivePage(
     let s = move || state.get();
     let busy = move || s().map(|s| s.busy || !s.ready).unwrap_or(true);
     let mode = move || s().map(|s| s.mode).unwrap_or(Mode::Single);
+    let dry_run = move || s().is_some_and(|s| s.dry_run);
+    // Clearing drops cards still waiting for review, so that takes a second click.
+    let held = move || {
+        cards.with(|list| {
+            list.iter()
+                .filter(|c| c.outcome == CardOutcome::Held && !c.undone)
+                .count()
+        })
+    };
+    let confirm_clear = RwSignal::new(false);
+    let clear = move |_| {
+        if held() > 0 && !confirm_clear.get_untracked() {
+            confirm_clear.set(true);
+        } else {
+            confirm_clear.set(false);
+            send.run(ClientCommand::Clear);
+        }
+    };
 
     view! {
         <div class="live">
@@ -354,6 +379,26 @@ fn LivePage(
                         />
                         "Auto-scan"
                     </label>
+                    <label
+                        class="switch"
+                        title=move || {
+                            if dry_run() {
+                                "Started with --dry-run: nothing is saved"
+                            } else {
+                                "Off: cards are identified and priced, but not added to the collection"
+                            }
+                        }
+                    >
+                        <input
+                            type="checkbox"
+                            prop:checked=move || s().is_some_and(|s| s.save)
+                            disabled=dry_run
+                            on:change=move |ev| {
+                                send.run(ClientCommand::SetSave { save: event_target_checked(&ev) })
+                            }
+                        />
+                        "Save to collection"
+                    </label>
                     <div class="actions">
                         <button
                             class="btn filled"
@@ -389,6 +434,21 @@ fn LivePage(
                             on:click=move |_| send.run(ClientCommand::Undo)
                         >
                             "Undo last"
+                        </button>
+                        <button
+                            class="btn text"
+                            class:danger=move || confirm_clear.get()
+                            disabled=busy
+                            title="Empty this session's list and start fresh; saved cards stay in the collection"
+                            on:click=clear
+                        >
+                            {move || {
+                                if confirm_clear.get() {
+                                    format!("Drop {} to review?", held())
+                                } else {
+                                    "Clear".to_string()
+                                }
+                            }}
                         </button>
                     </div>
                 </div>
