@@ -3,7 +3,9 @@
 # in the /data volume. See compose.yaml and README.md ("Docker").
 
 # ---- build: the web UI (WebAssembly), then the server with the UI embedded
-FROM rust:1-bookworm AS build
+# Debian trixie, not bookworm: ONNX Runtime's prebuilt library needs the
+# libstdc++ of GCC 13 or newer, at link time and at run time.
+FROM rust:1-trixie AS build
 
 # bindgen (Video4Linux bindings) needs libclang.
 RUN apt-get update \
@@ -23,7 +25,7 @@ RUN cargo build --release --locked --no-default-features --features paddle-ocr
 RUN MTG_SCAN_MODELS_DIR=/models target/release/mtg-scan fetch-ocr-models
 
 # ---- runtime
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
