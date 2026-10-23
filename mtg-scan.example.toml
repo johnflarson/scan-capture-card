@@ -41,10 +41,15 @@ table_height = 2160
 guide_height = 0.85
 
 [recognition]
-# ocr  = Windows OCR only (offline, fast; needs the card close to the camera)
+# ocr  = OCR only (offline, fast)
 # llm  = vision LLM only
 # auto = OCR first, LLM when OCR can't pin down the card
 mode = "auto"
+# The OCR engine:
+# auto    = PaddleOCR; on Windows, Windows OCR when PaddleOCR can't load
+# paddle  = PaddleOCR (its models, ~13 MB, are downloaded on first use)
+# windows = Windows' built-in OCR (Windows only; needs the card close to the camera)
+ocr = "auto"
 # How table mode (`scan-all`) finds the cards:
 # auto      = by their black borders; the vision LLM only when that finds none
 # classical = by their black borders only (no LLM)

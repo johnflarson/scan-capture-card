@@ -32,7 +32,12 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   system's certificates instead of the OS TLS library. Folders can be set with environment
   variables, e.g. for a Docker volume: `MTG_SCAN_CONFIG` (the settings file, created by the
   Settings page if missing), `MTG_SCAN_DATA_DIR` (the SQLite database) and `MTG_SCAN_CACHE_DIR`.
-  There is no OCR engine on Linux yet: use `[recognition] mode = "llm"`.
+- PaddleOCR (#70): PP-OCRv5 through ONNX Runtime, built in and offline once its models (~13 MB)
+  are downloaded on first use (checked against their SHA-256; `MTG_SCAN_MODELS_DIR` points at
+  a folder that already has them). It is the OCR engine on every platform now
+  (`[recognition] ocr = "auto"`): on a 4K photo of 9 cards it identified 4 by OCR alone where
+  Windows OCR read none, and it is 4-5x faster. `ocr = "windows"` keeps Windows' own OCR, which
+  is also the fallback on Windows when PaddleOCR can't load. `ocr-dump --engine` compares them.
 - The web UI starts without a camera (#69): the Scan page says why there is none and the app
   looks for one every few seconds, while the collection, decks and settings work as usual.
   `scan` and `scan-all` still need a camera.

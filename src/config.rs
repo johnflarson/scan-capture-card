@@ -446,6 +446,8 @@ pub enum Detection {
 #[serde(default)]
 pub struct RecognitionConfig {
     pub mode: RecognitionMode,
+    /// The OCR engine (`auto`, `windows`, `paddle`).
+    pub ocr: crate::ocr::OcrChoice,
     pub detection: Detection,
     /// Save each captured card image into this folder (for debugging).
     pub save_scans: Option<PathBuf>,
@@ -461,6 +463,7 @@ impl Default for RecognitionConfig {
     fn default() -> Self {
         Self {
             mode: RecognitionMode::Auto,
+            ocr: crate::ocr::OcrChoice::Auto,
             detection: Detection::Auto,
             save_scans: None,
             review_uncertain: true,
@@ -823,6 +826,17 @@ mod tests {
         let cfg: Config = toml::from_str(include_str!("../mtg-scan.example.toml")).unwrap();
         assert_eq!(cfg.ui, UiConfig::default());
         assert_eq!(cfg.decks, DecksConfig::default());
+        assert_eq!(cfg.recognition.ocr, crate::ocr::OcrChoice::Auto);
+    }
+
+    #[test]
+    fn ocr_engine_is_chosen_by_name() {
+        use crate::ocr::OcrChoice;
+        let cfg: Config = toml::from_str("[recognition]\nocr = \"windows\"\n").unwrap();
+        assert_eq!(cfg.recognition.ocr, OcrChoice::Windows);
+        let cfg: Config = toml::from_str("[recognition]\nocr = \"paddle\"\n").unwrap();
+        assert_eq!(cfg.recognition.ocr, OcrChoice::Paddle);
+        assert!(toml::from_str::<Config>("[recognition]\nocr = \"tesseract\"\n").is_err());
     }
 
     #[test]

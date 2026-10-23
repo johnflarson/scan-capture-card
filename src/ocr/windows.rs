@@ -1,80 +1,42 @@
-//! Text recognition using the OCR engine built into Windows 10/11
-//! (`Windows.Media.Ocr`), so no Tesseract install is required. Other
-//! platforms have no OCR engine yet: use `[recognition] mode = "llm"`.
+//! The OCR engine built into Windows 10/11 (`Windows.Media.Ocr`): nothing to
+//! install or download.
 
-use anyhow::Result;
-#[cfg(not(windows))]
-use anyhow::bail;
-#[cfg(windows)]
-use anyhow::{Context, anyhow};
-use image::DynamicImage;
-#[cfg(windows)]
-use image::imageops::FilterType;
-#[cfg(windows)]
+use anyhow::{Context, Result, anyhow};
+use image::{DynamicImage, imageops::FilterType};
 use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
-#[cfg(windows)]
-use windows::Media::Ocr::OcrEngine;
-#[cfg(windows)]
+use windows::Media::Ocr::OcrEngine as WinOcr;
 use windows::Storage::Streams::DataWriter;
 
-/// One recognised line of text. Coordinates are normalised to 0.0..=1.0 of
-/// the source image so callers don't need to care about any upscaling.
-#[derive(Debug, Clone)]
-pub struct OcrLine {
-    pub text: String,
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
+use super::{OcrEngine, OcrLine};
+
+pub struct WindowsOcr {
+    engine: WinOcr,
 }
 
-impl OcrLine {
-    pub fn center_y(&self) -> f32 {
-        self.y + self.h / 2.0
-    }
-}
-
-#[cfg(not(windows))]
-pub struct Ocr;
-
-#[cfg(not(windows))]
-impl Ocr {
-    pub fn new() -> Result<Self> {
-        bail!(
-            "there is no OCR engine on this platform yet: set [recognition] mode = \"llm\" \
-             (with an [llm] provider) or pass --mode llm"
-        )
-    }
-
-    pub fn recognize(&self, _img: &DynamicImage) -> Result<Vec<OcrLine>> {
-        Ok(Vec::new())
-    }
-}
-
-#[cfg(windows)]
-pub struct Ocr {
-    engine: OcrEngine,
-}
-
-#[cfg(windows)]
-impl Ocr {
+impl WindowsOcr {
     pub fn new() -> Result<Self> {
         // Prefer English: card names, set codes and collector numbers are
         // printed in Latin script even on many non-English printings.
         let engine = windows::Globalization::Language::CreateLanguage(&"en-US".into())
-            .and_then(|lang| OcrEngine::TryCreateFromLanguage(&lang))
-            .or_else(|_| OcrEngine::TryCreateFromUserProfileLanguages())
+            .and_then(|lang| WinOcr::TryCreateFromLanguage(&lang))
+            .or_else(|_| WinOcr::TryCreateFromUserProfileLanguages())
             .context(
                 "Windows OCR is unavailable; install an English language pack with OCR support \
                  (Settings > Time & language > Language)",
             )?;
         Ok(Self { engine })
     }
+}
 
-    /// Recognise text in `img`, upscaling small images first since Windows
-    /// OCR struggles with text under ~20px tall (e.g. collector numbers).
-    pub fn recognize(&self, img: &DynamicImage) -> Result<Vec<OcrLine>> {
-        let max_dim = OcrEngine::MaxImageDimension()?;
+impl OcrEngine for WindowsOcr {
+    fn name(&self) -> &'static str {
+        "Windows OCR"
+    }
+
+    /// Upscales small images first, since Windows OCR struggles with text
+    /// under ~20px tall (e.g. collector numbers).
+    fn recognize(&self, img: &DynamicImage) -> Result<Vec<OcrLine>> {
+        let max_dim = WinOcr::MaxImageDimension()?;
         let longest = img.width().max(img.height());
         let target = std::env::var("MTG_OCR_TARGET")
             .ok()

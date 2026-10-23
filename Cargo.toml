@@ -13,10 +13,13 @@ default-members = [".", "shared"]
 resolver = "3"
 
 [features]
-default = ["desktop"]
+default = ["desktop", "paddle-ocr"]
 # The desktop camera window (`mtg-scan scan` / `scan-all`). Off in the Docker
 # image and on headless Linux, where `mtg-scan ui` is the front end.
 desktop = ["dep:minifb"]
+# PaddleOCR through ONNX Runtime (downloaded by `ort` while building): the OCR
+# engine on Linux and in Docker, and an option on Windows.
+paddle-ocr = ["dep:oar-ocr", "dep:sha2"]
 
 [dependencies]
 anyhow = "1"
@@ -50,6 +53,8 @@ flate2 = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "0.7"
 tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
+oar-ocr = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }

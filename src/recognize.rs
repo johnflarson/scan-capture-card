@@ -16,7 +16,7 @@ use regex::Regex;
 use crate::config::RecognitionMode;
 use crate::llm::VisionLlm;
 use crate::model::Card;
-use crate::ocr::{Ocr, OcrLine};
+use crate::ocr::{self, OcrChoice, OcrEngine, OcrLine};
 use crate::printing;
 use crate::scryfall::Scryfall;
 
@@ -107,7 +107,7 @@ pub struct Identification {
 }
 
 pub struct Recognizer {
-    ocr: Option<Ocr>,
+    ocr: Option<Box<dyn OcrEngine>>,
     llm: Option<VisionLlm>,
     mode: RecognitionMode,
     set_codes: HashSet<String>,
@@ -115,7 +115,12 @@ pub struct Recognizer {
 }
 
 impl Recognizer {
-    pub fn new(mode: RecognitionMode, llm: Option<VisionLlm>, scryfall: &Scryfall) -> Result<Self> {
+    pub fn new(
+        mode: RecognitionMode,
+        ocr_choice: OcrChoice,
+        llm: Option<VisionLlm>,
+        scryfall: &Scryfall,
+    ) -> Result<Self> {
         if mode == RecognitionMode::Llm && llm.is_none() {
             bail!(
                 "recognition mode 'llm' needs an LLM provider (set [llm] provider or --llm-provider)"
@@ -124,7 +129,7 @@ impl Recognizer {
         let ocr = if mode == RecognitionMode::Llm {
             None
         } else {
-            Some(Ocr::new()?)
+            Some(ocr::open(ocr_choice)?)
         };
         let set_codes = scryfall.set_codes().unwrap_or_else(|e| {
             eprintln!("  ! could not load Scryfall set list ({e:#}); set-code detection limited");
@@ -160,7 +165,10 @@ impl Recognizer {
             .as_ref()
             .map(|l| l.describe())
             .unwrap_or_else(|| "none".into());
-        format!("mode={:?}, llm={llm}", self.mode)
+        match &self.ocr {
+            Some(ocr) => format!("mode={:?}, ocr={}, llm={llm}", self.mode, ocr.name()),
+            None => format!("mode={:?}, llm={llm}", self.mode),
+        }
     }
 
     /// Identify the card in `img`. `force_llm` skips OCR (used when the user

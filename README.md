@@ -21,7 +21,7 @@ camera frame ─┬─ single card in guide ────────────
               └─ whole table ─ black borders → each card ──┤
                                (vision LLM if none found)  │
                                                            ▼
-              Windows OCR (fast, offline) ─→ vision LLM (fallback)
+               PaddleOCR (fast, offline) ─→ vision LLM (fallback)
                                                            ▼
      name / set / number ─→ Scryfall (corrects misreads, picks printing)
                                                            ▼
@@ -30,8 +30,9 @@ camera frame ─┬─ single card in guide ────────────
 
 * **Hands-free.** The camera watches continuously. When something new holds
   still, it scans it. Cards left in place are never added twice.
-* **Recognition.** Windows' built-in OCR runs first, so you don't need to
-  install Tesseract. When OCR can't read the card, a vision LLM takes over:
+* **Recognition.** OCR runs first: PaddleOCR (PP-OCRv5, built in; its models,
+  ~13 MB, download on first use), or Windows' own OCR on Windows
+  (`[recognition] ocr`). When OCR can't read the card, a vision LLM takes over:
   **Ollama / LM Studio** running locally, or **OpenRouter** in the cloud.
 * **Picking the right printing.** Misread names are corrected against
   Scryfall's full name list. If a card has several printings, the photo is
@@ -63,14 +64,13 @@ copy .env.example .env                     # secrets and settings: DB password, 
 ### Linux (headless)
 
 Linux builds have no desktop window: `mtg-scan ui` is the front end, and it starts
-without a camera too. There is no OCR engine on Linux yet, so set
-`[recognition] mode = "llm"` with an `[llm]` provider.
+without a camera too. OCR is PaddleOCR.
 
 ```sh
 sudo apt install build-essential libclang-dev   # Debian/Ubuntu
 rustup target add wasm32-unknown-unknown && cargo install trunk --locked
 (cd ui && trunk build --release)
-cargo build --release --no-default-features
+cargo build --release --no-default-features --features paddle-ocr
 ./target/release/mtg-scan ui --no-open
 ```
 
