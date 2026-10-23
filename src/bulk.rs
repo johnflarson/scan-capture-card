@@ -58,6 +58,7 @@ pub fn sync(scryfall: &Scryfall, cache: &dyn CardCache, force: bool) -> Result<R
         .jsonl_download_uri
         .context("Scryfall's bulk data has no JSON Lines file")?;
     // The file is ~80 MB, so no short overall timeout here.
+    crate::tls::init();
     let download = Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(30))

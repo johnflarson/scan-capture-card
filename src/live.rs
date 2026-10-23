@@ -1,23 +1,30 @@
 //! Desktop front end: a minimal camera window driven by keyboard shortcuts,
-//! plus console output. All scanning happens in the [`Engine`]; see
-//! `web` for the browser front end.
+//! plus console output (the window needs the `desktop` feature). All
+//! scanning happens in the [`Engine`]; see `web` for the browser front end.
 
 use std::path::Path;
 use std::thread::{self, JoinHandle};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, bail};
+#[cfg(feature = "desktop")]
 use minifb::{Key, KeyRepeat, ScaleMode, Window, WindowOptions};
 use mtg_scan_shared::Mode;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::camera::{self, Webcam};
 use crate::config::Config;
-use crate::engine::{self, Command, Engine, EngineEvent, EngineOptions, draw};
+use crate::engine::{self, Engine, EngineEvent, EngineOptions};
 use crate::model::{Finish, format_usd};
 use crate::pipeline::{CardResult, Outcome, Pipeline};
 use crate::store::totals;
 
 pub fn run(cfg: &Config, opts: EngineOptions) -> Result<()> {
+    if !cfg!(feature = "desktop") {
+        bail!(
+            "this build has no desktop window (it was built without the `desktop` feature): \
+             use `mtg-scan ui`, the web UI, instead"
+        );
+    }
     if opts.dry_run {
         println!("Dry run: cards are identified and priced but not saved.");
     }
@@ -40,7 +47,16 @@ pub fn run(cfg: &Config, opts: EngineOptions) -> Result<()> {
     result.and(stopped)
 }
 
+#[cfg(not(feature = "desktop"))]
+fn window_loop(_engine: &Engine) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
 fn window_loop(engine: &Engine) -> Result<()> {
+    use crate::engine::{Command, draw};
+    use anyhow::anyhow;
+
     let mut window = Window::new(
         "mtg-scan",
         1280,

@@ -2,7 +2,7 @@
 name = "mtg-scan"
 version = "1.0.0-alpha.0"
 edition = "2024"
-description = "Scan Magic: The Gathering cards with a webcam, track the collection in Markdown, and price cards via TCGplayer and Card Kingdom"
+description = "The Shuffling Tome: scan Magic: The Gathering cards with an overhead camera, keep the collection in SQLite or PostgreSQL, and track its prices"
 license = "AGPL-3.0-or-later"
 
 [workspace]
@@ -11,6 +11,12 @@ members = [".", "shared", "ui"]
 # with `trunk build` (see ui/README.md) and checked separately in CI.
 default-members = [".", "shared"]
 resolver = "3"
+
+[features]
+default = ["desktop"]
+# The desktop camera window (`mtg-scan scan` / `scan-all`). Off in the Docker
+# image and on headless Linux, where `mtg-scan ui` is the front end.
+desktop = ["dep:minifb"]
 
 [dependencies]
 anyhow = "1"
@@ -23,22 +29,30 @@ futures-util = "0.3"
 getrandom = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 mime_guess = "2"
-minifb = "0.29"
+minifb = { version = "0.29", optional = true }
 mtg-scan-shared = { version = "1.0.0-alpha.0", path = "shared" }
-native-tls = "0.2.18"
-nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }
 postgres = { version = "0.19", features = ["with-chrono-0_4"] }
-postgres-native-tls = "0.5"
 postgres-protocol = "0.6"
 regex = "1"
 rust-embed = "8"
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "native-tls", "gzip", "query", "charset", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls-no-provider", "gzip", "query", "charset", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strsim = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 toml = "1.1"
+toml_edit = "0.25.17"
+rusqlite = { version = "0.40", features = ["bundled"] }
+flate2 = "1"
+# TLS for HTTPS and PostgreSQL: rustls with the ring provider and the
+# operating system's certificate store (no OpenSSL on Linux).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
+
+[target.'cfg(windows)'.dependencies]
+nokhwa = { version = "0.10.11", default-features = false, features = ["input-msmf"] }
 windows = { version = "0.62", features = [
     "Foundation",
     "Foundation_Collections",
@@ -47,9 +61,12 @@ windows = { version = "0.62", features = [
     "Media_Ocr",
     "Storage_Streams",
 ] }
-toml_edit = "0.25.17"
-rusqlite = { version = "0.40", features = ["bundled"] }
-flate2 = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nokhwa = { version = "0.10.11", default-features = false, features = ["input-v4l"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nokhwa = { version = "0.10.11", default-features = false, features = ["input-avfoundation"] }
 
 [dev-dependencies]
 tempfile = "3"

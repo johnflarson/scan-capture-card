@@ -15,7 +15,6 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use postgres::types::ToSql;
 use postgres::{Client, GenericClient, Row};
-use postgres_native_tls::MakeTlsConnector;
 
 use super::{
     CardCache, CollectionStore, Job, PriceMove, StoredRow, ValueChange, colors_from_text,
@@ -124,8 +123,7 @@ impl PostgresStore {
     pub fn open(config: postgres::Config, schema: &str, scryfall: Rc<Scryfall>) -> Result<Self> {
         validate_identifier(schema)?;
         let location = describe(&config, schema);
-        let tls =
-            MakeTlsConnector::new(native_tls::TlsConnector::new().context("TLS setup failed")?);
+        let tls = crate::tls::postgres()?;
         let mut client = config
             .connect(tls)
             .with_context(|| format!("failed to connect to {location}"))?;

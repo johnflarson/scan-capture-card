@@ -121,6 +121,7 @@ mod tests {
 
     #[test]
     fn card_kingdom_is_off_by_default() {
+        crate::tls::init();
         let service = PriceService::new(Client::new(), &PricesConfig::default());
         assert!(service.cardkingdom.is_none());
         let p = service.price(&card(), Finish::Nonfoil);

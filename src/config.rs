@@ -1,6 +1,8 @@
-//! Settings loaded from `mtg-scan.toml` (current directory first, then
-//! `%APPDATA%\mtg-scan\config.toml`). Every field has a default, so the file
-//! is optional. See `mtg-scan.example.toml`.
+//! Settings loaded from the file named by `MTG_SCAN_CONFIG`, else
+//! `mtg-scan.toml` in the current directory, then `config.toml` in the user's
+//! config folder (`%APPDATA%\mtg-scan` on Windows, `~/.config/mtg-scan` on
+//! Linux). Every field has a default, so the file is optional. See
+//! `mtg-scan.example.toml`.
 
 use std::path::{Path, PathBuf};
 
@@ -200,13 +202,18 @@ impl Default for StorageConfig {
 /// when set (e.g. a Docker volume), else `%LOCALAPPDATA%\mtg-scan` on
 /// Windows (`~/.local/share/mtg-scan` on Linux).
 pub fn data_dir() -> PathBuf {
-    std::env::var("MTG_SCAN_DATA_DIR")
+    env_path("MTG_SCAN_DATA_DIR")
+        .or_else(|| dirs::data_local_dir().map(|d| d.join("mtg-scan")))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// A path from an environment variable, if it is set and not blank.
+pub fn env_path(key: &str) -> Option<PathBuf> {
+    std::env::var(key)
         .ok()
         .map(|d| d.trim().to_string())
         .filter(|d| !d.is_empty())
         .map(PathBuf::from)
-        .or_else(|| dirs::data_local_dir().map(|d| d.join("mtg-scan")))
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 impl StorageConfig {
@@ -558,8 +565,14 @@ impl LlmConfig {
 
 impl Config {
     pub fn load(explicit: Option<&Path>) -> Result<Self> {
-        let candidates: Vec<PathBuf> = match explicit {
-            Some(p) => vec![p.to_path_buf()],
+        Self::load_from(explicit, env_path("MTG_SCAN_CONFIG"))
+    }
+
+    /// [`Self::load`] with the value of `MTG_SCAN_CONFIG` passed in.
+    fn load_from(explicit: Option<&Path>, from_env: Option<PathBuf>) -> Result<Self> {
+        let named = explicit.map(Path::to_path_buf).or(from_env);
+        let candidates: Vec<PathBuf> = match &named {
+            Some(p) => vec![p.clone()],
             None => [
                 Some(PathBuf::from("mtg-scan.toml")),
                 dirs::config_dir().map(|d| d.join("mtg-scan").join("config.toml")),
@@ -581,7 +594,12 @@ impl Config {
         if let Some(p) = explicit {
             anyhow::bail!("config file {} not found", p.display());
         }
-        Ok(Self::default())
+        // `MTG_SCAN_CONFIG` may name a file that doesn't exist yet (e.g. on a
+        // new Docker volume): the Settings page creates it.
+        Ok(Self {
+            file: named,
+            ..Self::default()
+        })
     }
 }
 
@@ -835,5 +853,22 @@ mod tests {
             .connection_from(|_| None)
             .unwrap_err();
         assert!(err.to_string().contains(".env"));
+    }
+
+    #[test]
+    fn mtg_scan_config_names_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mtg-scan.toml");
+        // Not there yet (a new Docker volume): defaults, saved to that file.
+        let cfg = Config::load_from(None, Some(path.clone())).unwrap();
+        assert_eq!(cfg.settings_file(), path);
+        assert_eq!(cfg.prices.currency, Currency::Usd);
+
+        std::fs::write(&path, "[prices]\ncurrency = \"eur\"\n").unwrap();
+        let cfg = Config::load_from(None, Some(path.clone())).unwrap();
+        assert_eq!(cfg.prices.currency, Currency::Eur);
+        // --config wins, and must exist.
+        let missing = dir.path().join("other.toml");
+        assert!(Config::load_from(Some(&missing), Some(path)).is_err());
     }
 }

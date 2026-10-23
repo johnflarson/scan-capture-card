@@ -57,6 +57,10 @@ pub struct StateView {
     /// One-line human-readable status.
     pub status: String,
     pub camera: String,
+    /// Why no camera is open. The server keeps looking for one; everything
+    /// but scanning works meanwhile.
+    #[serde(default)]
+    pub camera_error: Option<String>,
     pub recognizer: String,
     /// Where cards are saved, e.g. the database location.
     pub collection: String,

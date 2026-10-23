@@ -60,6 +60,20 @@ copy mtg-scan.example.toml mtg-scan.toml   # settings; edit as needed
 copy .env.example .env                     # secrets and settings: DB password, API keys, Moxfield user
 ```
 
+### Linux (headless)
+
+Linux builds have no desktop window: `mtg-scan ui` is the front end, and it starts
+without a camera too. There is no OCR engine on Linux yet, so set
+`[recognition] mode = "llm"` with an `[llm]` provider.
+
+```sh
+sudo apt install build-essential libclang-dev   # Debian/Ubuntu
+rustup target add wasm32-unknown-unknown && cargo install trunk --locked
+(cd ui && trunk build --release)
+cargo build --release --no-default-features
+./target/release/mtg-scan ui --no-open
+```
+
 ## Usage
 
 ### Web UI
@@ -207,7 +221,15 @@ See [`mtg-scan.example.toml`](mtg-scan.example.toml). CLI flags `--mode`,
 | `openai` | `OPENAI_API_KEY=...` in `.env`, or any compatible `base_url` |
 
 Caches (Card Kingdom price list, Scryfall names/sets, card images) live in
-`%LOCALAPPDATA%\mtg-scan`.
+`%LOCALAPPDATA%\mtg-scan` (`~/.cache/mtg-scan` on Linux).
+
+Folders can also be set with environment variables (handy for a Docker volume):
+
+| Variable | Default |
+|---|---|
+| `MTG_SCAN_CONFIG` | the settings file: `./mtg-scan.toml`, then `config.toml` in `%APPDATA%\mtg-scan` (`~/.config/mtg-scan`). The Settings page creates it if it doesn't exist. |
+| `MTG_SCAN_DATA_DIR` | the SQLite database's folder: `%LOCALAPPDATA%\mtg-scan` (`~/.local/share/mtg-scan`) |
+| `MTG_SCAN_CACHE_DIR` | the caches: `%LOCALAPPDATA%\mtg-scan` (`~/.cache/mtg-scan`) |
 
 ## Storage
 
