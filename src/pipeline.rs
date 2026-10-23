@@ -186,7 +186,12 @@ impl Pipeline {
     pub fn new(cfg: &Config) -> Result<Self> {
         let app = App::new(cfg)?;
         let llm = VisionLlm::from_config(&cfg.llm)?;
-        let recognizer = Recognizer::new(cfg.recognition.mode, llm, &app.scryfall)?;
+        let recognizer = Recognizer::new(
+            cfg.recognition.mode,
+            cfg.recognition.ocr,
+            llm,
+            &app.scryfall,
+        )?;
         Ok(Self {
             app,
             recognizer,

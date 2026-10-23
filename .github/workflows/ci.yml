@@ -41,8 +41,8 @@ jobs:
 
   linux:
     name: Linux build and unit tests
-    # Headless build, as in the Docker image: no desktop window. Windows OCR
-    # isn't there; the camera uses Video4Linux.
+    # Headless build, as in the Docker image: no desktop window, PaddleOCR
+    # for OCR, Video4Linux for the camera.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -55,9 +55,9 @@ jobs:
       - name: System libraries
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libclang-dev
       - name: Lint (warnings are errors)
-        run: cargo clippy --all-targets --locked --no-default-features -- -D warnings
+        run: cargo clippy --all-targets --locked --no-default-features --features paddle-ocr -- -D warnings
       - name: Unit tests
-        run: cargo test --locked --no-default-features
+        run: cargo test --locked --no-default-features --features paddle-ocr
 
   web-ui:
     name: Web UI (WebAssembly)

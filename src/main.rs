@@ -204,7 +204,12 @@ enum Command {
     Cameras,
     /// Print raw OCR lines for an image (debugging recognition)
     #[command(hide = true)]
-    OcrDump { image: PathBuf },
+    OcrDump {
+        image: PathBuf,
+        /// OCR engine (default: [recognition] ocr)
+        #[arg(long, value_enum)]
+        engine: Option<ocr::OcrChoice>,
+    },
     /// Find cards in a table photo without the LLM (debugging detection)
     #[command(hide = true)]
     DetectDump {
@@ -498,10 +503,14 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
-        Command::OcrDump { image } => {
+        Command::OcrDump { image, engine } => {
             let img = image::open(&image)
                 .with_context(|| format!("failed to open {}", image.display()))?;
-            for l in ocr::Ocr::new()?.recognize(&img)? {
+            let ocr = ocr::open(engine.unwrap_or(cfg.recognition.ocr))?;
+            let started = std::time::Instant::now();
+            let lines = ocr.recognize(&img)?;
+            println!("{}: {} ms", ocr.name(), started.elapsed().as_millis());
+            for l in lines {
                 println!(
                     "[x {:.3} y {:.3} w {:.3} h {:.4}] {}",
                     l.x, l.y, l.w, l.h, l.text
@@ -569,7 +578,12 @@ fn identify(cfg: &Config, images: &[PathBuf], add: bool, finish: Finish) -> Resu
     }
     let mut app = App::new(cfg)?;
     let llm = VisionLlm::from_config(&cfg.llm)?;
-    let recognizer = Recognizer::new(cfg.recognition.mode, llm, &app.scryfall)?;
+    let recognizer = Recognizer::new(
+        cfg.recognition.mode,
+        cfg.recognition.ocr,
+        llm,
+        &app.scryfall,
+    )?;
     for path in images {
         let img =
             image::open(path).with_context(|| format!("failed to open {}", path.display()))?;

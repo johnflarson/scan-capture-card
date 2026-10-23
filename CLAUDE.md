@@ -33,7 +33,7 @@ cargo test                       # unit tests (no network, no camera)
 cargo clippy --all-targets -- -D warnings   # same as CI; must be clean
 cargo fmt
 $env:MTG_SCAN_DEBUG=1            # print raw OCR/LLM reads during recognition
-mtg-scan ocr-dump <image>        # hidden: raw Windows OCR lines with positions
+mtg-scan ocr-dump <image> [--engine paddle|windows]   # hidden: raw OCR lines with positions and time
 mtg-scan scan-all --image <photo> --dry-run   # test the table pipeline offline from the camera
 mtg-scan ui --dry-run --no-open    # web UI on :8787 without saving scans
 
@@ -48,10 +48,12 @@ $env:MTG_SCAN_TEST_DATABASE_URL="postgres://mtg:mtgtest@localhost:55432/mtg"; ca
 
 Toolchain: Rust stable (edition 2024). On Windows: the MSVC target and VS Build
 Tools (C++ workload). On Linux: `libclang-dev` (bindgen for the Video4Linux
-bindings), and `cargo build --no-default-features` (headless: no `desktop`
-feature, so no minifb window; `mtg-scan ui` is the front end). Platform code is
+bindings), and `cargo build --no-default-features --features paddle-ocr`
+(headless: no `desktop` feature, so no minifb window; `mtg-scan ui` is the front
+end). The `paddle-ocr` feature builds ONNX Runtime in (`ort` downloads it while
+building). Platform code is
 behind `cfg`: the camera backend (Media Foundation / Video4Linux / AVFoundation)
-in `camera.rs`, Windows OCR in `ocr.rs`, the `windows` crate. TLS is rustls with
+in `camera.rs`, Windows OCR in `ocr/windows.rs`, the `windows` crate. TLS is rustls with
 the ring provider and the OS certificate store (`tls.rs`), so no OpenSSL.
 
 ## Architecture (`src/`)
@@ -70,7 +72,7 @@ the ring provider and the OS certificate store (`tls.rs`), so no OpenSSL.
 | `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo; with `hold_uncertain` (web UI, `[recognition] review_uncertain`) uncertain matches become `Outcome::Held`, which the engine saves on `Command::Accept` or drops on `Discard` |
 | `recognize.rs` | `Recognizer` (OCR, then LLM, then visual refine), `resolve()` hints to a Scryfall printing, `NameIndex`, `MatchQuality` |
 | `detect.rs` | Table-mode card detection without an LLM: straight edges (LSD-style region growing, collinear pieces joined), facing pairs → 63:88 rectangles, side check (dark border inside, lighter table outside, edge on the side; on a dark mat a second pass finds the light frame inside the border), then size consensus. `mtg-scan detect-dump <photo> --out x.png` draws the boxes and edges |
-| `ocr.rs` | Windows OCR wrapper; returns lines with normalised boxes (no engine on other platforms yet) |
+| `ocr/` | `OcrEngine` trait (lines with normalised boxes), `open(OcrChoice)` (`[recognition] ocr`); `paddle.rs` PaddleOCR via `oar-ocr` (PP-OCRv5 mobile det + English rec, downloaded on first use to `MTG_SCAN_MODELS_DIR` or `<cache>/models`, SHA-256 checked); `windows.rs` Windows OCR |
 | `tls.rs` | rustls setup: `init()` installs the ring provider (reqwest is built without one), `postgres()` is the PostgreSQL connector |
 | `llm.rs` | Vision LLM: `read_card`, `detect_cards` (bbox_2d, 0-1000). OpenAI wire format, or Ollama native `/api/chat` |
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
@@ -171,6 +173,10 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
   card's real printings, and a mismatching set + number is only trusted from OCR.
 - **Windows OCR returns nothing** for cards ~300 px wide in a 4K desk shot (too soft). It works
   when a card fills much of the frame (single-card `scan`) and on some `scan-all` crops.
+  **PaddleOCR reads them**: on `detect1.jpg` (9 cards, 4K) it identified 4 by OCR alone where
+  Windows OCR got 0, and it is 4-5x faster (~0.2-0.6 s per crop on CPU). Hence `ocr = "auto"`
+  is PaddleOCR everywhere. PP-OCRv6 tiny was worse on camera crops; the Latin v5 model read
+  names as well as the English one but the set line ("DMU · EN") worse.
 - **Ollama + Qwen3-VL**: the `qwen3-vl:8b` tag is a *thinking* model. `reasoning_effort` is
   ignored and output can be empty or loop. Use `qwen3-vl:8b-instruct` with the native API and
   `think: false` (about 3 s per card, about 13 s to detect 10 cards on an RTX 3080 Ti).
