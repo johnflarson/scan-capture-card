@@ -1,7 +1,6 @@
 //! Desktop front end: a minimal camera window driven by keyboard shortcuts,
-//! plus console output (the window needs the `desktop` feature).
-//! All scanning happens in the [`Engine`]; see
-//! `web` for the browser front end.
+//! plus console output (the window needs the `desktop` feature). All
+//! scanning happens in the [`Engine`]; see `web` for the browser front end.
 
 use std::path::Path;
 use std::thread::{self, JoinHandle};
@@ -22,7 +21,7 @@ use crate::store::totals;
 pub fn run(cfg: &Config, opts: EngineOptions) -> Result<()> {
     if !cfg!(feature = "desktop") {
         bail!(
-            "this build has no desktop window (it was built without the `desktop` feature):              use `mtg-scan ui`, the web UI, instead"
+            "this build has no desktop window (it was built without the `desktop` feature): \n             use `mtg-scan ui`, the web UI, instead"
         );
     }
     if opts.dry_run {
