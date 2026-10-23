@@ -21,7 +21,8 @@ use crate::store::totals;
 pub fn run(cfg: &Config, opts: EngineOptions) -> Result<()> {
     if !cfg!(feature = "desktop") {
         bail!(
-            "this build has no desktop window (it was built without the `desktop` feature): \n             use `mtg-scan ui`, the web UI, instead"
+            "this build has no desktop window (it was built without the `desktop` feature): \
+             use `mtg-scan ui`, the web UI, instead"
         );
     }
     if opts.dry_run {

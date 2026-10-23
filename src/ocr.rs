@@ -41,7 +41,8 @@ pub struct Ocr;
 impl Ocr {
     pub fn new() -> Result<Self> {
         bail!(
-            "there is no OCR engine on this platform yet: set [recognition] mode = \"llm\" \n             (with an [llm] provider) or pass --mode llm"
+            "there is no OCR engine on this platform yet: set [recognition] mode = \"llm\" \
+             (with an [llm] provider) or pass --mode llm"
         )
     }
 
