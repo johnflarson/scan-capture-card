@@ -1,0 +1,77 @@
+# The Shuffling Tome with Docker Compose.
+#
+#   docker compose up -d                        # the app, SQLite in the data volume
+#   docker compose --profile postgres up -d     # ... with a PostgreSQL server
+#   docker compose --profile ollama up -d       # ... with a local vision LLM (Ollama)
+#
+# Then open http://localhost:8787. Settings and secrets go in a `.env` file
+# next to this one (see README.md, "Docker"); compose passes it to the app.
+
+services:
+  mtg-scan:
+    # The published image, or `docker compose build` from this folder.
+    image: ghcr.io/johnflarson/scan-capture-card:${MTG_SCAN_IMAGE_TAG:-latest}
+    build: .
+    ports:
+      # Only this computer by default. To use it from other computers, set
+      # MTG_SCAN_PUBLISH=0.0.0.0 and MTG_SCAN_UI_TOKEN (they then sign in).
+      - "${MTG_SCAN_PUBLISH:-127.0.0.1}:8787:8787"
+    volumes:
+      - data:/data
+    env_file:
+      - path: .env
+        required: false
+    # A camera on this Linux machine (Docker Desktop on Windows and macOS
+    # can't pass cameras through):
+    # devices:
+    #   - /dev/video0:/dev/video0
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      ollama:
+        condition: service_started
+        required: false
+    restart: unless-stopped
+
+  # With MTG_SCAN_STORAGE=postgres, MTG_SCAN_DB_HOST=postgres,
+  # MTG_SCAN_DB_USER / _PASSWORD / _NAME in .env. Create the tables once:
+  #   docker compose --profile postgres run --rm mtg-scan db migrate
+  postgres:
+    image: postgres:18
+    profiles: [postgres]
+    environment:
+      POSTGRES_USER: ${MTG_SCAN_DB_USER:-mtg}
+      POSTGRES_PASSWORD: ${MTG_SCAN_DB_PASSWORD:-}
+      POSTGRES_DB: ${MTG_SCAN_DB_NAME:-mtg}
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # With MTG_SCAN_LLM_PROVIDER=ollama and MTG_SCAN_LLM_BASE_URL=http://ollama:11434
+  # in .env. Download the model once:
+  #   docker compose --profile ollama exec ollama ollama pull qwen3-vl:8b-instruct
+  ollama:
+    image: ollama/ollama
+    profiles: [ollama]
+    volumes:
+      - ollama:/root/.ollama
+    # An NVIDIA GPU (needs the NVIDIA Container Toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  data:
+  postgres:
+  ollama:

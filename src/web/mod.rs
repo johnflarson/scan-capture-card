@@ -7,6 +7,7 @@
 //! | `GET /api/session` | scanner state + this session's cards |
 //! | `GET /api/events` | Server-Sent Events: state changes, new cards, messages |
 //! | `GET /api/stream.mjpg` | live camera preview (MJPEG) |
+//! | `GET /api/health` | "ok" while the scanner runs, else 503 (`mtg-scan health`, container health checks) |
 //! | `POST /api/command` | `ClientCommand` JSON: scan now, undo, set mode, … |
 //! | `GET /api/collection` | the whole collection with prices and totals |
 //! | `GET /api/printing?q=` | a printing from a Scryfall link or ID (edit dialog) |
@@ -152,6 +153,7 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/session", get(session))
         .route("/api/events", get(events))
         .route("/api/stream.mjpg", get(stream))
+        .route("/api/health", get(health))
         .route("/api/command", post(command))
         .route("/api/collection", get(collection))
         .route("/api/collection/edit", post(edit))
@@ -200,6 +202,14 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
 /// Resolves once shutdown starts (for ending long-lived streams).
 async fn on_shutdown(mut rx: watch::Receiver<bool>) {
     let _ = rx.wait_for(|stop| *stop).await;
+}
+
+async fn health(State(st): State<Arc<AppState>>) -> Response {
+    if st.engine.is_running() {
+        format!("ok: mtg-scan {}", env!("CARGO_PKG_VERSION")).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "the scanner stopped").into_response()
+    }
 }
 
 async fn session(State(st): State<Arc<AppState>>) -> Json<SessionView> {

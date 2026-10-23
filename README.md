@@ -74,6 +74,46 @@ cargo build --release --no-default-features --features paddle-ocr
 ./target/release/mtg-scan ui --no-open
 ```
 
+### Docker
+
+The image runs the web UI on port 8787 and keeps everything (the SQLite
+database, settings, caches) in the `/data` volume. PaddleOCR and its models are
+built in. From a checkout of this repository (for `compose.yaml`):
+
+```sh
+docker compose up -d                      # http://localhost:8787
+docker compose --profile postgres up -d   # with a PostgreSQL server
+docker compose --profile ollama up -d     # with a local vision LLM (Ollama)
+```
+
+Settings and secrets go in a `.env` file next to `compose.yaml` (see
+[`.env.example`](.env.example)). For example, with the `postgres` profile:
+
+```sh
+MTG_SCAN_STORAGE=postgres
+MTG_SCAN_DB_HOST=postgres
+MTG_SCAN_DB_USER=mtg
+MTG_SCAN_DB_PASSWORD=choose-a-password
+MTG_SCAN_DB_NAME=mtg
+```
+
+then create the tables once with
+`docker compose --profile postgres run --rm mtg-scan db migrate`. With the
+`ollama` profile, set `MTG_SCAN_LLM_PROVIDER=ollama` and
+`MTG_SCAN_LLM_BASE_URL=http://ollama:11434`, and download the model with
+`docker compose --profile ollama exec ollama ollama pull qwen3-vl:8b-instruct`.
+
+* **Other computers.** The UI is published on this computer only. Set
+  `MTG_SCAN_PUBLISH=0.0.0.0` and `MTG_SCAN_UI_TOKEN` (anyone who can reach the port
+  can use the UI otherwise) to open it to your network.
+* **Camera.** On Linux, pass the camera in: uncomment `devices` in `compose.yaml`
+  (or `docker run --device /dev/video0`). Docker Desktop on Windows and macOS
+  can't pass cameras to containers; the UI works without one, and using the
+  browser's camera comes in a later version.
+* **Commands** run in the container: `docker compose exec mtg-scan mtg-scan db status`.
+* Without compose: `docker run -d -p 127.0.0.1:8787:8787 -v mtg-scan:/data
+  ghcr.io/johnflarson/scan-capture-card`.
+
 ## Usage
 
 ### Web UI
