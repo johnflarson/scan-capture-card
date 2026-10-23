@@ -26,6 +26,16 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- Docker image and compose file (#71). The image (Debian slim, non-root, about 13 MB of
+  PaddleOCR models built in) runs the web UI on port 8787 and keeps the database, settings and
+  caches in the `/data` volume; `mtg-scan health` is its health check. `compose.yaml` publishes
+  it on this computer only by default and has optional `postgres` and `ollama` profiles.
+  Version tags push it to `ghcr.io/johnflarson/scan-capture-card`; CI builds it and runs it
+  alone and with PostgreSQL on every pull request.
+- `mtg-scan health` and `GET /api/health` (#71): whether the web UI is running.
+- Settings as environment variables (#71), for Docker: `MTG_SCAN_STORAGE`,
+  `MTG_SCAN_LLM_PROVIDER`, `MTG_SCAN_LLM_MODEL`, `MTG_SCAN_LLM_BASE_URL` (also the new
+  `--llm-base-url` flag) and `MTG_SCAN_PORT`. `.env` values count too; flags win.
 - Builds and runs on Linux (#69). `cargo build --release --no-default-features` makes a
   headless build (no desktop window; `mtg-scan ui` is the front end), the camera uses
   Video4Linux, and CI builds and tests it on Ubuntu. HTTPS and PostgreSQL use rustls with the

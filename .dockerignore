@@ -1,0 +1,14 @@
+# Build outputs and local data never go into the image's build context.
+.git
+target
+ui/dist
+ui/target
+test-data
+scans
+.env
+mtg-scan.toml
+*.db
+*.db-shm
+*.db-wal
+collection.md
+*.md.lock

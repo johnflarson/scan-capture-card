@@ -99,6 +99,15 @@ impl OcrEngine for PaddleOcr {
     }
 }
 
+/// Make sure every model file is on disk; returns their folder.
+pub fn fetch_models() -> Result<PathBuf> {
+    let dir = models_dir();
+    for file in &MODELS {
+        ensure(&dir, file)?;
+    }
+    Ok(dir)
+}
+
 fn models_dir() -> PathBuf {
     crate::config::env_path("MTG_SCAN_MODELS_DIR")
         .unwrap_or_else(|| crate::cache::dir().join("models"))

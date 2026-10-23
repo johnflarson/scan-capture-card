@@ -77,6 +77,18 @@ fn windows_ocr() -> Result<Box<dyn OcrEngine>> {
     anyhow::bail!("Windows OCR only exists on Windows: set [recognition] ocr = \"paddle\"")
 }
 
+/// Download PaddleOCR's models now (they are otherwise fetched on first
+/// use). Returns their folder.
+#[cfg(feature = "paddle-ocr")]
+pub fn fetch_models() -> Result<std::path::PathBuf> {
+    paddle::fetch_models()
+}
+
+#[cfg(not(feature = "paddle-ocr"))]
+pub fn fetch_models() -> Result<std::path::PathBuf> {
+    anyhow::bail!("this build has no PaddleOCR (it was built without the `paddle-ocr` feature)")
+}
+
 #[cfg(feature = "paddle-ocr")]
 fn paddle_ocr() -> Result<Box<dyn OcrEngine>> {
     Ok(Box::new(paddle::PaddleOcr::new()?))

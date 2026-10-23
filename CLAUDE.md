@@ -36,6 +36,10 @@ $env:MTG_SCAN_DEBUG=1            # print raw OCR/LLM reads during recognition
 mtg-scan ocr-dump <image> [--engine paddle|windows]   # hidden: raw OCR lines with positions and time
 mtg-scan scan-all --image <photo> --dry-run   # test the table pipeline offline from the camera
 mtg-scan ui --dry-run --no-open    # web UI on :8787 without saving scans
+mtg-scan health                    # exit 0 when the local web UI answers /api/health
+
+# Docker (Dockerfile + compose.yaml; CI job "Docker image" builds and runs both)
+docker compose up -d --build       # SQLite in the `data` volume; --profile postgres / ollama
 
 # Web UI (Leptos -> WebAssembly), embedded into the binary by `cargo build`
 cd ui; trunk build --release; cd ..
@@ -66,7 +70,7 @@ the ring provider and the OS certificate store (`tls.rs`), so no OpenSSL.
 | `camera.rs` | nokhwa capture (Media Foundation on Windows, Video4Linux on Linux); picks the camera mode itself; MJPEG/NV12/YUYV decode |
 | `engine/` | Scanning engine shared by both front ends: capture thread (camera, `Watcher` auto-scan trigger, preview frames via `draw`; with `EngineOptions::wait_for_camera`, the web UI's, it runs without a camera and looks for one every 5 s, `StateView::camera_error` says why) and worker thread (`Pipeline`); `Command`s in, `EngineEvent` broadcast + `StateView` out. `StateView::save` (Scan page switch, runtime only) picks per scan job whether to add or only price; while off the reprice pauses, so nothing is written. `Command::Clear` empties the session list and `Pipeline::clear`s table memory and undo |
 | `live.rs` | Desktop front end (minifb window, keys; `desktop` feature), console logger, `scan_table_once` |
-| `web/` | Web front end: Axum server for `mtg-scan ui` (MJPEG preview, SSE events, JSON API, embedded `ui/dist` via rust-embed); `access.rs` guards other computers with `MTG_SCAN_UI_TOKEN` (cookie / Bearer / `?token=` link, loopback exempt); `settings.rs` serves the Settings page (startup options, Moxfield account, hidden decks, read-only database and connection details) |
+| `web/` | Web front end: Axum server for `mtg-scan ui` (MJPEG preview, SSE events, JSON API, `/api/health`, embedded `ui/dist` via rust-embed); `access.rs` guards other computers with `MTG_SCAN_UI_TOKEN` (cookie / Bearer / `?token=` link, loopback exempt); `settings.rs` serves the Settings page (startup options, Moxfield account, hidden decks, read-only database and connection details) |
 | `../shared/` | `mtg-scan-shared`: serde types exchanged by server and UI (`StateView`, `CardView`, `ServerEvent`, `ClientCommand`, `CollectionRow`, …) and logic both sides use: `Stats::of` (landing statistics), `ColorGroup`, `main_type`, `Totals::of`, `RowFilter` + `Facet` (Collection search, filter chips, group-by). Statistics and filtering are computed in the browser from `/api/collection` |
 | `../ui/` | `mtg-scan-ui`: Leptos 0.8 CSR app (`app.rs` components, `home.rs` landing page, `top.rs` Scan page top 5 (ranking is `shared::top_cards`), `filters.rs` Collection filters, `pie.rs` group-by pie (geometry is `shared::pie`), `gallery.rs` Collection card view with the deck popup (`shared::decks_by_card`; images from Scryfall's CDN via `shared::card_image`, not the rate-limited API redirect), `mana.rs` mana symbols, `api.rs` fetch + EventSource), `style.css` Material 3 tokens |
 | `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo; with `hold_uncertain` (web UI, `[recognition] review_uncertain`) uncertain matches become `Outcome::Held`, which the engine saves on `Command::Accept` or drops on `Discard` |
@@ -159,6 +163,13 @@ Identification flow: hints `{name, set, number}`, then `resolve()`:
   `MTG_SCAN_DB_APP_PASSWORD_PENDING`, and finishes on the next run.
 - `CREATE SCHEMA IF NOT EXISTS` checks the CREATE privilege *before* the existence check, so a
   least-privilege role can't run it. Only the admin path creates the schema.
+- **Docker image layout**: `/data` is the volume and working folder (`MTG_SCAN_DATA_DIR`,
+  `MTG_SCAN_CONFIG=/data/mtg-scan.toml`, `MTG_SCAN_CACHE_DIR=/data/cache`, and a `/data/.env`
+  is read); models in `/opt/mtg-scan/models` (`MTG_SCAN_MODELS_DIR`), fetched at build time by
+  the hidden `fetch-ocr-models`. Requests reach the container from Docker's network, not
+  loopback, so `MTG_SCAN_UI_TOKEN` applies to every browser; compose therefore publishes on
+  127.0.0.1 unless `MTG_SCAN_PUBLISH` says otherwise. `load_env_files` runs before clap parses,
+  so `.env` values reach the flags' `env = ...` variables.
 - **GitHub Actions `windows-latest`** ships PostgreSQL with the service stopped (superuser
   `postgres`, password `root`). CI starts it for the integration test. There are no service
   containers on Windows runners.

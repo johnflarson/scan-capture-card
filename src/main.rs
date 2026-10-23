@@ -53,17 +53,20 @@ struct Cli {
     #[arg(long, global = true)]
     db: Option<PathBuf>,
     /// Where the collection is stored (overrides [storage] backend)
-    #[arg(long, global = true, value_enum)]
+    #[arg(long, global = true, value_enum, env = "MTG_SCAN_STORAGE")]
     storage: Option<StorageBackend>,
     /// How cards are recognised (overrides config)
     #[arg(long, global = true, value_enum)]
     mode: Option<RecognitionMode>,
     /// Vision LLM provider (overrides config)
-    #[arg(long, global = true, value_enum)]
+    #[arg(long, global = true, value_enum, env = "MTG_SCAN_LLM_PROVIDER")]
     llm_provider: Option<LlmProvider>,
     /// Vision LLM model id (overrides config)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "MTG_SCAN_LLM_MODEL")]
     llm_model: Option<String>,
+    /// Vision LLM server, e.g. http://ollama:11434 (overrides [llm] base_url)
+    #[arg(long, global = true, env = "MTG_SCAN_LLM_BASE_URL")]
+    llm_base_url: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -125,7 +128,7 @@ enum Command {
         /// Address to listen on (0.0.0.0 = every network interface)
         #[arg(long, default_value = "0.0.0.0")]
         bind: std::net::IpAddr,
-        #[arg(long, default_value_t = 8787)]
+        #[arg(long, default_value_t = 8787, env = "MTG_SCAN_PORT")]
         port: u16,
         /// Don't open a browser on this computer
         #[arg(long)]
@@ -218,6 +221,15 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Check that `mtg-scan ui` on this computer answers (exit code 0 if
+    /// it does), e.g. as a container health check
+    Health {
+        #[arg(long, default_value_t = 8787, env = "MTG_SCAN_PORT")]
+        port: u16,
+    },
+    /// Download the PaddleOCR models into MTG_SCAN_MODELS_DIR (Docker build)
+    #[command(hide = true)]
+    FetchOcrModels,
     /// Save a single camera frame to a file (to check framing / focus)
     Snapshot {
         #[arg(default_value = "snapshot.jpg")]
@@ -305,8 +317,10 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    // First, so that settings in `.env` reach the flags that read variables
+    // (MTG_SCAN_STORAGE, MTG_SCAN_LLM_*, MTG_SCAN_PORT).
     config::load_env_files();
+    let cli = Cli::parse();
     let mut cfg = Config::load(cli.config.as_deref())?;
     if let Some(c) = cli.collection {
         cfg.collection = c;
@@ -325,6 +339,9 @@ fn run() -> Result<()> {
     }
     if let Some(m) = cli.llm_model {
         cfg.llm.model = Some(m);
+    }
+    if let Some(url) = cli.llm_base_url {
+        cfg.llm.base_url = Some(url);
     }
 
     match cli.command {
@@ -518,6 +535,12 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
+        Command::Health { port } => health(port),
+        Command::FetchOcrModels => {
+            let dir = ocr::fetch_models()?;
+            println!("OCR models are in {}", dir.display());
+            Ok(())
+        }
         Command::Snapshot { output, camera } => {
             apply_camera(&mut cfg, &camera, Mode::Single);
             let mut cam =
@@ -536,6 +559,23 @@ fn run() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Ask the local web UI whether it is running.
+fn health(port: u16) -> Result<()> {
+    let url = format!("http://127.0.0.1:{port}/api/health");
+    let response = app::http_client()?
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .with_context(|| format!("no answer from {url}"))?;
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    if !status.is_success() {
+        bail!("{url}: {status} {body}");
+    }
+    println!("{body}");
+    Ok(())
 }
 
 /// Apply `--camera/--width/--height`; the size applies to the given mode.
@@ -835,7 +875,8 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
     let schema = cfg.storage.schema.as_str();
     match (command, cfg.storage.backend) {
         (_, StorageBackend::Markdown) => bail!(
-            "`db` commands need a database: set [storage] backend = \"sqlite\" (the default)              or \"postgres\", or pass --storage sqlite"
+            "`db` commands need a database: set [storage] backend = \"sqlite\" (the default) \
+             or \"postgres\", or pass --storage sqlite"
         ),
         (DbCommand::Migrate, StorageBackend::Sqlite) => {
             // Opening the file applies pending migrations.
