@@ -1,10 +1,20 @@
 //! Text recognition using the OCR engine built into Windows 10/11
-//! (`Windows.Media.Ocr`), so no Tesseract install is required.
+//! (`Windows.Media.Ocr`), so no Tesseract install is required. Other
+//! platforms have no OCR engine yet: use `[recognition] mode = "llm"`.
 
-use anyhow::{Context, Result, anyhow};
-use image::{DynamicImage, imageops::FilterType};
+use anyhow::Result;
+#[cfg(not(windows))]
+use anyhow::bail;
+#[cfg(windows)]
+use anyhow::{Context, anyhow};
+use image::DynamicImage;
+#[cfg(windows)]
+use image::imageops::FilterType;
+#[cfg(windows)]
 use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
+#[cfg(windows)]
 use windows::Media::Ocr::OcrEngine;
+#[cfg(windows)]
 use windows::Storage::Streams::DataWriter;
 
 /// One recognised line of text. Coordinates are normalised to 0.0..=1.0 of
@@ -24,10 +34,28 @@ impl OcrLine {
     }
 }
 
+#[cfg(not(windows))]
+pub struct Ocr;
+
+#[cfg(not(windows))]
+impl Ocr {
+    pub fn new() -> Result<Self> {
+        bail!(
+            "there is no OCR engine on this platform yet: set [recognition] mode = \"llm\"              (with an [llm] provider) or pass --mode llm"
+        )
+    }
+
+    pub fn recognize(&self, _img: &DynamicImage) -> Result<Vec<OcrLine>> {
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(windows)]
 pub struct Ocr {
     engine: OcrEngine,
 }
 
+#[cfg(windows)]
 impl Ocr {
     pub fn new() -> Result<Self> {
         // Prefer English: card names, set codes and collector numbers are

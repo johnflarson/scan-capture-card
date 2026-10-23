@@ -1,4 +1,5 @@
-//! Webcam capture via Windows Media Foundation (through `nokhwa`).
+//! Webcam capture through `nokhwa`: Media Foundation on Windows, Video4Linux
+//! on Linux, AVFoundation on macOS.
 //!
 //! The Insta360 Link 2 Pro presents itself as a standard UVC camera, so no
 //! vendor SDK is needed. Frames are decoded here rather than in `nokhwa` so we
@@ -15,8 +16,15 @@ use nokhwa::utils::{
 /// Substring used to auto-select the Insta360 camera when no index is given.
 const PREFERRED_CAMERA: &str = "insta360";
 
+#[cfg(windows)]
+const BACKEND: ApiBackend = ApiBackend::MediaFoundation;
+#[cfg(target_os = "linux")]
+const BACKEND: ApiBackend = ApiBackend::Video4Linux;
+#[cfg(target_os = "macos")]
+const BACKEND: ApiBackend = ApiBackend::AVFoundation;
+
 pub fn list_cameras() -> Result<Vec<CameraInfo>> {
-    nokhwa::query(ApiBackend::MediaFoundation).context("failed to enumerate cameras")
+    nokhwa::query(BACKEND).context("failed to enumerate cameras")
 }
 
 pub struct Webcam {
@@ -48,9 +56,8 @@ impl Webcam {
 
         let decodable = [FrameFormat::MJPEG, FrameFormat::NV12, FrameFormat::YUYV];
         let request = RequestedFormat::with_formats(RequestedFormatType::None, &decodable);
-        let mut camera =
-            Camera::with_backend(info.index().clone(), request, ApiBackend::MediaFoundation)
-                .with_context(|| format!("failed to open camera '{}'", info.human_name()))?;
+        let mut camera = Camera::with_backend(info.index().clone(), request, BACKEND)
+            .with_context(|| format!("failed to open camera '{}'", info.human_name()))?;
 
         // nokhwa's "closest" matching can land on a 1 fps mode, so choose
         // the format ourselves.

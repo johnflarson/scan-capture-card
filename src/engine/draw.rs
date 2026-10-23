@@ -128,6 +128,7 @@ pub fn outline(img: &mut RgbImage, r: Rect, t: u32, color: Color) {
 }
 
 /// Packed `0x00RRGGBB` pixels, as minifb wants them.
+#[cfg(feature = "desktop")]
 pub fn to_u32(img: &RgbImage, out: &mut Vec<u32>) {
     out.clear();
     out.extend(
@@ -189,6 +190,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "desktop")]
     fn packs_pixels_for_minifb() {
         let img = RgbImage::from_pixel(1, 1, Rgb([0x12, 0x34, 0x56]));
         let mut out = Vec::new();

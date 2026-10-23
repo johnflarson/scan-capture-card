@@ -1,5 +1,6 @@
-//! Small JSON file cache under the user's local cache directory
-//! (`%LOCALAPPDATA%\mtg-scan` on Windows).
+//! Small JSON file cache in `MTG_SCAN_CACHE_DIR` when set, else the user's
+//! cache folder (`%LOCALAPPDATA%\mtg-scan` on Windows, `~/.cache/mtg-scan`
+//! on Linux).
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -9,9 +10,11 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub fn dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("mtg-scan")
+    crate::config::env_path("MTG_SCAN_CACHE_DIR").unwrap_or_else(|| {
+        dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("mtg-scan")
+    })
 }
 
 pub fn path(name: &str) -> PathBuf {

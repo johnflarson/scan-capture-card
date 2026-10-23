@@ -335,6 +335,23 @@ fn LivePage(
                         src=move || format!("/api/stream.mjpg?c={}", epoch.get())
                         alt="Live camera preview"
                     />
+                    {move || {
+                        s().and_then(|s| s.camera_error)
+                            .map(|why| {
+                                view! {
+                                    <div class="offline">
+                                        <div class="offline-text">
+                                            <p>"No camera"</p>
+                                            <p class="small">
+                                                "Connect one and it shows up here within a few seconds. "
+                                                "The collection, decks and settings work without it."
+                                            </p>
+                                            <p class="small muted">{why}</p>
+                                        </div>
+                                    </div>
+                                }
+                            })
+                    }}
                 </div>
                 <div class="status">
                     {move || busy().then(|| view! { <div class="spinner"></div> })}

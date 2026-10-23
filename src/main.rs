@@ -18,6 +18,7 @@ mod recognize;
 mod reprice;
 mod scryfall;
 mod store;
+mod tls;
 mod web;
 
 use std::path::PathBuf;
@@ -41,7 +42,8 @@ use store::{CollectionStore, totals};
     about = "The Shuffling Tome: scan Magic: The Gathering cards with a webcam, keep the collection in SQLite or PostgreSQL, and track its prices"
 )]
 struct Cli {
-    /// Config file (default: ./mtg-scan.toml, then %APPDATA%\mtg-scan\config.toml)
+    /// Settings file (default: $MTG_SCAN_CONFIG, else ./mtg-scan.toml, then
+    /// config.toml in the user's config folder)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     /// Collection Markdown file (markdown backend; overrides config)
@@ -337,6 +339,7 @@ fn run() -> Result<()> {
                     dry_run,
                     // The desktop window has no review list: save as before.
                     review_uncertain: false,
+                    wait_for_camera: false,
                 },
             )
         }
@@ -360,6 +363,7 @@ fn run() -> Result<()> {
                         auto: !manual,
                         dry_run,
                         review_uncertain: false,
+                        wait_for_camera: false,
                     },
                 )
             }
@@ -400,6 +404,7 @@ fn run() -> Result<()> {
                     auto: saved.auto_scan && !manual,
                     dry_run,
                     review_uncertain: cfg.recognition.review_uncertain,
+                    wait_for_camera: true,
                 },
                 web::WebOptions {
                     addr: std::net::SocketAddr::new(bind, port),

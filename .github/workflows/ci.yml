@@ -39,6 +39,26 @@ jobs:
       - name: Unit tests
         run: cargo test --locked
 
+  linux:
+    name: Linux build and unit tests
+    # Headless build, as in the Docker image: no desktop window. Windows OCR
+    # isn't there; the camera uses Video4Linux.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # bindgen (for the Video4Linux bindings) needs libclang.
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libclang-dev
+      - name: Lint (warnings are errors)
+        run: cargo clippy --all-targets --locked --no-default-features -- -D warnings
+      - name: Unit tests
+        run: cargo test --locked --no-default-features
+
   web-ui:
     name: Web UI (WebAssembly)
     # The UI is plain Rust compiled to WebAssembly: no Windows APIs needed.

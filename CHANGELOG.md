@@ -26,6 +26,16 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- Builds and runs on Linux (#69). `cargo build --release --no-default-features` makes a
+  headless build (no desktop window; `mtg-scan ui` is the front end), the camera uses
+  Video4Linux, and CI builds and tests it on Ubuntu. HTTPS and PostgreSQL use rustls with the
+  system's certificates instead of the OS TLS library. Folders can be set with environment
+  variables, e.g. for a Docker volume: `MTG_SCAN_CONFIG` (the settings file, created by the
+  Settings page if missing), `MTG_SCAN_DATA_DIR` (the SQLite database) and `MTG_SCAN_CACHE_DIR`.
+  There is no OCR engine on Linux yet: use `[recognition] mode = "llm"`.
+- The web UI starts without a camera (#69): the Scan page says why there is none and the app
+  looks for one every few seconds, while the collection, decks and settings work as usual.
+  `scan` and `scan-all` still need a camera.
 - Prices and cards settings (#68), on the Settings page and in `mtg-scan.toml`:
   - **Currency** (`[prices] currency = "usd" | "eur"`): totals, group values, the Home page's
     collection value and most valuable cards, and which Top 5 list comes first use TCGplayer's

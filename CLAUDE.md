@@ -46,9 +46,13 @@ docker run -d --name mtg-scan-test-pg -e POSTGRES_USER=mtg -e POSTGRES_PASSWORD=
 $env:MTG_SCAN_TEST_DATABASE_URL="postgres://mtg:mtgtest@localhost:55432/mtg"; cargo test -- --ignored
 ```
 
-Toolchain: Rust stable (edition 2024) with the MSVC target. Building needs VS
-Build Tools (C++ workload). Windows only for now: it uses Media Foundation for
-the camera and `Windows.Media.Ocr` for OCR.
+Toolchain: Rust stable (edition 2024). On Windows: the MSVC target and VS Build
+Tools (C++ workload). On Linux: `libclang-dev` (bindgen for the Video4Linux
+bindings), and `cargo build --no-default-features` (headless: no `desktop`
+feature, so no minifb window; `mtg-scan ui` is the front end). Platform code is
+behind `cfg`: the camera backend (Media Foundation / Video4Linux / AVFoundation)
+in `camera.rs`, Windows OCR in `ocr.rs`, the `windows` crate. TLS is rustls with
+the ring provider and the OS certificate store (`tls.rs`), so no OpenSSL.
 
 ## Architecture (`src/`)
 
@@ -57,16 +61,17 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `main.rs` | clap CLI; config overrides; small commands (add/remove/price/list/reprice/history/movers/db) |
 | `movers.rs` | `mtg-scan movers`: ranks `CollectionStore::price_moves` (price then vs now per row) by change for the copies owned |
 | `config.rs` | `mtg-scan.toml` (`Config`, `StorageConfig`, `RecognitionMode`, `LlmProvider`, `UiConfig` / `DecksConfig` / `PricesConfig` (`currency`, `card_kingdom`) / `[recognition] card_language` for the Settings page), provider defaults; `save_settings` rewrites only those via `toml_edit` (comments kept) |
-| `camera.rs` | nokhwa/Media Foundation capture; picks the camera mode itself; MJPEG/NV12/YUYV decode |
-| `engine/` | Scanning engine shared by both front ends: capture thread (camera, `Watcher` auto-scan trigger, preview frames via `draw`) and worker thread (`Pipeline`, background reprice); `Command`s in, `EngineEvent` broadcast + `StateView` out. `StateView::save` (Scan page switch, runtime only) picks per scan job whether to add or only price; while off the reprice pauses, so nothing is written. `Command::Clear` empties the session list and `Pipeline::clear`s table memory and undo |
-| `live.rs` | Desktop front end (minifb window, keys), console logger, `scan_table_once` |
+| `camera.rs` | nokhwa capture (Media Foundation on Windows, Video4Linux on Linux); picks the camera mode itself; MJPEG/NV12/YUYV decode |
+| `engine/` | Scanning engine shared by both front ends: capture thread (camera, `Watcher` auto-scan trigger, preview frames via `draw`; with `EngineOptions::wait_for_camera`, the web UI's, it runs without a camera and looks for one every 5 s, `StateView::camera_error` says why) and worker thread (`Pipeline`); `Command`s in, `EngineEvent` broadcast + `StateView` out. `StateView::save` (Scan page switch, runtime only) picks per scan job whether to add or only price; while off the reprice pauses, so nothing is written. `Command::Clear` empties the session list and `Pipeline::clear`s table memory and undo |
+| `live.rs` | Desktop front end (minifb window, keys; `desktop` feature), console logger, `scan_table_once` |
 | `web/` | Web front end: Axum server for `mtg-scan ui` (MJPEG preview, SSE events, JSON API, embedded `ui/dist` via rust-embed); `access.rs` guards other computers with `MTG_SCAN_UI_TOKEN` (cookie / Bearer / `?token=` link, loopback exempt); `settings.rs` serves the Settings page (startup options, Moxfield account, hidden decks, read-only database and connection details) |
 | `../shared/` | `mtg-scan-shared`: serde types exchanged by server and UI (`StateView`, `CardView`, `ServerEvent`, `ClientCommand`, `CollectionRow`, …) and logic both sides use: `Stats::of` (landing statistics), `ColorGroup`, `main_type`, `Totals::of`, `RowFilter` + `Facet` (Collection search, filter chips, group-by). Statistics and filtering are computed in the browser from `/api/collection` |
 | `../ui/` | `mtg-scan-ui`: Leptos 0.8 CSR app (`app.rs` components, `home.rs` landing page, `top.rs` Scan page top 5 (ranking is `shared::top_cards`), `filters.rs` Collection filters, `pie.rs` group-by pie (geometry is `shared::pie`), `gallery.rs` Collection card view with the deck popup (`shared::decks_by_card`; images from Scryfall's CDN via `shared::card_image`, not the rate-limited API redirect), `mana.rs` mana symbols, `api.rs` fetch + EventSource), `style.css` Material 3 tokens |
 | `pipeline.rs` | `Pipeline`: `scan_single`, `scan_table` (detect, crop, identify, dedupe against the last pass), undo; with `hold_uncertain` (web UI, `[recognition] review_uncertain`) uncertain matches become `Outcome::Held`, which the engine saves on `Command::Accept` or drops on `Discard` |
 | `recognize.rs` | `Recognizer` (OCR, then LLM, then visual refine), `resolve()` hints to a Scryfall printing, `NameIndex`, `MatchQuality` |
 | `detect.rs` | Table-mode card detection without an LLM: straight edges (LSD-style region growing, collinear pieces joined), facing pairs → 63:88 rectangles, side check (dark border inside, lighter table outside, edge on the side; on a dark mat a second pass finds the light frame inside the border), then size consensus. `mtg-scan detect-dump <photo> --out x.png` draws the boxes and edges |
-| `ocr.rs` | Windows OCR wrapper; returns lines with normalised boxes |
+| `ocr.rs` | Windows OCR wrapper; returns lines with normalised boxes (no engine on other platforms yet) |
+| `tls.rs` | rustls setup: `init()` installs the ring provider (reqwest is built without one), `postgres()` is the PostgreSQL connector |
 | `llm.rs` | Vision LLM: `read_card`, `detect_cards` (bbox_2d, 0-1000). OpenAI wire format, or Ollama native `/api/chat` |
 | `printing.rs` | Visual printing matcher (coarse z-normalised thumbnail correlation against Scryfall images) |
 | `scryfall.rs` | Scryfall client: endpoint-aware throttling, 429 retry, printings cache, name/set catalogs, bulk data metadata |
@@ -75,7 +80,7 @@ the camera and `Windows.Media.Ocr` for OCR.
 | `reprice.rs` | The daily price refresh: `record_cached_prices` (one SQL statement per store: today's point for every owned row from `card_printing`) plus Card Kingdom per row when on; once a day (`app_job` `daily_prices`), after the bulk sync and on `mtg-scan reprice`. Same-day upserts `coalesce`, so sources recorded separately keep each other's prices |
 | `store/` | `CollectionStore` trait (add, remove, `set_quantity`, `relocate` to another printing/finish, `import`, prices), shared `hydrate` (card details from Scryfall) and `conformance` test suite; `sqlite.rs` (default since 1.0: rusqlite bundled, WAL, `BEGIN IMMEDIATE` writes, migrations applied on open, cents and ISO dates); `postgres.rs` (migrations via `db migrate`, upserts, price history); `markdown.rs` (parse, render, atomic write; import/export format). Migrations live per dialect in `migrations/sqlite/` and `migrations/postgres/` with matching version numbers |
 | `moxfield.rs` | Moxfield decks of `[decks] moxfield_user` (Settings page), else `MTG_SCAN_MOXFIELD_USER` (`.env`): deck list and deck contents, cached, 1 req/s |
-| `cache.rs` | JSON cache in `%LOCALAPPDATA%\mtg-scan` |
+| `cache.rs` | JSON cache in `MTG_SCAN_CACHE_DIR`, else the OS cache folder (`%LOCALAPPDATA%\mtg-scan`) |
 | `model.rs` | `Card`, `Finish`, `Prices`, `CollectionEntry`, `PricePoint` |
 | `migrations/` | Numbered SQL files embedded via `include_str!` and listed in `store::postgres::MIGRATIONS` |
 
@@ -109,7 +114,7 @@ the camera and `Windows.Media.Ocr` for OCR.
   (`Engine::saving`: dry run or the Save switch off).
 - **Backups:** none yet. The user will design the backup process (a GitHub issue tracks it). Don't
   add local dump files or backup jobs on your own.
-- Driver: sync `postgres` crate with native-tls. It uses prepared statements, so connect
+- Driver: sync `postgres` crate with rustls (`tokio-postgres-rustls`). It uses prepared statements, so connect
   directly or through a *session*-mode pooler, not a transaction-mode one (Supabase port 6543).
 - Money is `numeric(10,2)`. The app reads and writes it as `float8` through SQL casts, and UUIDs
   as `text::uuid`, to avoid extra crate type features.

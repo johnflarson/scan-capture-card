@@ -154,6 +154,8 @@ main { padding: 20px 24px 40px; max-width: 1800px; margin: 0 auto; }
   display: grid; place-items: center;
   color: var(--md-on-surface-variant);
 }
+.camera .offline-text { max-width: 44ch; padding: 0 24px; text-align: center; }
+.camera .offline-text p:first-child { font-size: 1.25rem; color: var(--md-on-surface); margin: 0 0 8px; }
 .status {
   display: flex; align-items: center; gap: 10px;
   padding: 12px 18px;

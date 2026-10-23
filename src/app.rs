@@ -26,6 +26,7 @@ pub struct App {
 }
 
 pub fn http_client() -> Result<Client> {
+    crate::tls::init();
     Ok(Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(30))

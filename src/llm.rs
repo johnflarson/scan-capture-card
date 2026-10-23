@@ -103,6 +103,7 @@ impl VisionLlm {
         } else {
             (Wire::OpenAi, format!("{base}/chat/completions"))
         };
+        crate::tls::init();
         let http = Client::builder()
             .timeout(Duration::from_secs(cfg.timeout_secs))
             .build()?;

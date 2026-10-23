@@ -16,7 +16,7 @@ mod watcher;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use image::{DynamicImage, RgbImage};
@@ -33,6 +33,8 @@ use watcher::Watcher;
 const CARD_ASPECT: f32 = 63.0 / 88.0;
 /// Cards kept in the session list (oldest dropped first).
 const MAX_SESSION_CARDS: usize = 1000;
+/// How often to look for a camera while there is none.
+const CAMERA_RETRY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy)]
 pub struct EngineOptions {
@@ -43,6 +45,10 @@ pub struct EngineOptions {
     /// Hold uncertain matches for review instead of saving them. Only for
     /// front ends that show a review list (the web UI).
     pub review_uncertain: bool,
+    /// Start without a camera when none can be opened, and keep looking for
+    /// one (the web UI: the collection, decks and settings don't need it).
+    /// Otherwise a missing camera fails [`Engine::start`].
+    pub wait_for_camera: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,6 +162,8 @@ struct State {
     busy: bool,
     status: String,
     camera: String,
+    /// Why no camera is open, while the engine waits for one.
+    camera_error: Option<String>,
     recognizer: String,
     collection: String,
     /// Card Kingdom prices are recorded.
@@ -176,8 +184,12 @@ impl State {
             finish: self.finish.into(),
             dry_run: self.dry_run,
             save: self.save,
-            status: self.status.clone(),
+            status: match &self.camera_error {
+                Some(_) if !self.busy => "no camera".into(),
+                _ => self.status.clone(),
+            },
             camera: self.camera.clone(),
+            camera_error: self.camera_error.clone(),
             recognizer: self.recognizer.clone(),
             collection: self.collection.clone(),
             card_kingdom: self.card_kingdom,
@@ -262,6 +274,7 @@ impl Engine {
                 busy: true,
                 status: "loading…".into(),
                 camera: String::new(),
+                camera_error: None,
                 recognizer: String::new(),
                 collection: String::new(),
                 card_kingdom: cfg.prices.card_kingdom,
@@ -279,9 +292,12 @@ impl Engine {
 
         let capture = {
             let (cfg, ctx) = (cfg.clone(), ctx.clone());
+            let wait = opts.wait_for_camera;
             thread::Builder::new()
                 .name("capture".into())
-                .spawn(move || capture_loop(cfg, ctx, cmd_rx, job_tx, preview_tx, opened_tx))?
+                .spawn(move || {
+                    capture_loop(cfg, ctx, wait, cmd_rx, job_tx, preview_tx, opened_tx)
+                })?
         };
         // Camera problems should fail `start`, not surface later.
         let camera = opened_rx
@@ -417,20 +433,32 @@ fn region(cfg: &Config, mode: Mode, (fw, fh): (u32, u32)) -> Rect {
 fn capture_loop(
     cfg: Config,
     ctx: Ctx,
+    wait_for_camera: bool,
     commands: Receiver<Command>,
     jobs: Sender<Job>,
     preview: watch::Sender<Option<Arc<Preview>>>,
     opened: mpsc::SyncSender<Result<String>>,
 ) -> Result<()> {
     let mut mode = ctx.lock().mode;
+    // `cam` is `None` while there is no camera (only with `wait_for_camera`).
     let (mut cam, mut frame) = match open_camera(&cfg, mode) {
-        Ok(c) => c,
+        Ok((cam, frame)) => {
+            let _ = opened.send(Ok(describe_camera(&cam)));
+            (Some(cam), frame)
+        }
+        Err(e) if wait_for_camera => {
+            let why = format!("{e:#}");
+            eprintln!("! No camera ({why}). Everything but scanning works; looking for one.");
+            ctx.update(|s| s.camera_error = Some(why));
+            let _ = opened.send(Ok("no camera".into()));
+            (None, RgbImage::new(1, 1))
+        }
         Err(e) => {
             let _ = opened.send(Err(e));
             return Ok(());
         }
     };
-    let _ = opened.send(Ok(describe_camera(&cam)));
+    let mut retry_at = Instant::now() + CAMERA_RETRY;
     let mut area = region(&cfg, mode, frame.dimensions());
     let mut watcher = Watcher::new(area);
     let mut frame_id = 0u64;
@@ -442,7 +470,7 @@ fn capture_loop(
             let s = ctx.lock();
             (s.ready, s.busy)
         };
-        let can_scan = ready && !busy;
+        let can_scan = ready && !busy && cam.is_some();
 
         loop {
             match commands.try_recv() {
@@ -510,12 +538,19 @@ fn capture_loop(
                         s.status = if a { "watching for cards" } else { "ready" }.into();
                     }
                 }),
+                // Without a camera the mode only picks the size opened once
+                // one appears.
+                Ok(Command::SetMode(m)) if m != mode && cam.is_none() => {
+                    mode = m;
+                    ctx.update(|s| s.mode = m);
+                }
                 Ok(Command::SetMode(m)) if m != mode && !busy => {
                     ctx.update(|s| {
                         s.busy = true;
                         s.status = "switching camera mode…".into();
                     });
-                    drop(cam);
+                    // Close it first: a camera opens only once.
+                    drop(cam.take());
                     let (next, msg) = match open_camera(&cfg, m) {
                         Ok(opened) => (Some((opened, m)), None),
                         // Fall back to the previous mode rather than going dark.
@@ -528,10 +563,10 @@ fn capture_loop(
                         },
                     };
                     let ((c, f), new_mode) = next.expect("checked above");
-                    (cam, frame, mode) = (c, f, new_mode);
+                    let camera = describe_camera(&c);
+                    (cam, frame, mode) = (Some(c), f, new_mode);
                     area = region(&cfg, mode, frame.dimensions());
                     watcher = Watcher::new(area);
-                    let camera = describe_camera(&cam);
                     ctx.update(|s| {
                         s.mode = mode;
                         s.camera = camera;
@@ -564,7 +599,26 @@ fn capture_loop(
             }
         }
 
-        match cam.frame() {
+        if cam.is_none() && Instant::now() >= retry_at {
+            retry_at = Instant::now() + CAMERA_RETRY;
+            if let Ok((c, f)) = open_camera(&cfg, mode) {
+                let camera = describe_camera(&c);
+                (cam, frame) = (Some(c), f);
+                area = region(&cfg, mode, frame.dimensions());
+                watcher = Watcher::new(area);
+                ctx.update(|s| {
+                    s.camera = camera.clone();
+                    s.camera_error = None;
+                });
+                ctx.emit(EngineEvent::Info(format!("Camera connected: {camera}")));
+            }
+        }
+        let Some(webcam) = cam.as_mut() else {
+            // Keep handling commands while there is no camera.
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        match webcam.frame() {
             Ok(f) if f.dimensions() == frame.dimensions() => frame = f,
             Ok(_) => {}
             Err(e) => {
@@ -671,7 +725,7 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
         .into();
     });
     ctx.emit(EngineEvent::Ready(format!(
-        "Recognizer ready ({recognizer}). Saving to {collection}.
+        "Recognizer ready ({recognizer}). Saving to {collection}.\n\
          Lay out cards and hold still — scanning is automatic."
     )));
 
