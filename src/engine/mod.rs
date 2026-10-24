@@ -14,6 +14,9 @@ pub mod draw;
 mod source;
 mod watcher;
 
+pub use source::BrowserFeed;
+use source::FrameSource;
+
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -77,6 +80,8 @@ pub enum Command {
     },
     /// Drop a held card.
     Discard(u64),
+    /// Take frames from a browser's camera (replacing any other camera).
+    UseBrowser(BrowserFeed),
     Shutdown,
 }
 
@@ -176,6 +181,10 @@ struct State {
     guide_color: Color,
     /// The scan region and the frame size, while a camera is open.
     frame: Option<(Rect, (u32, u32))>,
+    /// A browser's camera is the source.
+    browser_camera: bool,
+    /// Configured capture sizes: single-card mode, table mode.
+    sizes: [(u32, u32); 2],
     cards: Vec<CardView>,
     next_seq: u64,
 }
@@ -216,6 +225,11 @@ impl State {
             overlay: match self.frame {
                 Some((_, size)) => draw::overlay_view(size, &self.overlay()),
                 None => OverlayView::default(),
+            },
+            browser_camera: self.browser_camera,
+            capture_size: match self.mode {
+                Mode::Single => self.sizes[0],
+                Mode::Table => self.sizes[1],
             },
         }
     }
@@ -305,6 +319,11 @@ impl Engine {
                 boxes: Vec::new(),
                 guide_color: draw::IDLE,
                 frame: None,
+                browser_camera: false,
+                sizes: [
+                    source::resolution(cfg, Mode::Single),
+                    source::resolution(cfg, Mode::Table),
+                ],
                 cards: Vec::new(),
                 next_seq: 1,
             })),
@@ -346,6 +365,15 @@ impl Engine {
 
     pub fn send(&self, cmd: Command) {
         let _ = self.commands.send(cmd);
+    }
+
+    /// Take frames from a browser's camera instead of this computer's
+    /// until the returned feed is closed: by the caller when the browser
+    /// disconnects, or by the engine when another browser takes over.
+    pub fn attach_browser_camera(&self, label: String) -> BrowserFeed {
+        let feed = BrowserFeed::new(label);
+        self.send(Command::UseBrowser(feed.clone()));
+        feed
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<EngineEvent> {
@@ -468,7 +496,8 @@ fn capture_loop(
             let s = ctx.lock();
             (s.ready, s.busy)
         };
-        let can_scan = ready && !busy && cam.is_some();
+        // A browser's camera has no frame until its first one arrives.
+        let can_scan = ready && !busy && cam.is_some() && frame.width() > 1;
 
         loop {
             match commands.try_recv() {
@@ -537,10 +566,28 @@ fn capture_loop(
                     }
                 }),
                 // Without a camera the mode only picks the size opened once
-                // one appears.
-                Ok(Command::SetMode(m)) if m != mode && cam.is_none() => {
+                // one appears; a browser's camera follows `capture_size`.
+                Ok(Command::SetMode(m))
+                    if m != mode && cam.as_ref().is_none_or(|c| c.external()) =>
+                {
                     mode = m;
                     ctx.update(|s| s.mode = m);
+                }
+                Ok(Command::UseBrowser(feed)) => {
+                    // Closes this computer's camera (or the previous browser's
+                    // feed, which ends that browser's connection).
+                    drop(cam.take());
+                    let browser = source::BrowserSource::new(feed);
+                    let camera = browser.describe();
+                    cam = Some(Box::new(browser));
+                    frame = RgbImage::new(1, 1);
+                    ctx.update(|s| {
+                        s.camera = camera.clone();
+                        s.camera_error = None;
+                        s.browser_camera = true;
+                        s.boxes.clear();
+                    });
+                    ctx.emit(EngineEvent::Info(format!("Using {camera}")));
                 }
                 Ok(Command::SetMode(m)) if m != mode && !busy => {
                     ctx.update(|s| {
@@ -612,7 +659,10 @@ fn capture_loop(
             }
         }
         // Where the page draws the guide and boxes.
-        let shown = cam.as_ref().map(|_| (area, frame.dimensions()));
+        let shown = cam
+            .as_ref()
+            .filter(|_| frame.width() > 1)
+            .map(|_| (area, frame.dimensions()));
         if ctx.lock().frame != shown {
             ctx.update(|s| s.frame = shown);
         }
@@ -621,9 +671,31 @@ fn capture_loop(
             std::thread::sleep(Duration::from_millis(100));
             continue;
         };
-        match source.frame() {
+        let (got, external) = (source.frame(), source.external());
+        match got {
             Ok(Some(f)) if f.dimensions() == frame.dimensions() => frame = f,
+            // A browser's camera changes size with the mode or another camera.
+            Ok(Some(f)) if external => {
+                frame = f;
+                area = region(&cfg, mode, frame.dimensions());
+                watcher = Watcher::new(area);
+                let camera = source.describe();
+                ctx.update(|s| s.camera = camera);
+            }
             Ok(_) => {}
+            // The browser disconnected: look for this computer's camera again,
+            // after a pause (a browser switching mode reconnects within it).
+            Err(e) if external => {
+                cam = None;
+                retry_at = Instant::now() + CAMERA_RETRY;
+                ctx.update(|s| {
+                    s.camera = "no camera".into();
+                    s.camera_error = Some(format!("{e:#}"));
+                    s.browser_camera = false;
+                    s.boxes.clear();
+                });
+                continue;
+            }
             Err(e) => {
                 ctx.emit(EngineEvent::Error(format!("camera: {e:#}")));
                 std::thread::sleep(std::time::Duration::from_millis(200));

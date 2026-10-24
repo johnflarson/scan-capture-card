@@ -29,6 +29,12 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- Use this device's camera (#72): the Scan page can send the camera of the computer the browser
+  runs on to mtg-scan, for a server without a camera of its own (Docker Desktop on Windows and
+  macOS can't pass cameras into containers). It needs `http://localhost` or HTTPS, as browsers
+  require; the page remembers the camera for next time, follows the size each mode wants, keeps
+  sending while other tabs are open, and lets you pick among several cameras. One browser at a
+  time: another one taking over is told so.
 - Docker image and compose file (#71). The image (Debian slim, non-root, about 13 MB of
   PaddleOCR models built in) runs the web UI on port 8787 and keeps the database, settings and
   caches in the `/data` volume; `mtg-scan health` is its health check. `compose.yaml` publishes

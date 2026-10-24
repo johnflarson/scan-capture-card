@@ -4,6 +4,7 @@
 mod add;
 mod api;
 mod app;
+mod camera;
 mod decks;
 mod filters;
 mod gallery;

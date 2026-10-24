@@ -9,6 +9,7 @@ use mtg_scan_shared::{
 };
 
 use crate::add::AddDialog;
+use crate::camera::BrowserCamera;
 use crate::decks::{DeckCache, DecksPage};
 use crate::filters::{
     CollectionPrefs, ColorCell, FilterBar, GroupHead, Item, Layout, RarityCell, TypeCell, items,
@@ -126,6 +127,9 @@ pub fn App() -> impl IntoView {
     });
     let prefs = CollectionPrefs::new();
     let decks = DeckCache::new();
+    // This device's camera as the scanner's camera (see `camera`).
+    let camera = BrowserCamera::new();
+    provide_context(camera);
     let snack = RwSignal::new(None::<(String, bool, u64)>);
     let snack_seq = StoredValue::new(0u64);
 
@@ -170,6 +174,30 @@ pub fn App() -> impl IntoView {
                 notify.run((format!("Command failed: {e}"), true));
             }
         })
+    });
+
+    // Once the server's state is known: start the camera remembered from
+    // the last visit, and later ask it for the size each mode wants.
+    Effect::new(move |previous: Option<Option<(u32, u32)>>| {
+        let before = previous.flatten();
+        let Some(size) = state.with(|s| s.as_ref().map(|s| s.capture_size)) else {
+            return before;
+        };
+        match before {
+            None if BrowserCamera::available() => {
+                if let Some(device) = BrowserCamera::remembered() {
+                    camera.start(device, size);
+                }
+            }
+            Some(before) if before != size && camera.active.get_untracked() => camera.resize(size),
+            _ => {}
+        }
+        Some(size)
+    });
+    Effect::new(move |_| {
+        if let Some(e) = camera.error.get().filter(|e| !e.is_empty()) {
+            notify.run((format!("This device's camera stopped: {e}"), true));
+        }
     });
 
     let subscribed = api::subscribe(
@@ -315,6 +343,17 @@ fn LivePage(
         })
     };
     let confirm_clear = RwSignal::new(false);
+    // This device's camera, when it is the scanner's camera: shown directly
+    // (smoother than the server's stream of it).
+    let camera = expect_context::<BrowserCamera>();
+    let video = NodeRef::<leptos::html::Video>::new();
+    Effect::new(move |_| {
+        camera.epoch.track();
+        // `autoplay` starts it.
+        if let Some(v) = video.get() {
+            v.set_src_object(camera.stream().as_ref());
+        }
+    });
     let clear = move |_| {
         if held() > 0 && !confirm_clear.get_untracked() {
             confirm_clear.set(true);
@@ -330,12 +369,28 @@ fn LivePage(
                 <div class="card-header">
                     <h2>"Camera"</h2>
                     <span class="chip">{move || s().map(|s| s.camera).unwrap_or_default()}</span>
+                    <span class="spacer"></span>
+                    // Without a camera, the "No camera" panel offers it instead.
+                    <Show when=move || {
+                        camera.active.get() || s().is_some_and(|s| s.camera_error.is_none())
+                    }>
+                        <CameraChoice state />
+                    </Show>
                 </div>
                 <div class="camera">
-                    <img
-                        src=move || format!("/api/stream.mjpg?c={}", epoch.get())
-                        alt="Live camera preview"
-                    />
+                    <Show
+                        when=move || camera.active.get()
+                        fallback=move || {
+                            view! {
+                                <img
+                                    src=move || format!("/api/stream.mjpg?c={}", epoch.get())
+                                    alt="Live camera preview"
+                                />
+                            }
+                        }
+                    >
+                        <video node_ref=video autoplay=true playsinline=true prop:muted=true></video>
+                    </Show>
                     <CameraOverlay overlay=Signal::derive(move || {
                         s().map(|s| s.overlay).unwrap_or_default()
                     }) />
@@ -351,6 +406,7 @@ fn LivePage(
                                                 "The collection, decks and settings work without it."
                                             </p>
                                             <p class="small muted">{why}</p>
+                                            <CameraChoice state />
                                         </div>
                                     </div>
                                 }
@@ -488,6 +544,79 @@ fn LivePage(
             <SessionPanel cards send />
             <TopCards cards hidden />
         </div>
+    }
+}
+
+/// Use this device's camera as the scanner's camera, or stop using it;
+/// with several cameras, pick one.
+#[component]
+fn CameraChoice(state: RwSignal<Option<StateView>>) -> impl IntoView {
+    let camera = expect_context::<BrowserCamera>();
+    let size = move || {
+        state
+            .with_untracked(|s| s.as_ref().map(|s| s.capture_size))
+            .filter(|(w, h)| *w > 0 && *h > 0)
+            .unwrap_or((1920, 1080))
+    };
+    move || {
+        if !BrowserCamera::available() {
+            return view! {
+                <span
+                    class="small muted"
+                    title="Browsers allow cameras only on https:// pages and on http://localhost"
+                >
+                    "This device's camera needs HTTPS"
+                </span>
+            }
+            .into_any();
+        }
+        if camera.active.get() {
+            let devices = camera.devices.get();
+            view! {
+                <div class="camera-choice">
+                    {(devices.len() > 1)
+                        .then(|| {
+                            view! {
+                                <select
+                                    class="text-input"
+                                    aria-label="Camera"
+                                    prop:value=move || camera.device.get()
+                                    on:change=move |ev| camera.start(event_target_value(&ev), size())
+                                >
+                                    {devices
+                                        .into_iter()
+                                        .map(|(id, label)| view! { <option value=id>{label}</option> })
+                                        .collect_view()}
+                                </select>
+                            }
+                        })}
+                    <button class="btn text" on:click=move |_| camera.stop()>
+                        "Stop this device's camera"
+                    </button>
+                </div>
+            }
+            .into_any()
+        } else {
+            view! {
+                <button
+                    class="btn outlined"
+                    disabled=move || camera.starting.get()
+                    title="Scan with the camera of the computer this browser runs on"
+                    on:click=move |_| {
+                        camera.start(BrowserCamera::remembered().unwrap_or_default(), size())
+                    }
+                >
+                    {move || {
+                        if camera.starting.get() {
+                            "Starting the camera…"
+                        } else {
+                            "Use this device's camera"
+                        }
+                    }}
+                </button>
+            }
+            .into_any()
+        }
     }
 }
 

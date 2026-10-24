@@ -106,10 +106,11 @@ then create the tables once with
 * **Other computers.** The UI is published on this computer only. Set
   `MTG_SCAN_PUBLISH=0.0.0.0` and `MTG_SCAN_UI_TOKEN` (anyone who can reach the port
   can use the UI otherwise) to open it to your network.
-* **Camera.** On Linux, pass the camera in: uncomment `devices` in `compose.yaml`
-  (or `docker run --device /dev/video0`). Docker Desktop on Windows and macOS
-  can't pass cameras to containers; the UI works without one, and using the
-  browser's camera comes in a later version.
+* **Camera.** Docker Desktop on Windows and macOS can't pass cameras to
+  containers: open the UI at `http://localhost:8787` on the computer the camera is
+  plugged into and press **Use this device's camera** on the Scan page. On Linux
+  you can also pass the camera in: uncomment `devices` in `compose.yaml` (or
+  `docker run --device /dev/video0`).
 * **Commands** run in the container: `docker compose exec mtg-scan mtg-scan db status`.
 * Without compose: `docker run -d -p 127.0.0.1:8787:8787 -v mtg-scan:/data
   ghcr.io/johnflarson/scan-capture-card`.
@@ -130,7 +131,12 @@ asks). The pages:
   collection statistics: card and printing counts, value, the 7-day value
   change (PostgreSQL), breakdowns by color, type, rarity, finish and set, the
   most valuable and most recently added cards. Click the MTG logo to return.
-- **Scan**: the camera with the guide or detected-card boxes; mode, finish
+- **Scan**: the camera with the guide or detected-card boxes. The camera is
+  the one attached to the computer running mtg-scan, or, with **Use this
+  device's camera**, the camera of the computer the browser runs on (e.g.
+  mtg-scan in Docker, or on another machine). Browsers allow that only on
+  `http://localhost` and HTTPS pages; the page remembers the choice, and with
+  several cameras it lets you pick one. Then the mode, finish
   and auto-scan controls; Scan now / Retry with LLM / Rescan all / Undo; and
   each card the moment it is saved, with its image, set, price links and
   match confidence, plus session totals. Switch **Save to collection** off to

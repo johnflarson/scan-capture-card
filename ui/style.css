@@ -148,11 +148,15 @@ main { padding: 20px 24px 40px; max-width: 1800px; margin: 0 auto; }
 
 /* ----------------------------------------------------------- camera --- */
 .camera { position: relative; background: #000; aspect-ratio: 16 / 9; }
-.camera img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.camera img, .camera video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.camera-choice { display: flex; align-items: center; gap: 8px; }
+.camera .offline-text .btn { margin-top: 12px; }
 .camera .overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .camera .offline {
   position: absolute; inset: 0;
   display: grid; place-items: center;
+  /* Solid: covers the last picture of a camera that went away. */
+  background: #000;
   color: var(--md-on-surface-variant);
 }
 .camera .offline-text { max-width: 44ch; padding: 0 24px; text-align: center; }

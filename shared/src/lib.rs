@@ -70,6 +70,13 @@ pub struct StateView {
     /// The guide and boxes the page draws over the camera image.
     #[serde(default)]
     pub overlay: OverlayView,
+    /// A browser's camera is the source (see `/api/camera`).
+    #[serde(default)]
+    pub browser_camera: bool,
+    /// The frame size the current mode wants, e.g. what a browser's camera
+    /// should be asked for.
+    #[serde(default)]
+    pub capture_size: (u32, u32),
 }
 
 /// What the Scan page draws over the camera image, in camera pixels of a
