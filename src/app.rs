@@ -34,7 +34,30 @@ pub fn http_client() -> Result<Client> {
 }
 
 impl App {
+    /// The collection of `--user` (`cfg.user`), else the first admin's.
     pub fn new(cfg: &Config) -> Result<Self> {
+        let mut app = Self::open(cfg)?;
+        if let Some(name) = &cfg.user {
+            let id = app
+                .store
+                .account_rows()?
+                .into_iter()
+                .find(|a| a.name.eq_ignore_ascii_case(name.trim()))
+                .map(|a| a.id)
+                .ok_or_else(|| anyhow::anyhow!("there is no account named {name}"))?;
+            app.store.set_user(id);
+        }
+        Ok(app)
+    }
+
+    /// The collection of the account `user_id` (a signed-in web user).
+    pub fn for_user(cfg: &Config, user_id: i64) -> Result<Self> {
+        let mut app = Self::open(cfg)?;
+        app.store.set_user(user_id);
+        Ok(app)
+    }
+
+    fn open(cfg: &Config) -> Result<Self> {
         let http = http_client()?;
         let scryfall = Rc::new(Scryfall::new(http.clone()));
         let store: Box<dyn CollectionStore> = match cfg.storage.backend {
@@ -57,12 +80,14 @@ impl App {
         })
     }
 
-    /// Price `card` and add `quantity` copies to the collection.
+    /// Price `card` and add `quantity` Near Mint copies in `language` to
+    /// the collection.
     pub fn add_card(
         &mut self,
         card: &Card,
         wanted: Finish,
         quantity: u32,
+        language: &str,
     ) -> Result<CollectionEntry> {
         let finish = card.best_finish(wanted);
         if finish != wanted {
@@ -72,8 +97,10 @@ impl App {
             );
         }
         let prices = self.prices.price(card, finish);
-        self.store
-            .add(CollectionEntry::from_card(card, finish, quantity, prices))
+        self.store.add(CollectionEntry {
+            language: language.to_string(),
+            ..CollectionEntry::from_card(card, finish, quantity, prices)
+        })
     }
 }
 

@@ -12,6 +12,7 @@ use mtg_scan_shared::{
 use crate::add::AddDialog;
 use crate::auth::{AuthPage, Wanted, wanted};
 use crate::camera::BrowserCamera;
+use crate::copies::{CopiesFields, CopyTags};
 use crate::decks::{DeckCache, DecksPage};
 use crate::filters::{
     CollectionPrefs, ColorCell, FilterBar, GroupHead, Item, Layout, RarityCell, TypeCell, items,
@@ -855,12 +856,13 @@ fn CollectionPage(
                 let Some(d) = d else { return };
                 if let Some(o) = original {
                     d.rows
-                        .retain(|r| !(r.scryfall_id == o.scryfall_id && r.finish == o.finish));
+                        .retain(|r| !r.is_row(&o.scryfall_id, o.finish, o.condition, &o.language));
                 }
                 if let Some(row) = result.row {
                     // Moved or added onto a row that already existed: it now holds both.
-                    d.rows
-                        .retain(|r| !(r.scryfall_id == row.scryfall_id && r.finish == row.finish));
+                    d.rows.retain(|r| {
+                        !r.is_row(&row.scryfall_id, row.finish, row.condition, &row.language)
+                    });
                     d.rows.push(row);
                     d.rows.sort_by(|a, b| {
                         a.name
@@ -1080,7 +1082,10 @@ fn Row(
             <ColorCell row=r.clone() />
             <td title=r.set_name.clone()>{r.set_code.clone()}</td>
             <td>{r.number.clone()}</td>
-            <td>{r.finish.label()}</td>
+            <td>
+                {r.finish.label()}
+                <CopyTags condition=r.condition language=r.language.clone() />
+            </td>
             {cell("tcg", r.tcgplayer, r.tcgplayer_url.clone())}
             <td class="num cm">{eur(r.cardmarket)}</td>
             {
@@ -1104,7 +1109,7 @@ fn Row(
                         if locked.get() {
                             "Dry run: editing is off"
                         } else {
-                            "Edit quantity, finish or printing"
+                            "Edit quantity, finish, condition, language or printing"
                         }
                     }
                     aria-label="Edit"
@@ -1173,8 +1178,8 @@ fn PencilIcon() -> impl IntoView {
     }
 }
 
-/// Edit one collection row: quantity, finish, printing (from a pasted
-/// Scryfall link), or remove it.
+/// Edit one collection row: quantity, finish, condition, language, printing
+/// (from a pasted Scryfall link), or remove it.
 #[component]
 fn EditDialog(
     row: CollectionRow,
@@ -1184,6 +1189,8 @@ fn EditDialog(
     let original = StoredValue::new(row.clone());
     let quantity = RwSignal::new(row.quantity);
     let finish = RwSignal::new(row.finish);
+    let condition = RwSignal::new(row.condition);
+    let language = RwSignal::new(row.language.clone());
     // The row's own printing (image, finishes), loaded when the dialog opens.
     let current = RwSignal::new(None::<PrintingView>);
     // A different printing picked by pasting a Scryfall link.
@@ -1212,7 +1219,11 @@ fn EditDialog(
     };
     let changed = move || {
         let o = original.get_value();
-        quantity.get() != o.quantity || finish.get() != o.finish || target.get().is_some()
+        quantity.get() != o.quantity
+            || finish.get() != o.finish
+            || condition.get() != o.condition
+            || language.get() != o.language
+            || target.get().is_some()
     };
 
     let look_up = move || {
@@ -1252,8 +1263,12 @@ fn EditDialog(
                 .map(|p| p.scryfall_id)
                 .unwrap_or_else(|| o.scryfall_id.clone()),
             to_finish: finish.get_untracked(),
+            to_condition: condition.get_untracked(),
+            to_language: language.get_untracked(),
             scryfall_id: o.scryfall_id.clone(),
             finish: o.finish,
+            condition: o.condition,
+            language: o.language.clone(),
             quantity: copies,
         };
         saving.set(true);
@@ -1385,6 +1400,7 @@ fn EditDialog(
                             .collect_view()}
                     </div>
                 </div>
+                <CopiesFields condition language />
 
                 <div class="field">
                     <span class="control-label">"Printing"</span>

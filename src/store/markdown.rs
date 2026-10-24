@@ -15,7 +15,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::NaiveDate;
 
 use super::{CollectionStore, totals};
-use crate::model::{CollectionEntry, Finish, Prices, format_usd};
+use crate::model::{CollectionEntry, Condition, Finish, Prices, RowKey, format_usd};
 
 const HEADER: [&str; 13] = [
     "Qty",
@@ -133,42 +133,31 @@ impl CollectionStore for MarkdownStore {
         Ok(result)
     }
 
-    fn remove(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        quantity: u32,
-    ) -> Result<Option<CollectionEntry>> {
+    // The file has no condition or language: rows are matched by printing
+    // and finish alone.
+    fn remove(&mut self, key: &RowKey, quantity: u32) -> Result<Option<CollectionEntry>> {
         let _lock = self.begin()?;
-        let result = self.apply_quantity(scryfall_id, finish, |have| have.saturating_sub(quantity));
+        let result = self.apply_quantity(&key.scryfall_id, key.finish, |have| {
+            have.saturating_sub(quantity)
+        });
         if result.is_some() {
             self.save()?;
         }
         Ok(result)
     }
 
-    fn set_quantity(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        quantity: u32,
-    ) -> Result<Option<CollectionEntry>> {
+    fn set_quantity(&mut self, key: &RowKey, quantity: u32) -> Result<Option<CollectionEntry>> {
         let _lock = self.begin()?;
-        let result = self.apply_quantity(scryfall_id, finish, |_| quantity);
+        let result = self.apply_quantity(&key.scryfall_id, key.finish, |_| quantity);
         if result.is_some() {
             self.save()?;
         }
         Ok(result)
     }
 
-    fn relocate(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        to: CollectionEntry,
-    ) -> Result<Option<CollectionEntry>> {
+    fn relocate(&mut self, key: &RowKey, to: CollectionEntry) -> Result<Option<CollectionEntry>> {
         let _lock = self.begin()?;
-        let Some(idx) = self.position(scryfall_id, finish) else {
+        let Some(idx) = self.position(&key.scryfall_id, key.finish) else {
             return Ok(None);
         };
         let old = self.entries.remove(idx);
@@ -406,6 +395,8 @@ pub fn parse(text: &str) -> Result<Vec<CollectionEntry>> {
             colors: Vec::new(),
             type_line: String::new(),
             finish: cells[6].parse().with_context(row)?,
+            condition: Condition::Nm,
+            language: "en".into(),
             prices: Prices {
                 tcgplayer: parse_usd(&tcg),
                 tcgplayer_url: tcg_url,
@@ -437,6 +428,8 @@ mod tests {
             colors: Vec::new(),
             type_line: String::new(),
             finish,
+            condition: Condition::Nm,
+            language: "en".into(),
             quantity: qty,
             prices: Prices {
                 tcgplayer: Some(102.11),
@@ -496,12 +489,15 @@ mod tests {
         assert_eq!(reopened.entries().unwrap().len(), 2);
 
         let mut store = reopened;
-        let left = store.remove("id-1", Finish::Nonfoil, 3).unwrap().unwrap();
+        let left = store
+            .remove(&RowKey::new("id-1", Finish::Nonfoil, "en"), 3)
+            .unwrap()
+            .unwrap();
         assert_eq!(left.quantity, 0);
         assert_eq!(store.entries().unwrap().len(), 1);
         assert!(
             store
-                .remove("missing", Finish::Nonfoil, 1)
+                .remove(&RowKey::new("missing", Finish::Nonfoil, "en"), 1)
                 .unwrap()
                 .is_none()
         );
@@ -519,7 +515,7 @@ mod tests {
 
         assert_eq!(
             store
-                .set_quantity("id-1", Finish::Nonfoil, 5)
+                .set_quantity(&RowKey::new("id-1", Finish::Nonfoil, "en"), 5)
                 .unwrap()
                 .unwrap()
                 .quantity,
@@ -527,7 +523,7 @@ mod tests {
         );
         assert!(
             store
-                .set_quantity("nope", Finish::Nonfoil, 1)
+                .set_quantity(&RowKey::new("nope", Finish::Nonfoil, "en"), 1)
                 .unwrap()
                 .is_none()
         );
@@ -536,7 +532,7 @@ mod tests {
         let mut to = entry("A (other printing)", "id-3", Finish::Foil, 5);
         to.added = NaiveDate::from_ymd_opt(2030, 1, 1).unwrap();
         let moved = store
-            .relocate("id-1", Finish::Nonfoil, to)
+            .relocate(&RowKey::new("id-1", Finish::Nonfoil, "en"), to)
             .unwrap()
             .unwrap();
         assert_eq!((moved.scryfall_id.as_str(), moved.quantity), ("id-3", 5));
@@ -552,7 +548,10 @@ mod tests {
 
         // Move onto a row that exists: quantities merge.
         let merged = store
-            .relocate("id-3", Finish::Foil, entry("B", "id-2", Finish::Foil, 5))
+            .relocate(
+                &RowKey::new("id-3", Finish::Foil, "en"),
+                entry("B", "id-2", Finish::Foil, 5),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(merged.quantity, 6);
@@ -560,13 +559,16 @@ mod tests {
 
         assert!(
             store
-                .relocate("gone", Finish::Foil, entry("B", "id-2", Finish::Foil, 1))
+                .relocate(
+                    &RowKey::new("gone", Finish::Foil, "en"),
+                    entry("B", "id-2", Finish::Foil, 1)
+                )
                 .unwrap()
                 .is_none()
         );
         assert_eq!(
             store
-                .set_quantity("id-2", Finish::Foil, 0)
+                .set_quantity(&RowKey::new("id-2", Finish::Foil, "en"), 0)
                 .unwrap()
                 .unwrap()
                 .quantity,
@@ -582,7 +584,7 @@ mod tests {
         let mut scanner = MarkdownStore::open(&path).unwrap();
         let mut web = MarkdownStore::open(&path).unwrap();
         scanner.add(entry("A", "id-1", Finish::Nonfoil, 1)).unwrap();
-        web.set_quantity("id-1", Finish::Nonfoil, 4)
+        web.set_quantity(&RowKey::new("id-1", Finish::Nonfoil, "en"), 4)
             .unwrap()
             .unwrap();
         // The scanner's next save must not undo the web edit.

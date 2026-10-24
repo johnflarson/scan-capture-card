@@ -11,6 +11,7 @@
 //! Dates are ISO-8601 text (`YYYY-MM-DD` local dates, UTC timestamps) and
 //! money is integer cents.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -21,10 +22,10 @@ use chrono::{DateTime, Local, NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
 
 use super::{
-    CardCache, CollectionStore, Job, PriceMove, StoredRow, ValueChange, colors_from_text,
-    colors_text, finishes_from_text, finishes_text, hydrate, removed_entry,
+    AccountRow, CardCache, CollectionStore, Job, PriceMove, StoredRow, ValueChange,
+    colors_from_text, colors_text, finishes_from_text, finishes_text, hydrate, removed_entry,
 };
-use crate::model::{Card, CollectionEntry, Finish, PricePoint, Prices};
+use crate::model::{Card, CollectionEntry, Condition, Finish, PricePoint, Prices, RowKey};
 use crate::scryfall::Scryfall;
 
 /// (version, name, sql). Append new migrations; never edit applied ones.
@@ -50,6 +51,11 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "accounts",
         include_str!("../../migrations/sqlite/0004_accounts.sql"),
     ),
+    (
+        5,
+        "per_user_collection",
+        include_str!("../../migrations/sqlite/0005_per_user_collection.sql"),
+    ),
 ];
 
 pub fn latest_migration() -> i32 {
@@ -61,6 +67,8 @@ pub struct SqliteStore {
     /// Card details for listings; `None` lists rows without them (tests).
     scryfall: Option<Rc<Scryfall>>,
     path: PathBuf,
+    /// Whose collection; looked up (see [`Self::owner`]) until set.
+    user: Cell<Option<i64>>,
 }
 
 #[derive(Debug)]
@@ -113,9 +121,34 @@ impl SqliteStore {
             conn,
             scryfall,
             path,
+            user: Cell::new(None),
         };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// The first admin, created (without a password, for the setup page to
+    /// claim) when there is no account yet.
+    fn owner(&self) -> Result<i64> {
+        if let Some(id) = self.user.get() {
+            return Ok(id);
+        }
+        let id: i64 =
+            match self
+                .conn
+                .query_row("select min(id) from app_user where is_admin", [], |r| {
+                    r.get::<_, Option<i64>>(0)
+                })? {
+                Some(id) => id,
+                None => self.conn.query_row(
+                    "insert into app_user (name, password_hash, is_admin, created_at)
+                 values ('admin', null, 1, ?1) returning id",
+                    [now()],
+                    |r| r.get(0),
+                )?,
+            };
+        self.user.set(Some(id));
+        Ok(id)
     }
 
     /// Apply pending migrations; returns the versions applied. Refuses a
@@ -218,33 +251,46 @@ impl SqliteStore {
         }
     }
 
-    fn stored_rows(&self, filter: Option<(&str, Finish)>) -> Result<Vec<StoredRow>> {
-        const SELECT: &str = "select c.scryfall_id, c.finish, c.quantity, c.added_at,
+    fn stored_rows(&self, filter: Option<&RowKey>) -> Result<Vec<StoredRow>> {
+        const SELECT: &str = "select c.scryfall_id, c.finish, c.condition, c.language,
+                c.quantity, c.added_at,
                 p.price_tcg, p.price_cardmarket, p.price_tix, p.price_ck, p.price_ck_buylist,
                 p.price_date
              from collection c
              left join price_history p
                on p.scryfall_id = c.scryfall_id and p.finish = c.finish
               and p.price_date = (select max(q.price_date) from price_history q
-                                  where q.scryfall_id = c.scryfall_id and q.finish = c.finish)";
+                                  where q.scryfall_id = c.scryfall_id and q.finish = c.finish)
+             where c.user_id = ?1";
+        let user = self.owner()?;
         let mut stmt;
         let rows = match filter {
-            Some((id, finish)) => {
+            Some(key) => {
                 stmt = self.conn.prepare(&format!(
-                    "{SELECT} where c.scryfall_id = ?1 and c.finish = ?2"
+                    "{SELECT} and c.scryfall_id = ?2 and c.finish = ?3 and c.condition = ?4
+                       and c.language = ?5"
                 ))?;
-                stmt.query_map(params![id, finish.as_str()], raw_row)?
+                stmt.query_map(
+                    params![
+                        user,
+                        key.scryfall_id,
+                        key.finish.as_str(),
+                        key.condition.code(),
+                        key.language
+                    ],
+                    raw_row,
+                )?
             }
             None => {
                 stmt = self.conn.prepare(SELECT)?;
-                stmt.query_map([], raw_row)?
+                stmt.query_map([user], raw_row)?
             }
         };
         rows.map(|r| stored_row(r?)).collect()
     }
 
-    fn one(&self, scryfall_id: &str, finish: Finish) -> Result<Option<CollectionEntry>> {
-        let rows = self.stored_rows(Some((scryfall_id, finish)))?;
+    fn one(&self, key: &RowKey) -> Result<Option<CollectionEntry>> {
+        let rows = self.stored_rows(Some(key))?;
         Ok(hydrate(Some(self), self.scryfall.as_deref(), rows)
             .into_iter()
             .next())
@@ -252,6 +298,15 @@ impl SqliteStore {
 }
 
 impl CollectionStore for SqliteStore {
+    fn set_user(&mut self, user_id: i64) {
+        self.user.set(Some(user_id));
+    }
+
+    #[cfg(test)]
+    fn user(&self) -> Result<i64> {
+        self.owner()
+    }
+
     fn entries(&self) -> Result<Vec<CollectionEntry>> {
         Ok(hydrate(
             Some(self),
@@ -262,17 +317,22 @@ impl CollectionStore for SqliteStore {
 
     fn add(&mut self, entry: CollectionEntry) -> Result<CollectionEntry> {
         let today = Local::now().date_naive();
+        let user = self.owner()?;
         let tx = self.write()?;
         let (quantity, added): (u32, String) = tx.query_row(
-            "insert into collection (scryfall_id, finish, quantity, added_at, updated_at)
-             values (?1, ?2, ?3, ?4, ?5)
-             on conflict (scryfall_id, finish)
+            "insert into collection (user_id, scryfall_id, finish, condition, language, quantity,
+               added_at, updated_at)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             on conflict (user_id, scryfall_id, finish, condition, language)
              do update set quantity = collection.quantity + excluded.quantity,
                            updated_at = excluded.updated_at
              returning quantity, added_at",
             params![
+                user,
                 entry.scryfall_id,
                 entry.finish.as_str(),
+                entry.condition.code(),
+                entry.language,
                 entry.quantity,
                 date_text(today),
                 now()
@@ -289,18 +349,22 @@ impl CollectionStore for SqliteStore {
         })
     }
 
-    fn remove(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        quantity: u32,
-    ) -> Result<Option<CollectionEntry>> {
+    fn remove(&mut self, key: &RowKey, quantity: u32) -> Result<Option<CollectionEntry>> {
+        let user = self.owner()?;
         let tx = self.write()?;
-        let Some(have) = tx
+        let Some((id, have)) = tx
             .query_row(
-                "select quantity from collection where scryfall_id = ?1 and finish = ?2",
-                params![scryfall_id, finish.as_str()],
-                |r| r.get::<_, u32>(0),
+                "select id, quantity from collection
+                 where user_id = ?1 and scryfall_id = ?2 and finish = ?3 and condition = ?4
+                   and language = ?5",
+                params![
+                    user,
+                    key.scryfall_id,
+                    key.finish.as_str(),
+                    key.condition.code(),
+                    key.language
+                ],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?)),
             )
             .optional()?
         else {
@@ -308,65 +372,68 @@ impl CollectionStore for SqliteStore {
         };
         let left = have.saturating_sub(quantity);
         if left == 0 {
-            tx.execute(
-                "delete from collection where scryfall_id = ?1 and finish = ?2",
-                params![scryfall_id, finish.as_str()],
-            )?;
+            tx.execute("delete from collection where id = ?1", [id])?;
         } else {
             tx.execute(
-                "update collection set quantity = ?3, updated_at = ?4
-                 where scryfall_id = ?1 and finish = ?2",
-                params![scryfall_id, finish.as_str(), left, now()],
+                "update collection set quantity = ?2, updated_at = ?3 where id = ?1",
+                params![id, left, now()],
             )?;
         }
         tx.commit()?;
         if left > 0 {
-            return self.one(scryfall_id, finish);
+            return self.one(key);
         }
         // Row is gone; describe it from Scryfall alone.
         Ok(Some(removed_entry(
             Some(self),
             self.scryfall.as_deref(),
-            scryfall_id,
-            finish,
+            key,
         )))
     }
 
-    fn set_quantity(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        quantity: u32,
-    ) -> Result<Option<CollectionEntry>> {
+    fn set_quantity(&mut self, key: &RowKey, quantity: u32) -> Result<Option<CollectionEntry>> {
         if quantity == 0 {
-            return self.remove(scryfall_id, finish, u32::MAX);
+            return self.remove(key, u32::MAX);
         }
         let updated = self.conn.execute(
-            "update collection set quantity = ?3, updated_at = ?4
-             where scryfall_id = ?1 and finish = ?2",
-            params![scryfall_id, finish.as_str(), quantity, now()],
+            "update collection set quantity = ?6, updated_at = ?7
+             where user_id = ?1 and scryfall_id = ?2 and finish = ?3 and condition = ?4
+               and language = ?5",
+            params![
+                self.owner()?,
+                key.scryfall_id,
+                key.finish.as_str(),
+                key.condition.code(),
+                key.language,
+                quantity,
+                now()
+            ],
         )?;
         if updated == 0 {
             return Ok(None);
         }
-        self.one(scryfall_id, finish)
+        self.one(key)
     }
 
-    fn relocate(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        to: CollectionEntry,
-    ) -> Result<Option<CollectionEntry>> {
+    fn relocate(&mut self, key: &RowKey, to: CollectionEntry) -> Result<Option<CollectionEntry>> {
         if to.quantity == 0 {
             bail!("a moved row needs at least one copy");
         }
+        let user = self.owner()?;
         let tx = self.write()?;
         let Some(first_added) = tx
             .query_row(
-                "delete from collection where scryfall_id = ?1 and finish = ?2
+                "delete from collection
+                 where user_id = ?1 and scryfall_id = ?2 and finish = ?3 and condition = ?4
+                   and language = ?5
                  returning added_at",
-                params![scryfall_id, finish.as_str()],
+                params![
+                    user,
+                    key.scryfall_id,
+                    key.finish.as_str(),
+                    key.condition.code(),
+                    key.language
+                ],
                 |r| r.get::<_, String>(0),
             )
             .optional()?
@@ -375,16 +442,20 @@ impl CollectionStore for SqliteStore {
         };
         // Merge into the target row if it exists, keeping the earliest add date.
         let (quantity, added): (u32, String) = tx.query_row(
-            "insert into collection (scryfall_id, finish, quantity, added_at, updated_at)
-             values (?1, ?2, ?3, ?4, ?5)
-             on conflict (scryfall_id, finish)
+            "insert into collection (user_id, scryfall_id, finish, condition, language, quantity,
+               added_at, updated_at)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             on conflict (user_id, scryfall_id, finish, condition, language)
              do update set quantity = collection.quantity + excluded.quantity,
                            added_at = min(collection.added_at, excluded.added_at),
                            updated_at = excluded.updated_at
              returning quantity, added_at",
             params![
+                user,
                 to.scryfall_id,
                 to.finish.as_str(),
+                to.condition.code(),
+                to.language,
                 to.quantity,
                 first_added,
                 now()
@@ -411,16 +482,21 @@ impl CollectionStore for SqliteStore {
     }
 
     fn import(&mut self, entries: &[CollectionEntry]) -> Result<usize> {
+        let user = self.owner()?;
         let tx = self.write()?;
         for e in entries {
             tx.execute(
-                "insert into collection (scryfall_id, finish, quantity, added_at, updated_at)
-                 values (?1, ?2, ?3, ?4, ?5)
-                 on conflict (scryfall_id, finish)
+                "insert into collection (user_id, scryfall_id, finish, condition, language,
+                   quantity, added_at, updated_at)
+                 values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 on conflict (user_id, scryfall_id, finish, condition, language)
                  do update set quantity = excluded.quantity, updated_at = excluded.updated_at",
                 params![
+                    user,
                     e.scryfall_id,
                     e.finish.as_str(),
+                    e.condition.code(),
+                    e.language,
                     e.quantity,
                     date_text(e.added),
                     now()
@@ -482,7 +558,8 @@ impl CollectionStore for SqliteStore {
                     old.price_ck, old.price_ck_buylist,
                     cur.price_date, cur.price_tcg, cur.price_cardmarket, cur.price_tix,
                     cur.price_ck, cur.price_ck_buylist
-             from collection c
+             from (select scryfall_id, finish, sum(quantity) as quantity from collection
+                   where user_id = ?2 group by scryfall_id, finish) c
              join price_history old
                on old.scryfall_id = c.scryfall_id and old.finish = c.finish
               and old.price_date = (select max(q.price_date) from price_history q
@@ -494,7 +571,7 @@ impl CollectionStore for SqliteStore {
                                     where q.scryfall_id = c.scryfall_id and q.finish = c.finish)
              where cur.price_date > old.price_date",
         )?;
-        let rows = stmt.query_map(params![date_text(since)], |r| {
+        let rows = stmt.query_map(params![date_text(since), self.owner()?], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -521,7 +598,8 @@ impl CollectionStore for SqliteStore {
             "select coalesce(sum(c.quantity * old.price_tcg), 0),
                     coalesce(sum(c.quantity * cur.price_tcg), 0),
                     count(*)
-             from collection c
+             from (select scryfall_id, finish, sum(quantity) as quantity from collection
+                   where user_id = ?2 group by scryfall_id, finish) c
              join price_history old
                on old.scryfall_id = c.scryfall_id and old.finish = c.finish
               and old.price_date = (select max(q.price_date) from price_history q
@@ -532,7 +610,7 @@ impl CollectionStore for SqliteStore {
               and cur.price_date = (select max(q.price_date) from price_history q
                                     where q.scryfall_id = c.scryfall_id and q.finish = c.finish
                                       and q.price_tcg is not null)",
-            params![date_text(since)],
+            params![date_text(since), self.owner()?],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         Ok((rows > 0).then(|| ValueChange {
@@ -553,7 +631,7 @@ impl CollectionStore for SqliteStore {
                     case c.finish when 'foil' then p.eur_foil
                                   when 'etched' then null else p.eur end,
                     p.tix, ?2
-             from collection c
+             from (select distinct scryfall_id, finish from collection) c
              join card_printing p on p.scryfall_id = c.scryfall_id
              where coalesce(p.usd, p.usd_foil, p.usd_etched, p.eur, p.eur_foil, p.tix) is not null
              on conflict (scryfall_id, finish, price_date) do update set
@@ -565,6 +643,77 @@ impl CollectionStore for SqliteStore {
         )?;
         tx.commit()?;
         Ok(n)
+    }
+
+    fn owned_printings(&self) -> Result<Vec<(String, Finish)>> {
+        let mut stmt = self.conn.prepare(
+            "select distinct scryfall_id, finish from collection order by scryfall_id, finish",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        rows.map(|r| {
+            let (id, finish) = r?;
+            Ok((id, finish.parse()?))
+        })
+        .collect()
+    }
+
+    fn account_rows(&self) -> Result<Vec<AccountRow>> {
+        let mut stmt = self.conn.prepare(
+            "select id, name, password_hash, is_admin, disabled, created_at from app_user
+             order by id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, bool>(3)?,
+                r.get::<_, bool>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?;
+        rows.map(|r| {
+            let (id, name, password_hash, is_admin, disabled, created) = r?;
+            Ok(AccountRow {
+                id,
+                name,
+                password_hash,
+                is_admin,
+                disabled,
+                created_at: crate::accounts::parse_time(&created)?,
+            })
+        })
+        .collect()
+    }
+
+    fn import_accounts(&mut self, accounts: &[AccountRow]) -> Result<HashMap<i64, i64>> {
+        let tx = self.write()?;
+        let mut ids = HashMap::new();
+        for a in accounts {
+            let existing: Option<i64> = tx
+                .query_row("select id from app_user where name = ?1", [&a.name], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            let id = match existing {
+                Some(id) => id,
+                None => tx.query_row(
+                    "insert into app_user (name, password_hash, is_admin, disabled, created_at)
+                     values (?1, ?2, ?3, ?4, ?5) returning id",
+                    params![
+                        a.name,
+                        a.password_hash,
+                        a.is_admin,
+                        a.disabled,
+                        crate::accounts::time_text(a.created_at)
+                    ],
+                    |r| r.get(0),
+                )?,
+            };
+            ids.insert(a.id, id);
+        }
+        tx.commit()?;
+        Ok(ids)
     }
 
     fn location(&self) -> String {
@@ -810,7 +959,11 @@ fn price_point((date, [tcg, cm, tix, ck, ckb]): RawPoint) -> Result<PricePoint> 
     })
 }
 
+/// A collection row as read: printing, finish, condition, language,
+/// quantity, added, the five prices in cents, price date.
 type RawRow = (
+    String,
+    String,
     String,
     String,
     u32,
@@ -825,17 +978,31 @@ fn raw_row(r: &Row<'_>) -> rusqlite::Result<RawRow> {
         r.get(1)?,
         r.get(2)?,
         r.get(3)?,
-        [r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?],
-        r.get(9)?,
+        r.get(4)?,
+        r.get(5)?,
+        [r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?],
+        r.get(11)?,
     ))
 }
 
 fn stored_row(
-    (scryfall_id, finish, quantity, added, [tcg, cm, tix, ck, ckb], price_date): RawRow,
+    (
+        scryfall_id,
+        finish,
+        condition,
+        language,
+        quantity,
+        added,
+        [tcg, cm, tix, ck, ckb],
+        price_date,
+    ): RawRow,
 ) -> Result<StoredRow> {
     Ok(StoredRow {
         scryfall_id,
         finish: finish.parse()?,
+        condition: Condition::from_code(&condition)
+            .with_context(|| format!("unknown condition {condition:?}"))?,
+        language,
         quantity,
         added: parse_date(&added)?,
         prices: Prices {
@@ -880,7 +1047,7 @@ mod tests {
         assert_eq!(store.schema_version().unwrap(), latest_migration());
         crate::store::conformance(&mut store);
         let status = store.status().unwrap();
-        assert_eq!((status.printings, status.cards), (1, 6));
+        assert_eq!((status.printings, status.cards), (1, 8));
         assert_eq!(status.price_points, 4);
     }
 
@@ -901,6 +1068,8 @@ mod tests {
             colors: Vec::new(),
             type_line: String::new(),
             finish: Finish::Foil,
+            condition: Condition::Nm,
+            language: "en".into(),
             quantity: 2,
             prices: Prices {
                 tcgplayer: Some(0.105),
@@ -939,6 +1108,8 @@ mod tests {
             colors: Vec::new(),
             type_line: String::new(),
             finish: Finish::Nonfoil,
+            condition: Condition::Nm,
+            language: "en".into(),
             quantity: 1,
             prices: Prices::default(),
             added: Local::now().date_naive(),
@@ -993,9 +1164,15 @@ mod tests {
         let mut from = SqliteStore::open_in_memory().unwrap();
         crate::store::conformance(&mut from);
         let mut to = SqliteStore::open_in_memory().unwrap();
-        let (rows, points) = crate::store::copy(&from, &mut to).unwrap();
-        assert_eq!(rows, from.entries().unwrap().len());
-        assert_eq!(points, from.all_price_points().unwrap().len());
+        let copied = crate::store::copy(&mut from, &mut to).unwrap();
+        assert_eq!(
+            copied.accounts, 2,
+            "the owner and the conformance test's other account"
+        );
+        from.set_user(from.account_rows().unwrap()[0].id);
+        to.set_user(to.account_rows().unwrap()[0].id);
+        assert_eq!(copied.rows, from.entries().unwrap().len());
+        assert_eq!(copied.price_points, from.all_price_points().unwrap().len());
         let (a, b) = (from.entries().unwrap(), to.entries().unwrap());
         assert_eq!(
             a.iter()
@@ -1008,6 +1185,46 @@ mod tests {
         assert_eq!(
             from.all_price_points().unwrap(),
             to.all_price_points().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_collection_from_before_accounts_goes_to_an_admin() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "create table schema_migrations (version integer primary key, name text not null,
+               applied_at text not null);",
+        )
+        .unwrap();
+        for (version, name, sql) in &MIGRATIONS[..3] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "insert into schema_migrations values (?1, ?2, '')",
+                params![version, name],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "insert into collection (scryfall_id, finish, quantity, added_at, updated_at)
+             values ('e768c957-3a1f-42f5-853a-96942f645df5', 'foil', 2, '2026-10-01',
+                     '2026-10-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let mut store = SqliteStore::setup(conn, PathBuf::from(":memory:"), None).unwrap();
+        let accounts = store.account_rows().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert!(accounts[0].is_admin && accounts[0].password_hash.is_none());
+        store.set_user(accounts[0].id);
+        let row = &store.entries().unwrap()[0];
+        assert_eq!(
+            (
+                row.finish,
+                row.quantity,
+                row.condition,
+                row.language.as_str()
+            ),
+            (Finish::Foil, 2, Condition::Nm, "en")
         );
     }
 

@@ -56,6 +56,10 @@ struct Cli {
     /// Where the collection is stored (overrides [storage] backend)
     #[arg(long, global = true, value_enum, env = "MTG_SCAN_STORAGE")]
     storage: Option<StorageBackend>,
+    /// Whose collection commands work on (an account's sign-in name;
+    /// default: the first admin)
+    #[arg(long, global = true, env = "MTG_SCAN_USER")]
+    user: Option<String>,
     /// How cards are recognised (overrides config)
     #[arg(long, global = true, value_enum)]
     mode: Option<RecognitionMode>,
@@ -161,6 +165,12 @@ enum Command {
         number: Option<String>,
         #[arg(long, value_enum)]
         finish: Option<Finish>,
+        /// nm, lp, mp, hp or dmg
+        #[arg(long)]
+        condition: Option<String>,
+        /// Language code, e.g. en, ja
+        #[arg(long)]
+        language: Option<String>,
         #[arg(long, default_value_t = 1)]
         qty: u32,
     },
@@ -349,6 +359,7 @@ fn run() -> Result<()> {
     if let Some(s) = cli.storage {
         cfg.storage.backend = s;
     }
+    cfg.user = cli.user.filter(|u| !u.trim().is_empty());
     if let Some(m) = cli.mode {
         cfg.recognition.mode = m;
     }
@@ -465,7 +476,7 @@ fn run() -> Result<()> {
         Command::Add { card, qty } => {
             let mut app = App::new(&cfg)?;
             let found = lookup(&app, &card)?;
-            let entry = app.add_card(&found, card.finish, qty)?;
+            let entry = app.add_card(&found, card.finish, qty, &found.lang)?;
             println!("✓ {}", describe_card(&found, entry.finish));
             println!(
                 "    {} · now x{}",
@@ -479,8 +490,26 @@ fn run() -> Result<()> {
             set,
             number,
             finish,
+            condition,
+            language,
             qty,
-        } => remove(&cfg, &name, set, number, finish, qty),
+        } => {
+            let condition = condition
+                .map(|c| {
+                    model::Condition::from_code(&c).ok_or_else(|| {
+                        anyhow::anyhow!("unknown condition {c:?}: use nm, lp, mp, hp or dmg")
+                    })
+                })
+                .transpose()?;
+            let wanted = Wanted {
+                set,
+                number,
+                finish,
+                condition,
+                language,
+            };
+            remove(&cfg, &name, &wanted, qty)
+        }
         Command::Price { card } => {
             let app = App::new(&cfg)?;
             let found = lookup(&app, &card)?;
@@ -663,7 +692,8 @@ fn identify(cfg: &Config, images: &[PathBuf], add: bool, finish: Finish) -> Resu
                     id.quality.label()
                 );
                 if add {
-                    let entry = app.add_card(&id.card, finish, 1)?;
+                    let entry =
+                        app.add_card(&id.card, finish, 1, &cfg.recognition.card_language)?;
                     println!(
                         "    added · {} · now x{}",
                         describe_prices(&entry.prices),
@@ -677,19 +707,22 @@ fn identify(cfg: &Config, images: &[PathBuf], add: bool, finish: Finish) -> Resu
     Ok(())
 }
 
-fn remove(
-    cfg: &Config,
-    name: &str,
+/// Which collection row a command means, besides (part of) its name.
+#[derive(Default)]
+struct Wanted {
     set: Option<String>,
     number: Option<String>,
     finish: Option<Finish>,
-    qty: u32,
-) -> Result<()> {
+    condition: Option<model::Condition>,
+    language: Option<String>,
+}
+
+fn remove(cfg: &Config, name: &str, wanted: &Wanted, qty: u32) -> Result<()> {
     let mut app = App::new(cfg)?;
-    let e = find_one(&app, name, set, number, finish)?;
+    let e = find_one(&app, name, wanted)?;
     let left = app
         .store
-        .remove(&e.scryfall_id, e.finish, qty)?
+        .remove(&e.key(), qty)?
         .map(|e| e.quantity)
         .unwrap_or(0);
     println!(
@@ -698,20 +731,14 @@ fn remove(
         e.name,
         e.set_code,
         e.collector_number,
-        e.finish
+        model::copies(e.finish, e.condition, &e.language)
     );
     Ok(())
 }
 
 /// The single collection row matching a name (+ optional set / number /
 /// finish). Lists the candidates when it's ambiguous.
-fn find_one(
-    app: &App,
-    name: &str,
-    set: Option<String>,
-    number: Option<String>,
-    finish: Option<Finish>,
-) -> Result<CollectionEntry> {
+fn find_one(app: &App, name: &str, wanted: &Wanted) -> Result<CollectionEntry> {
     let needle = name.to_lowercase();
     let matches: Vec<CollectionEntry> = app
         .store
@@ -719,25 +746,44 @@ fn find_one(
         .into_iter()
         .filter(|e| e.name.to_lowercase().contains(&needle))
         .filter(|e| {
-            set.as_ref()
+            wanted
+                .set
+                .as_ref()
                 .is_none_or(|s| e.set_code.eq_ignore_ascii_case(s))
         })
         .filter(|e| {
-            number
+            wanted
+                .number
                 .as_ref()
                 .is_none_or(|n| e.collector_number.eq_ignore_ascii_case(n))
         })
-        .filter(|e| finish.is_none_or(|f| e.finish == f))
+        .filter(|e| wanted.finish.is_none_or(|f| e.finish == f))
+        .filter(|e| wanted.condition.is_none_or(|c| e.condition == c))
+        .filter(|e| {
+            wanted
+                .language
+                .as_ref()
+                .is_none_or(|l| e.language.eq_ignore_ascii_case(l))
+        })
         .collect();
     match matches.as_slice() {
         [] => bail!("no card in the collection matches '{name}'"),
         [e] => Ok(e.clone()),
         many => {
-            println!("'{name}' matches several rows; narrow it with --set / --number / --finish:");
+            println!(
+                "'{name}' matches several rows; narrow it with --set / --number / --finish / \
+                 --condition / --language:"
+            );
             for e in many {
                 println!(
-                    "  {} ({} #{}, {}) x{}",
-                    e.name, e.set_code, e.collector_number, e.finish, e.quantity
+                    "  {} ({} #{}, {}, {}, {}) x{}",
+                    e.name,
+                    e.set_code,
+                    e.collector_number,
+                    e.finish,
+                    e.condition.short(),
+                    e.language,
+                    e.quantity
                 );
             }
             bail!("ambiguous card")
@@ -753,7 +799,13 @@ fn history(
     finish: Option<Finish>,
 ) -> Result<()> {
     let app = App::new(cfg)?;
-    let e = find_one(&app, name, set, number, finish)?;
+    let wanted = Wanted {
+        set,
+        number,
+        finish,
+        ..Wanted::default()
+    };
+    let e = find_one(&app, name, &wanted)?;
     let points = app.store.price_history(&e.scryfall_id, e.finish)?;
     println!(
         "{} ({} #{}, {}) x{}",
@@ -1045,20 +1097,26 @@ fn db(cfg: &Config, command: DbCommand) -> Result<()> {
                 }
                 _ => App::new(cfg)?.store,
             };
+            // Every account is copied, whatever --user says.
+            target.user = None;
+            let mut source = source;
             let mut dest = App::new(&target)?;
-            let existing = dest.store.entries()?.len();
+            let existing = dest.store.owned_printings()?.len();
             if existing > 0 && !merge {
                 bail!(
-                    "{} already holds {existing} rows; --merge copies anyway (quantities are set \
-                     to this collection's, other rows are kept)",
+                    "{} already holds cards ({existing} printings); --merge copies anyway \
+                     (accounts are matched by name, quantities are set to this database's, other \
+                     rows are kept)",
                     dest.store.location()
                 );
             }
             println!("Copying {} → {}…", source.location(), dest.store.location());
-            let (rows, points) = store::copy(source.as_ref(), dest.store.as_mut())?;
+            let copied = store::copy(source.as_mut(), dest.store.as_mut())?;
             println!(
-                "Copied {rows} rows and {points} price points. Card data rebuilds itself there \
-                 (or run db sync-cards against it)."
+                "Copied {} accounts, {} rows and {} price points. People sign in again there \
+                 (API tokens aren't copied); card data rebuilds itself (or run db sync-cards \
+                 against it).",
+                copied.accounts, copied.rows, copied.price_points
             );
         }
         (DbCommand::SyncCards { force }, _) => {
