@@ -28,6 +28,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
 use crate::config::{Config, StorageBackend};
+use crate::prefs::{Prefs, Stored};
 
 /// How long a browser stays signed in without being used.
 pub const SESSION_DAYS: i64 = 30;
@@ -157,6 +158,11 @@ pub trait AccountStore: Send {
     fn delete_api_token(&mut self, user_id: i64, id: i64) -> Result<bool>;
     /// The enabled user an API token belongs to; marks the token used.
     fn token_user(&mut self, token_hash: &str) -> Result<Option<User>>;
+    /// The account's own settings (a JSON object), if it saved any.
+    fn settings(&mut self, user_id: i64) -> Result<Option<String>>;
+    fn save_settings(&mut self, user_id: i64, json: &str) -> Result<()>;
+    /// The first account: the owner of a collection from before accounts.
+    fn first_account(&mut self) -> Result<Option<i64>>;
 }
 
 /// Open the account tables of the configured database (migrating SQLite).
@@ -540,6 +546,24 @@ impl Accounts {
     pub fn delete_api_token(&self, user: &User, id: i64) -> Result<bool> {
         self.db().delete_api_token(user.id, id)
     }
+
+    /// What the account has set (for the first account before saving
+    /// anything: what it inherits from the settings file), and the settings
+    /// with the server's defaults filled in.
+    pub fn prefs(&self, user: &User, cfg: &Config) -> Result<(Stored, Prefs)> {
+        let mut db = self.db();
+        let stored = match db.settings(user.id)? {
+            Some(json) => Stored::parse(&json)?,
+            None if db.first_account()? == Some(user.id) => Stored::inherited(cfg),
+            None => Stored::default(),
+        };
+        let prefs = Prefs::resolve(&stored, cfg);
+        Ok((stored, prefs))
+    }
+
+    pub fn save_prefs(&self, user: &User, stored: &Stored) -> Result<()> {
+        self.db().save_settings(user.id, &stored.to_json())
+    }
 }
 
 /// An argon2id hash of a random password, for timing failed sign-ins of
@@ -677,6 +701,27 @@ pub(crate) fn conformance(store: Box<dyn AccountStore>) {
     let users = accounts.users().unwrap();
     assert!(users.iter().any(|u| u.id == ada.id && !u.is_admin));
     assert!(users.iter().any(|u| u.id == bob.id && u.is_admin));
+
+    // Settings are per account; the first account inherits the file's decks.
+    let mut cfg = Config::default();
+    cfg.decks.moxfield_user = Some("FileUser".into());
+    let (_, ada_prefs) = accounts.prefs(&ada, &cfg).unwrap();
+    assert_eq!(ada_prefs.moxfield_user().as_deref(), Some("FileUser"));
+    let (mut stored, bob_prefs) = accounts.prefs(&bob, &cfg).unwrap();
+    assert_eq!(bob_prefs.moxfield_user(), None, "not someone else's decks");
+    stored.moxfield_user = Some("BobsName".into());
+    stored.currency = Some(mtg_scan_shared::Currency::Eur);
+    accounts.save_prefs(&bob, &stored).unwrap();
+    let (_, bob_prefs) = accounts.prefs(&bob, &cfg).unwrap();
+    assert_eq!(bob_prefs.moxfield_user().as_deref(), Some("BobsName"));
+    assert_eq!(bob_prefs.currency, mtg_scan_shared::Currency::Eur);
+    stored.currency = None;
+    accounts.save_prefs(&bob, &stored).unwrap();
+    let (_, bob_prefs) = accounts.prefs(&bob, &cfg).unwrap();
+    assert_eq!(
+        bob_prefs.currency, cfg.prices.currency,
+        "saved again, replaced"
+    );
 
     // Sign out.
     accounts.sign_out(&secret_hash(&secret)).unwrap();

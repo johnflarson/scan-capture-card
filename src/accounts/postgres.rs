@@ -382,6 +382,33 @@ impl AccountStore for PostgresAccounts {
         )? > 0)
     }
 
+    fn settings(&mut self, user_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .client()?
+            .query_opt(
+                "select settings::text from user_settings where user_id = $1",
+                &[&user_id],
+            )?
+            .map(|r| r.get(0)))
+    }
+
+    fn save_settings(&mut self, user_id: i64, json: &str) -> Result<()> {
+        self.client()?.execute(
+            "insert into user_settings (user_id, settings) values ($1, $2::text::jsonb)
+             on conflict (user_id) do update set settings = excluded.settings,
+                                                 updated_at = now()",
+            &[&user_id, &json],
+        )?;
+        Ok(())
+    }
+
+    fn first_account(&mut self) -> Result<Option<i64>> {
+        Ok(self
+            .client()?
+            .query_one("select min(id) from app_user", &[])?
+            .get(0))
+    }
+
     fn token_user(&mut self, token_hash: &str) -> Result<Option<User>> {
         let user_id: Option<i64> = self
             .client()?

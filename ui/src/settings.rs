@@ -1,7 +1,8 @@
-//! Settings page (the cog in the top bar): how `mtg-scan ui` starts, prices
-//! and the card language, the Moxfield account, which decks are hidden, and
-//! read-only database and connection details. Changes are saved in the settings file
-//! (`mtg-scan.toml`); passwords stay in `.env` and are never shown.
+//! Settings page (the cog in the top bar): the account (password, API
+//! tokens), how scanning starts, prices and the card language, the Moxfield
+//! account and which decks are hidden, all saved with the account; for
+//! admins also the users, Card Kingdom prices (saved in `mtg-scan.toml`) and
+//! read-only database details. Passwords stay in `.env` and are never shown.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -38,7 +39,9 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
             Err(e) => notify.run((format!("Could not load the settings: {e}"), true)),
         }
     });
-    load_database();
+    if me.is_admin {
+        load_database();
+    }
     load_decks();
 
     // Save one change; the page then shows the settings as saved, and the
@@ -95,7 +98,25 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
         <div class="collection-head">
             <h1>"Settings"</h1>
             <span class="location">
-                {move || settings.with(|s| s.as_ref().map(|s| format!("Saved in {}", s.file)))}
+                {
+                    let admin = me.is_admin;
+                    move || {
+                        settings
+                            .with(|s| {
+                                s.as_ref()
+                                    .map(|s| {
+                                        if admin {
+                                            format!(
+                                                "Yours are saved with your account; Card Kingdom in {}",
+                                                s.file,
+                                            )
+                                        } else {
+                                            "Saved with your account".to_string()
+                                        }
+                                    })
+                            })
+                    }
+                }
             </span>
         </div>
         {move || {
@@ -120,13 +141,15 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
                 <div class="settings-column">
                     <AccountCard me=me.clone() notify />
                     <StartupCard settings save saving />
-                    <PricesCard settings save saving />
+                    <PricesCard settings save saving admin=me.is_admin />
                     <MoxfieldCard settings save saving />
                     <DeckVisibility settings all_decks save saving />
                 </div>
                 <div class="settings-column">
                     {me.is_admin.then(|| view! { <UsersCard me=me.clone() notify /> })}
-                    <DatabaseCard database reload=Callback::new(move |()| load_database()) />
+                    {me.is_admin.then(|| view! {
+                        <DatabaseCard database reload=Callback::new(move |()| load_database()) />
+                    })}
                     <ConnectCard settings />
                 </div>
             </div>
@@ -141,6 +164,8 @@ fn PricesCard(
     settings: RwSignal<Option<SettingsView>>,
     save: Callback<SettingsChange>,
     saving: RwSignal<bool>,
+    /// Card Kingdom is for everyone: only admins switch it.
+    admin: bool,
 ) -> impl IntoView {
     let prices = Memo::new(move |_| settings.with(|s| s.as_ref().map(|s| s.prices)));
     let language = move || settings.with(|s| s.as_ref().map(|s| s.card_language.clone()));
@@ -186,7 +211,7 @@ fn PricesCard(
                         <input
                             type="checkbox"
                             prop:checked=move || prices.get().is_some_and(|p| p.card_kingdom)
-                            disabled=move || saving.get()
+                            disabled=move || saving.get() || !admin
                             on:change=move |ev| {
                                 let on = event_target_checked(&ev);
                                 update(&|p| p.card_kingdom = on);
@@ -194,6 +219,7 @@ fn PricesCard(
                         />
                         "Also record Card Kingdom retail and buylist prices"
                     </label>
+                    {(!admin).then(|| view! { <span class="hint">"For everyone: an admin switches it."</span> })}
                 </div>
                 <div class="field">
                     <span class="control-label">"Card language"</span>

@@ -29,6 +29,11 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- **Per-user settings** (#74). Startup options, the Moxfield account, hidden decks, the currency
+  and the card language are each account's own (migration 6, `user_settings`), so the Decks page
+  shows each person's Moxfield decks. Unset values come from `mtg-scan.toml`; the first account
+  keeps the file's Moxfield account and hidden decks. Card Kingdom prices stay a server setting
+  that only admins switch, and only admins see the database details.
 - **Per-user collections, condition and language** (#74). Every account has its own collection;
   prices and card data stay shared. A row is now a printing + finish + condition (Near Mint,
   Lightly / Moderately / Heavily Played, Damaged) + language: the Collection page shows LP / JA

@@ -13,6 +13,7 @@ mod movers;
 mod moxfield;
 mod ocr;
 mod pipeline;
+mod prefs;
 mod pricing;
 mod printing;
 mod recognize;

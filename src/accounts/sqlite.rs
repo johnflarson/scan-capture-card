@@ -409,6 +409,33 @@ impl AccountStore for SqliteAccounts {
         )? > 0)
     }
 
+    fn settings(&mut self, user_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "select settings from user_settings where user_id = ?1",
+                [user_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    fn save_settings(&mut self, user_id: i64, json: &str) -> Result<()> {
+        self.conn.execute(
+            "insert into user_settings (user_id, settings, updated_at) values (?1, ?2, ?3)
+             on conflict (user_id) do update set settings = excluded.settings,
+                                                 updated_at = excluded.updated_at",
+            params![user_id, json, now()],
+        )?;
+        Ok(())
+    }
+
+    fn first_account(&mut self) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("select min(id) from app_user", [], |r| r.get(0))?)
+    }
+
     fn token_user(&mut self, token_hash: &str) -> Result<Option<User>> {
         let user_id: Option<i64> = self
             .conn

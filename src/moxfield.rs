@@ -57,11 +57,6 @@ fn choose(setting: Option<&str>, env: Option<String>) -> Option<(String, Source)
     }
 }
 
-/// The configured user name (see [`configured`]).
-pub fn configured_user(setting: Option<&str>) -> Option<String> {
-    configured(setting).and_then(|(v, _)| parse_user(&v))
-}
-
 /// A user name from `Johnfredone` or `https://moxfield.com/users/Johnfredone`.
 pub fn parse_user(input: &str) -> Option<String> {
     let input = input.trim();
