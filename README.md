@@ -208,6 +208,21 @@ once, for 7 days. There is no open sign-up.
 * `mtg-scan user list` lists the accounts. `mtg-scan ui --bind 127.0.0.1` keeps
   the UI on this computer only.
 
+**Scanning together.** Every account has its own scan session (mode, finish,
+auto-scan, the cards scanned, undo), and everyone's scans take turns on the
+one recognizer. Scans go into the scanner's own collection, in their card
+language. The camera attached to the server belongs to the first account's
+session; everyone else presses **Use this device's camera** on the Scan page.
+
+**Vision model keys.** With a cloud vision model (`[llm] provider =
+"openrouter"` or `"openai"`), each person can save their own API key under
+Settings → Vision model, so their scans use their key. The server's key in
+`.env` (`OPENROUTER_API_KEY`) is for everyone who hasn't saved one, and can be
+left out. Saved keys are encrypted with the server's key: `secret.key` in the
+data folder (made on first start; keep it with your database backups) or
+`MTG_SCAN_SECRET_KEY` in `.env`. Without it, saved keys can't be read and
+people enter them again.
+
 ### Desktop window and command line
 
 ```powershell

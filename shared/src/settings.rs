@@ -59,6 +59,24 @@ pub struct SettingsView {
     /// Why changes can't be saved right now (a dry run).
     pub locked: Option<String>,
     pub connection: Connection,
+    #[serde(default)]
+    pub llm: LlmView,
+}
+
+/// The vision model scans ask when OCR can't read a card, and whose API
+/// key pays for it. The key itself is never sent back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmView {
+    /// e.g. "Openrouter google/gemini-2.5-flash"; `None` without a model.
+    pub model: Option<String>,
+    /// A cloud service that needs an API key (not a local model).
+    pub needs_key: bool,
+    /// The server has a key of its own (`.env`), used when an account has none.
+    pub server_key: bool,
+    /// This account saved a key.
+    pub key_set: bool,
+    /// Why keys can't be saved on this server, if they can't.
+    pub cannot_save: Option<String>,
 }
 
 /// One change from the Settings page.
@@ -78,6 +96,10 @@ pub enum SettingsChange {
     /// A code from [`CARD_LANGUAGES`].
     CardLanguage {
         code: String,
+    },
+    /// The account's own API key for the vision model; empty removes it.
+    LlmKey {
+        key: String,
     },
 }
 

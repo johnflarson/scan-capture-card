@@ -19,6 +19,7 @@ mod printing;
 mod recognize;
 mod reprice;
 mod scryfall;
+mod secrets;
 mod store;
 mod tls;
 mod web;
@@ -393,6 +394,7 @@ fn run() -> Result<()> {
                     review_uncertain: false,
                     wait_for_camera: false,
                     draw_overlay: true,
+                    server_camera: true,
                 },
             )
         }
@@ -418,6 +420,7 @@ fn run() -> Result<()> {
                         review_uncertain: false,
                         wait_for_camera: false,
                         draw_overlay: true,
+                        server_camera: true,
                     },
                 )
             }
@@ -432,18 +435,9 @@ fn run() -> Result<()> {
             port,
             no_open,
         } => {
-            // The Settings page's startup choices, unless a flag overrides them.
+            // Each account's startup settings apply to its own scan session
+            // (see `web::sessions`); the flags override them for this run.
             let saved = cfg.ui.clone();
-            let mut overridden = Vec::new();
-            if manual && saved.auto_scan {
-                overridden.push("--manual: auto-scan started off".to_string());
-            }
-            if table && !saved.table_mode {
-                overridden.push("--table: started in table mode".to_string());
-            }
-            if let Some(f) = finish.filter(|f| *f != saved.finish) {
-                overridden.push(format!("--finish {f}: new cards start as {f}"));
-            }
             let mode = if table || saved.table_mode {
                 Mode::Table
             } else {
@@ -461,11 +455,16 @@ fn run() -> Result<()> {
                     wait_for_camera: true,
                     // The page draws them (`StateView::overlay`).
                     draw_overlay: false,
+                    server_camera: true,
                 },
                 web::WebOptions {
                     addr: std::net::SocketAddr::new(bind, port),
                     open_browser: !no_open,
-                    overridden,
+                    flags: web::StartFlags {
+                        manual,
+                        table,
+                        finish,
+                    },
                 },
             )
         }

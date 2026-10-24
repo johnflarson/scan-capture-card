@@ -10,7 +10,7 @@
 //! | `POST /api/account/password` | change one's password (signs out other browsers) |
 //! | `GET`/`POST /api/account/tokens`, `DELETE /api/account/tokens/{id}` | API tokens for scripts |
 //! | `GET /api/users`, `POST /api/users/invite`, `POST /api/users/{id}[/reset]` | admins: users, invite links, reset links, admin and disabled flags |
-//! | `GET /api/session` | scanner state + this session's cards |
+//! | `GET /api/session` | the account's scan session: state + its cards (started on first use) |
 //! | `GET /api/events` | Server-Sent Events: state changes, new cards, messages |
 //! | `GET /api/stream.mjpg` | live camera preview (MJPEG) |
 //! | `GET /api/camera` | WebSocket: the page sends its camera's frames (see [`camera`]) |
@@ -32,7 +32,10 @@
 
 mod auth;
 mod camera;
+mod sessions;
 mod settings;
+
+pub use sessions::StartFlags;
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -58,11 +61,12 @@ use tokio_stream::wrappers::BroadcastStream;
 use crate::accounts::{self, Accounts, Signed};
 use crate::app::{self, App};
 use crate::config::Config;
-use crate::engine::{self, Engine, EngineEvent, EngineOptions};
-use crate::live;
+use crate::engine::{Engine, EngineEvent, EngineOptions};
 use crate::model::{Card, CollectionEntry, Finish, RowKey, copies};
 use crate::moxfield::Moxfield;
 use crate::scryfall::{self, Scryfall};
+use crate::secrets::SecretBox;
+use sessions::Sessions;
 
 /// Cap the preview stream at ~15 frames per second per viewer.
 const STREAM_FRAME_INTERVAL: Duration = Duration::from_millis(66);
@@ -70,8 +74,8 @@ const STREAM_FRAME_INTERVAL: Duration = Duration::from_millis(66);
 pub struct WebOptions {
     pub addr: SocketAddr,
     pub open_browser: bool,
-    /// Flags that overrode a saved startup setting (shown on Settings).
-    pub overridden: Vec<String>,
+    /// Flags that override every account's startup settings this run.
+    pub flags: StartFlags,
 }
 
 /// The UI files built by `trunk build --release` in `ui/`.
@@ -80,8 +84,12 @@ pub struct WebOptions {
 struct Assets;
 
 struct AppState {
-    engine: Arc<Engine>,
+    /// Every account's scan session.
+    sessions: Arc<Sessions>,
     accounts: Arc<Accounts>,
+    /// Seals the API keys people save (`None` if the server's key couldn't
+    /// be read or created).
+    secrets: Option<Arc<SecretBox>>,
     cfg: Config,
     /// What the Settings page changes while running.
     settings: std::sync::Mutex<settings::Settings>,
@@ -96,30 +104,44 @@ pub fn run(cfg: &Config, opts: EngineOptions, web: WebOptions) -> Result<()> {
         println!("Dry run: cards are identified and priced but not saved.");
     }
     let accounts = Arc::new(Accounts::new(accounts::open_store(cfg)?)?);
-    let engine = Arc::new(engine::start(cfg, opts)?);
-    println!("Camera: {}", engine.view().camera);
+    let secrets = match SecretBox::open() {
+        Ok(secrets) => Some(Arc::new(secrets)),
+        Err(e) => {
+            eprintln!("  ! people can't save API keys: {e:#}");
+            None
+        }
+    };
+    let sessions = Arc::new(Sessions::start(
+        cfg,
+        opts,
+        web.flags,
+        accounts.clone(),
+        secrets.clone(),
+    )?);
+    // The owner's session has the server's camera: open it now, as before
+    // accounts, so scanning works as soon as the server is up.
+    if let Some(owner) = accounts.first_account_user()? {
+        let engine = sessions.of(&owner)?;
+        println!("Camera: {}", engine.view().camera);
+    }
     // Keeps the card data and daily prices current while the app runs.
-    crate::bulk::spawn_daily(cfg.clone(), engine.saving());
-    let logger = live::spawn_console_logger(&engine);
+    crate::bulk::spawn_daily(cfg.clone(), sessions.saving());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("failed to start the async runtime")?;
-    let served = runtime.block_on(serve(cfg.clone(), engine.clone(), accounts, web));
-    // Dropping the runtime ends every connection, releasing their engine handles.
+    let served = runtime.block_on(serve(cfg.clone(), sessions.clone(), accounts, secrets, web));
+    // Dropping the runtime ends every connection, releasing their session handles.
     drop(runtime);
-
-    let engine = Arc::try_unwrap(engine).map_err(|_| anyhow!("the scanner is still in use"))?;
-    let stopped = engine.shutdown();
-    let _ = logger.join();
-    served.and(stopped)
+    served.and(sessions.shutdown())
 }
 
 async fn serve(
     cfg: Config,
-    engine: Arc<Engine>,
+    sessions: Arc<Sessions>,
     accounts: Arc<Accounts>,
+    secrets: Option<Arc<SecretBox>>,
     web: WebOptions,
 ) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(web.addr)
@@ -157,9 +179,10 @@ async fn serve(
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Arc::new(AppState {
-        engine: engine.clone(),
+        sessions: sessions.clone(),
         accounts,
-        settings: settings::Settings::new(&cfg, web.overridden),
+        secrets,
+        settings: settings::Settings::new(&cfg, web.flags.describe()),
         cfg,
         addr: web.addr,
         shutdown: shutdown_rx,
@@ -211,7 +234,7 @@ async fn serve(
                     break;
                 }
                 _ = check.tick() => {
-                    if !engine.is_running() {
+                    if !sessions.is_running() {
                         println!("The scanner stopped; shutting down the web UI.");
                         break;
                     }
@@ -236,40 +259,77 @@ async fn on_shutdown(mut rx: watch::Receiver<bool>) {
 }
 
 async fn health(State(st): State<Arc<AppState>>) -> Response {
-    if st.engine.is_running() {
+    if st.sessions.is_running() {
         format!("ok: mtg-scan {}", env!("CARGO_PKG_VERSION")).into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "the scanner stopped").into_response()
     }
 }
 
-async fn session(State(st): State<Arc<AppState>>) -> Json<SessionView> {
-    Json(st.engine.session())
+/// The signed-in account's scan session (started on first use, which can
+/// take a moment: the owner's opens the server's camera).
+async fn session_of(
+    st: &Arc<AppState>,
+    signed: Signed,
+) -> Result<Arc<Engine>, (StatusCode, String)> {
+    let sessions = st.sessions.clone();
+    match tokio::task::spawn_blocking(move || sessions.of(&signed.user)).await {
+        Ok(Ok(engine)) => Ok(engine),
+        Ok(Err(e)) => Err((StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"))),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
 }
 
-async fn command(State(st): State<Arc<AppState>>, Json(cmd): Json<ClientCommand>) -> StatusCode {
-    st.engine.send(cmd.into());
-    StatusCode::NO_CONTENT
-}
-
-async fn events(
+async fn session(
     State(st): State<Arc<AppState>>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let engine = st.engine.clone();
+    Extension(signed): Extension<Signed>,
+) -> Response {
+    match session_of(&st, signed).await {
+        Ok(engine) => Json::<SessionView>(engine.session()).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn command(
+    State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
+    Json(cmd): Json<ClientCommand>,
+) -> Response {
+    match session_of(&st, signed).await {
+        Ok(engine) => {
+            engine.send(cmd.into());
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn events(State(st): State<Arc<AppState>>, Extension(signed): Extension<Signed>) -> Response {
+    match session_of(&st, signed).await {
+        Ok(engine) => Sse::new(event_stream(&st, engine))
+            .keep_alive(KeepAlive::default())
+            .into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+fn event_stream(
+    st: &AppState,
+    engine: Arc<Engine>,
+) -> impl Stream<Item = Result<Event, Infallible>> + use<> {
     // Start with the current state, so the browser knows it is connected
     // (and can resync) without waiting for something to change.
-    let first = futures_util::stream::iter([ServerEvent::State(st.engine.view())]);
-    let updates = BroadcastStream::new(st.engine.subscribe())
+    let first = futures_util::stream::iter([ServerEvent::State(engine.view())]);
+    let updates = BroadcastStream::new(engine.subscribe())
         // A slow client that fell behind just misses some events.
         .filter_map(move |e| {
             let engine = engine.clone();
             async move { to_server_event(&engine, e.ok()?) }
         });
-    let stream = first
+    first
         .chain(updates)
         .map(|ev| Ok(Event::default().json_data(ev).unwrap_or_default()))
-        .take_until(on_shutdown(st.shutdown.clone()));
-    Sse::new(stream).keep_alive(KeepAlive::default())
+        .take_until(on_shutdown(st.shutdown.clone()))
 }
 
 fn to_server_event(engine: &Engine, e: EngineEvent) -> Option<ServerEvent> {
@@ -293,9 +353,13 @@ fn to_server_event(engine: &Engine, e: EngineEvent) -> Option<ServerEvent> {
 
 /// `multipart/x-mixed-replace` stream of JPEG previews: an `<img>` tag
 /// pointed at it shows live video without any JavaScript.
-async fn stream(State(st): State<Arc<AppState>>) -> Response {
+async fn stream(State(st): State<Arc<AppState>>, Extension(signed): Extension<Signed>) -> Response {
+    let engine = match session_of(&st, signed).await {
+        Ok(engine) => engine,
+        Err(e) => return e.into_response(),
+    };
     let frames =
-        futures_util::stream::unfold((st.engine.preview(), 0u64), |(mut rx, last)| async move {
+        futures_util::stream::unfold((engine.preview(), 0u64), |(mut rx, last)| async move {
             if last != 0 {
                 tokio::time::sleep(STREAM_FRAME_INTERVAL).await;
             }
@@ -373,7 +437,7 @@ async fn edit(
     Extension(signed): Extension<Signed>,
     Json(edit): Json<RowEdit>,
 ) -> Response {
-    if st.engine.view().dry_run {
+    if st.sessions.dry_run() {
         return (StatusCode::CONFLICT, DRY_RUN).into_response();
     }
     let cfg = st.cfg.clone();
@@ -388,7 +452,7 @@ async fn add(
     Extension(signed): Extension<Signed>,
     Json(add): Json<AddCard>,
 ) -> Response {
-    if st.engine.view().dry_run {
+    if st.sessions.dry_run() {
         return (StatusCode::CONFLICT, DRY_RUN).into_response();
     }
     let cfg = st.cfg.clone();

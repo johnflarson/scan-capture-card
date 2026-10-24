@@ -36,13 +36,13 @@ pub fn run(cfg: &Config, opts: EngineOptions) -> Result<()> {
         "Tip: turn off AI tracking / auto-framing in Insta360 Link Controller so the camera stays still.\n"
     );
 
-    let engine = engine::start(cfg, opts)?;
+    let (scanner, engine) = engine::start(cfg, opts)?;
     // Keeps the card data and daily prices current while the app runs.
     crate::bulk::spawn_daily(cfg.clone(), engine.saving());
     println!("Camera: {}", engine.view().camera);
-    let logger = spawn_console_logger(&engine);
+    let logger = spawn_console_logger(&engine, None);
     let result = window_loop(&engine);
-    let stopped = engine.shutdown();
+    let stopped = engine.shutdown().and(scanner.shutdown());
     let _ = logger.join();
     result.and(stopped)
 }
@@ -135,15 +135,17 @@ fn window_loop(engine: &Engine) -> Result<()> {
     Ok(())
 }
 
-/// Print engine progress to the console (used by both front ends).
-pub fn spawn_console_logger(engine: &Engine) -> JoinHandle<()> {
+/// Print a scan session's progress to the console (used by both front
+/// ends), each line after `who` when given (the web UI's other accounts).
+pub fn spawn_console_logger(engine: &Engine, who: Option<String>) -> JoinHandle<()> {
     let mut events = engine.subscribe();
+    let tag = who.map(|w| format!("[{w}] ")).unwrap_or_default();
     thread::spawn(move || {
         loop {
             match events.blocking_recv() {
-                Ok(EngineEvent::Ready(msg) | EngineEvent::Info(msg)) => println!("{msg}"),
-                Ok(EngineEvent::Undone { message, .. }) => println!("{message}"),
-                Ok(EngineEvent::Error(msg)) => println!("✗ {msg}"),
+                Ok(EngineEvent::Ready(msg) | EngineEvent::Info(msg)) => println!("{tag}{msg}"),
+                Ok(EngineEvent::Undone { message, .. }) => println!("{tag}{message}"),
+                Ok(EngineEvent::Error(msg)) => println!("{tag}✗ {msg}"),
                 Ok(EngineEvent::Results {
                     results,
                     done,
@@ -151,9 +153,12 @@ pub fn spawn_console_logger(engine: &Engine) -> JoinHandle<()> {
                     mode,
                 }) => {
                     if done {
+                        if !tag.is_empty() {
+                            println!("{}", tag.trim_end());
+                        }
                         report(&results, mode, auto);
                     } else if let Some(last) = results.last() {
-                        println!("  [{}] {}", results.len(), last.summary());
+                        println!("  {tag}[{}] {}", results.len(), last.summary());
                     }
                 }
                 Ok(EngineEvent::State | EngineEvent::Card(_) | EngineEvent::Cleared) => {}
