@@ -215,9 +215,10 @@ language. The camera attached to the server belongs to the first account's
 session; everyone else presses **Use this device's camera** on the Scan page.
 
 **Vision model keys.** With a cloud vision model (`[llm] provider =
-"openrouter"` or `"openai"`), each person can save their own API key under
-Settings → Vision model, so their scans use their key. The server's key in
-`.env` (`OPENROUTER_API_KEY`) is for everyone who hasn't saved one, and can be
+"openrouter"`, `"openai"`, `"anthropic"` or `"gemini"`), each person can save
+their own API key under Settings → Vision model, so their scans use their key.
+The server's key in `.env` (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) is for everyone who hasn't saved one, and can be
 left out. Saved keys are encrypted with the server's key: `secret.key` in the
 data folder (made on first start; keep it with your database backups) or
 `MTG_SCAN_SECRET_KEY` in `.env`. Without it, saved keys can't be read and
@@ -243,6 +244,8 @@ mtg-scan remove "Lightning Bolt" --set m11
 mtg-scan remove "Command Tower" --condition lp --language ja
 mtg-scan --user Bob list              # another account's collection (default: the first admin)
 mtg-scan identify photo1.jpg photo2.jpg --add
+mtg-scan llm check                    # is the vision model ready (Ollama: model, vision, GPU)?
+mtg-scan llm pull                     # Ollama: download the configured model
 mtg-scan cameras                      # list cameras
 mtg-scan snapshot frame.jpg           # check framing / focus
 ```

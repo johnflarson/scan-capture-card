@@ -29,6 +29,13 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- **Claude and Gemini as vision models** (#76): `[llm] provider = "anthropic"` (Messages API,
+  default `claude-opus-5-5`, `ANTHROPIC_API_KEY`) and `"gemini"` (`generateContent`, default
+  `gemini-2.5-flash`, `GEMINI_API_KEY`), next to the OpenAI-compatible and Ollama ones, behind one
+  `VisionBackend` interface. People can use their own keys for either (Settings → Vision model).
+- **`mtg-scan llm check` and `llm pull`** (#76): whether the vision model is ready (Ollama: running,
+  the model downloaded, it reads images, how much of it is on the GPU; cloud: whether the server has
+  a key), and downloading an Ollama model with progress.
 - **A scan session per account** (#74). Each signed-in account has its own Scan page state (mode,
   finish, auto-scan, Save switch, the cards scanned, review list, undo), started from its own
   startup settings, and everyone's scans take turns on one recognizer. Scans go into the account's

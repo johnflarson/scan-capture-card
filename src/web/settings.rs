@@ -196,7 +196,7 @@ fn llm_view(st: &AppState, prefs: &Prefs) -> LlmView {
         .then(|| format!("{:?} {}", llm.provider, llm.resolved_model()));
     LlmView {
         model,
-        needs_key: matches!(llm.provider, LlmProvider::Openrouter | LlmProvider::Openai),
+        needs_key: llm.provider.needs_key(),
         server_key: llm.resolved_api_key().is_some(),
         key_set: prefs.llm_key.is_some(),
         cannot_save: st.secrets.is_none().then(|| {

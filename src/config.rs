@@ -465,6 +465,34 @@ pub enum LlmProvider {
     Lmstudio,
     /// Any other OpenAI-compatible endpoint; set `base_url`.
     Openai,
+    /// Anthropic's Claude, natively (needs ANTHROPIC_API_KEY).
+    Anthropic,
+    /// Google's Gemini, natively (needs GEMINI_API_KEY).
+    Gemini,
+}
+
+impl LlmProvider {
+    /// A cloud service that needs an API key (not a local model server).
+    pub fn needs_key(self) -> bool {
+        matches!(
+            self,
+            LlmProvider::Openrouter
+                | LlmProvider::Openai
+                | LlmProvider::Anthropic
+                | LlmProvider::Gemini
+        )
+    }
+
+    /// The `.env` variable holding the server's key, for those that need one.
+    pub fn key_var(self) -> Option<&'static str> {
+        match self {
+            LlmProvider::Openrouter => Some("OPENROUTER_API_KEY"),
+            LlmProvider::Openai => Some("OPENAI_API_KEY"),
+            LlmProvider::Anthropic => Some("ANTHROPIC_API_KEY"),
+            LlmProvider::Gemini => Some("GEMINI_API_KEY"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -507,6 +535,8 @@ impl LlmConfig {
                     LlmProvider::Ollama => "http://localhost:11434",
                     LlmProvider::Lmstudio => "http://localhost:1234/v1",
                     LlmProvider::Openai => "https://api.openai.com/v1",
+                    LlmProvider::Anthropic => "https://api.anthropic.com",
+                    LlmProvider::Gemini => "https://generativelanguage.googleapis.com",
                     LlmProvider::None => return None,
                 }
                 .to_string(),
@@ -521,6 +551,8 @@ impl LlmConfig {
                 LlmProvider::Ollama => "qwen3-vl:8b-instruct",
                 LlmProvider::Lmstudio => "qwen/qwen3-vl-8b",
                 LlmProvider::Openai => "gpt-5-mini",
+                LlmProvider::Anthropic => "claude-opus-5-5",
+                LlmProvider::Gemini => "gemini-2.5-flash",
                 LlmProvider::None => "",
             }
             .to_string()
@@ -528,11 +560,10 @@ impl LlmConfig {
     }
 
     pub fn resolved_api_key(&self) -> Option<String> {
-        let var = self.api_key_env.clone().or_else(|| match self.provider {
-            LlmProvider::Openrouter => Some("OPENROUTER_API_KEY".into()),
-            LlmProvider::Openai => Some("OPENAI_API_KEY".into()),
-            _ => None,
-        })?;
+        let var = self
+            .api_key_env
+            .clone()
+            .or_else(|| self.provider.key_var().map(str::to_string))?;
         std::env::var(var).ok().filter(|k| !k.trim().is_empty())
     }
 
