@@ -66,13 +66,17 @@ review_uncertain = true
 card_language = "en"
 
 [llm]
-# none | ollama | lmstudio | openrouter | openai
+# none | ollama | lmstudio | openrouter | openai | anthropic | gemini
 provider = "ollama"
 # Defaults per provider:
 #   ollama     -> qwen3-vl:8b-instruct   (ollama pull qwen3-vl:8b-instruct)
 #   lmstudio   -> qwen/qwen3-vl-8b
 #   openrouter -> google/gemini-2.5-flash (needs OPENROUTER_API_KEY)
 #   openai     -> gpt-5-mini              (needs OPENAI_API_KEY)
+#   anthropic  -> claude-opus-5-5         (needs ANTHROPIC_API_KEY)
+#   gemini     -> gemini-2.5-flash        (needs GEMINI_API_KEY)
+# Cloud keys can also be each person's own (web UI, Settings -> Vision model).
+# `mtg-scan llm check` tells whether the model is ready.
 # model = "qwen3-vl:8b-instruct"
 # base_url = "http://localhost:11434"
 # Name of the environment variable holding the API key (openrouter/openai).

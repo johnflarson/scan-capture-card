@@ -12,6 +12,7 @@ mod model;
 mod movers;
 mod moxfield;
 mod ocr;
+mod ollama;
 mod pipeline;
 mod prefs;
 mod pricing;
@@ -208,6 +209,11 @@ enum Command {
         #[command(subcommand)]
         command: UserCommand,
     },
+    /// The vision model ([llm] in the settings file)
+    Llm {
+        #[command(subcommand)]
+        command: LlmCommand,
+    },
     /// Database management (SQLite or PostgreSQL)
     Db {
         #[command(subcommand)]
@@ -249,6 +255,15 @@ enum Command {
         #[command(flatten)]
         camera: CameraArgs,
     },
+}
+
+#[derive(Subcommand)]
+enum LlmCommand {
+    /// Check that the vision model is ready: Ollama runs, has the model, it
+    /// reads images and fits on the GPU; a cloud model has a key
+    Check,
+    /// Ollama: download the model (default: the configured one)
+    Pull { model: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -534,6 +549,7 @@ fn run() -> Result<()> {
         } => history(&cfg, &name, set, number, finish),
         Command::Movers { days, top } => movers(&cfg, days, top),
         Command::User { command } => user(&cfg, command),
+        Command::Llm { command } => llm(&cfg, command),
         Command::Db { command } => db(&cfg, command),
         Command::List => list(&cfg),
         Command::Cameras => {
@@ -914,6 +930,102 @@ fn movers(cfg: &Config, days: u32, top: usize) -> Result<()> {
                     pct(c.percent())
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+fn llm(cfg: &Config, command: LlmCommand) -> Result<()> {
+    let llm = &cfg.llm;
+    let Some(base) = llm.resolved_base_url() else {
+        println!("No vision model ([llm] provider = \"none\"): cards are read with OCR only.");
+        return Ok(());
+    };
+    let model = llm.resolved_model();
+    match command {
+        LlmCommand::Check => {
+            println!("{:?} {model} at {base}", llm.provider);
+            if let Some(var) = llm.provider.key_var() {
+                if llm.resolved_api_key().is_some() {
+                    println!("  server key: set ({var})");
+                } else {
+                    println!(
+                        "  server key: not set ({var} in .env); people can add their own on the \
+                         Settings page"
+                    );
+                }
+                return Ok(());
+            }
+            if llm.provider != LlmProvider::Ollama {
+                return Ok(());
+            }
+            let ollama = ollama::Ollama::new(&base)?;
+            println!("  Ollama {}", ollama.version()?);
+            let Some(info) = ollama.show(&model)? else {
+                println!("  ✗ {model} isn't downloaded: run `mtg-scan llm pull`");
+                let installed = ollama.installed()?;
+                if !installed.is_empty() {
+                    let names: Vec<String> = installed
+                        .iter()
+                        .map(|m| format!("{} ({:.1} GB)", m.name, m.size as f64 / 1e9))
+                        .collect();
+                    println!("  it has: {}", names.join(", "));
+                }
+                return Ok(());
+            };
+            let size = [info.parameter_size.clone(), info.quantization.clone()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ");
+            if info.vision() {
+                println!("  ✓ {model} reads images ({size})");
+            } else {
+                println!(
+                    "  ✗ {model} doesn't read images: choose a vision model, e.g. qwen3-vl:8b-instruct"
+                );
+            }
+            match ollama
+                .loaded()?
+                .into_iter()
+                .find(|l| ollama::same_model(&l.name, &model))
+            {
+                Some(l) if l.on_gpu() >= 0.99 => println!("  ✓ loaded, all on the GPU"),
+                Some(l) => println!(
+                    "  ! loaded, but only {:.0}% on the GPU: scans will be slow (try a smaller model)",
+                    l.on_gpu() * 100.0
+                ),
+                None => println!("  not loaded yet (the first scan loads it)"),
+            }
+        }
+        LlmCommand::Pull { model: wanted } => {
+            if llm.provider != LlmProvider::Ollama {
+                bail!(
+                    "only Ollama downloads models; [llm] provider is {:?}",
+                    llm.provider
+                );
+            }
+            let model = wanted.unwrap_or(model);
+            let ollama = ollama::Ollama::new(&base)?;
+            println!("Downloading {model}…");
+            let mut last = String::new();
+            ollama.pull(&model, |p| {
+                let line = match (p.completed, p.total) {
+                    (Some(done), Some(total)) if total > 0 => format!(
+                        "{} {:.0}% of {:.1} GB",
+                        p.status,
+                        done as f64 * 100.0 / total as f64,
+                        total as f64 / 1e9
+                    ),
+                    _ => p.status.clone(),
+                };
+                // One line per change of status or whole percent.
+                if line != last {
+                    println!("  {line}");
+                    last = line;
+                }
+            })?;
+            println!("✓ {model} is ready");
         }
     }
     Ok(())

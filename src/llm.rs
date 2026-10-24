@@ -1,9 +1,9 @@
-//! Vision-LLM card reader and detector.
-//!
-//! Two wire formats are supported:
-//! * OpenAI chat-completions — OpenRouter, LM Studio, OpenAI and most others.
-//! * Ollama's native `/api/chat` — used for Ollama because it is the only way
-//!   to reliably switch off "thinking" (which makes Qwen3-VL ~10x slower).
+//! Vision-LLM card reader and detector, behind [`VisionBackend`]:
+//! * OpenAI chat-completions: OpenRouter, LM Studio, OpenAI and most others.
+//! * Ollama's native `/api/chat`: the only way to reliably switch off
+//!   "thinking" (which makes Qwen3-VL ~10x slower).
+//! * Anthropic's Messages API (Claude), natively.
+//! * Google's Gemini `generateContent`, natively.
 
 use std::io::Cursor;
 use std::time::Duration;
@@ -11,9 +11,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
 use image::{DynamicImage, ImageFormat, imageops::FilterType};
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, RequestBuilder};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::config::{LlmConfig, LlmProvider};
 use crate::recognize::CardHints;
@@ -37,12 +37,20 @@ or fanned stack). Output ONLY a JSON array like [{\"bbox_2d\": [x1, y1, x2, y2],
 \"card\"}], one entry per card, with coordinates normalized to 0-1000 of the image width and \
 height. List each card once.";
 
-/// Generation caps: enough for any real answer, but a model stuck repeating
-/// itself stops quickly instead of running for minutes.
+/// Generation caps for models that don't think first: enough for any real
+/// answer, but a model stuck repeating itself stops quickly instead of
+/// running for minutes.
 const READ_MAX_TOKENS: u32 = 400;
 const DETECT_MAX_TOKENS: u32 = 2048;
+/// Claude and Gemini think before answering, and that counts too.
+const THINKING_MAX_TOKENS: u32 = 16_000;
 /// More boxes than this means the model is looping, not seeing cards.
 const MAX_DETECTIONS: usize = 60;
+
+/// The Messages API version this adapter speaks.
+const ANTHROPIC_VERSION: &str = "2026-10-21";
+/// Lets Claude hand a request it declines to the next model on its own.
+const ANTHROPIC_FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NormBox {
@@ -53,22 +61,259 @@ pub struct NormBox {
     pub y2: f32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Wire {
-    OpenAi,
-    OllamaNative,
+/// What a request asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Task {
+    Read,
+    Detect,
+}
+
+/// One question about one image.
+struct Ask<'a> {
+    task: Task,
+    prompt: &'a str,
+    /// The image as base64 JPEG.
+    jpeg: &'a str,
+}
+
+/// One vision model API: how a request looks and where its answer is.
+trait VisionBackend: Send {
+    /// The request, ready to send but for the API key.
+    fn request(&self, http: &Client, ask: &Ask) -> RequestBuilder;
+    /// Add the API key.
+    fn authorize(&self, req: RequestBuilder, key: &str) -> RequestBuilder {
+        req.bearer_auth(key)
+    }
+    /// The model's text from a successful response.
+    fn answer(&self, response: &Value) -> Result<String>;
+}
+
+/// OpenAI chat-completions (OpenRouter, LM Studio, OpenAI, ...).
+struct OpenAiCompatible {
+    url: String,
+    model: String,
+    reasoning_effort: Option<String>,
+    /// OpenRouter shows where requests come from.
+    openrouter: bool,
+}
+
+impl OpenAiCompatible {
+    fn body(&self, ask: &Ask) -> Value {
+        let mut body = json!({
+            "model": self.model,
+            "temperature": 0,
+            "max_tokens": local_max_tokens(ask.task),
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": ask.prompt},
+                    {"type": "image_url", "image_url": {"url": format!("data:image/jpeg;base64,{}", ask.jpeg)}}
+                ]
+            }]
+        });
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        body
+    }
+}
+
+impl VisionBackend for OpenAiCompatible {
+    fn request(&self, http: &Client, ask: &Ask) -> RequestBuilder {
+        let req = http.post(&self.url).json(&self.body(ask));
+        if self.openrouter {
+            req.header(
+                "HTTP-Referer",
+                "https://github.com/johnflarson/scan-capture-card",
+            )
+            .header("X-Title", "mtg-scan")
+        } else {
+            req
+        }
+    }
+
+    fn answer(&self, response: &Value) -> Result<String> {
+        text(response["choices"][0]["message"]["content"].as_str())
+    }
+}
+
+/// Ollama's native chat API, with thinking off.
+struct OllamaNative {
+    url: String,
+    model: String,
+}
+
+impl OllamaNative {
+    fn body(&self, ask: &Ask) -> Value {
+        json!({
+            "model": self.model,
+            "stream": false,
+            "think": false,
+            "options": {"temperature": 0, "num_predict": local_max_tokens(ask.task)},
+            "messages": [{"role": "user", "content": ask.prompt, "images": [ask.jpeg]}]
+        })
+    }
+}
+
+impl VisionBackend for OllamaNative {
+    fn request(&self, http: &Client, ask: &Ask) -> RequestBuilder {
+        http.post(&self.url).json(&self.body(ask))
+    }
+
+    fn answer(&self, response: &Value) -> Result<String> {
+        text(response["message"]["content"].as_str())
+    }
+}
+
+/// Anthropic's Messages API (Claude).
+struct AnthropicMessages {
+    url: String,
+    model: String,
+}
+
+impl AnthropicMessages {
+    fn body(&self, ask: &Ask) -> Value {
+        json!({
+            "model": self.model,
+            "max_tokens": THINKING_MAX_TOKENS,
+            // Reading a card is a simple task: think briefly. (Sampling
+            // settings such as temperature aren't accepted in this version.)
+            "output_config": {"effort": "low"},
+            // A declined request is retried on the next model by the API.
+            "fallbacks": "default",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ask.jpeg}},
+                    {"type": "text", "text": ask.prompt}
+                ]
+            }]
+        })
+    }
+}
+
+impl VisionBackend for AnthropicMessages {
+    fn request(&self, http: &Client, ask: &Ask) -> RequestBuilder {
+        http.post(&self.url)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", ANTHROPIC_FALLBACK_BETA)
+            .json(&self.body(ask))
+    }
+
+    fn authorize(&self, req: RequestBuilder, key: &str) -> RequestBuilder {
+        req.header("x-api-key", key)
+    }
+
+    fn answer(&self, response: &Value) -> Result<String> {
+        if response["stop_reason"] == "refusal" {
+            bail!(
+                "Claude declined to read this image ({})",
+                response["stop_details"]["category"]
+                    .as_str()
+                    .unwrap_or("no reason given")
+            );
+        }
+        // Only the text blocks: thinking and fallback blocks are skipped.
+        let joined: String = response["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        text(Some(&joined))
+    }
+}
+
+/// Google's Gemini `generateContent`.
+struct Gemini {
+    url: String,
+}
+
+impl Gemini {
+    fn body(&self, ask: &Ask) -> Value {
+        json!({
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"inline_data": {"mime_type": "image/jpeg", "data": ask.jpeg}},
+                    {"text": ask.prompt}
+                ]
+            }],
+            "generationConfig": {
+                "temperature": 0,
+                "maxOutputTokens": THINKING_MAX_TOKENS,
+                "responseMimeType": "application/json"
+            }
+        })
+    }
+}
+
+impl VisionBackend for Gemini {
+    fn request(&self, http: &Client, ask: &Ask) -> RequestBuilder {
+        http.post(&self.url).json(&self.body(ask))
+    }
+
+    fn authorize(&self, req: RequestBuilder, key: &str) -> RequestBuilder {
+        req.header("x-goog-api-key", key)
+    }
+
+    fn answer(&self, response: &Value) -> Result<String> {
+        let candidate = &response["candidates"][0];
+        if candidate.is_null() {
+            bail!(
+                "Gemini gave no answer ({})",
+                response["promptFeedback"]["blockReason"]
+                    .as_str()
+                    .unwrap_or("no reason given")
+            );
+        }
+        // Thought summaries are marked `thought`; the answer is the rest.
+        let joined: String = candidate["content"]["parts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["thought"] != true)
+            .filter_map(|p| p["text"].as_str())
+            .collect();
+        text(Some(&joined))
+    }
+}
+
+fn local_max_tokens(task: Task) -> u32 {
+    match task {
+        Task::Read => READ_MAX_TOKENS,
+        Task::Detect => DETECT_MAX_TOKENS,
+    }
+}
+
+/// A non-empty answer.
+fn text(content: Option<&str>) -> Result<String> {
+    content
+        .filter(|c| !c.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow!("LLM response had no answer (a thinking model may have run out of tokens)")
+        })
+}
+
+/// The API's error message, whatever shape it comes in.
+fn error_message(value: &Value) -> String {
+    let e = &value["error"];
+    e["message"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| e.to_string())
 }
 
 pub struct VisionLlm {
     http: Client,
-    wire: Wire,
-    url: String,
+    backend: Box<dyn VisionBackend>,
     model: String,
     /// The server's key (`.env`), if any.
     api_key: Option<String>,
     /// The key of the account being scanned for, used before the server's.
     user_key: Option<String>,
-    reasoning_effort: Option<String>,
     provider: LlmProvider,
 }
 
@@ -91,10 +336,25 @@ impl VisionLlm {
         // own key (Settings); a scan without either fails with a message.
         let api_key = cfg.resolved_api_key();
         let base = base.trim_end_matches('/');
-        let (wire, url) = if cfg.provider == LlmProvider::Ollama {
-            (Wire::OllamaNative, format!("{base}/api/chat"))
-        } else {
-            (Wire::OpenAi, format!("{base}/chat/completions"))
+        let model = cfg.resolved_model();
+        let backend: Box<dyn VisionBackend> = match cfg.provider {
+            LlmProvider::Ollama => Box::new(OllamaNative {
+                url: format!("{base}/api/chat"),
+                model: model.clone(),
+            }),
+            LlmProvider::Anthropic => Box::new(AnthropicMessages {
+                url: format!("{base}/v1/messages"),
+                model: model.clone(),
+            }),
+            LlmProvider::Gemini => Box::new(Gemini {
+                url: format!("{base}/v1beta/models/{model}:generateContent"),
+            }),
+            _ => Box::new(OpenAiCompatible {
+                url: format!("{base}/chat/completions"),
+                model: model.clone(),
+                reasoning_effort: cfg.resolved_reasoning_effort(),
+                openrouter: cfg.provider == LlmProvider::Openrouter,
+            }),
         };
         crate::tls::init();
         let http = Client::builder()
@@ -102,12 +362,10 @@ impl VisionLlm {
             .build()?;
         Ok(Some(Self {
             http,
-            wire,
-            url,
-            model: cfg.resolved_model(),
+            backend,
+            model,
             api_key,
             user_key: None,
-            reasoning_effort: cfg.resolved_reasoning_effort(),
             provider: cfg.provider,
         }))
     }
@@ -118,7 +376,7 @@ impl VisionLlm {
 
     /// A cloud service that needs an API key (not a local model server).
     pub fn needs_key(&self) -> bool {
-        matches!(self.provider, LlmProvider::Openrouter | LlmProvider::Openai)
+        self.provider.needs_key()
     }
 
     /// Use this account's key, before the server's (`None`: the server's).
@@ -128,56 +386,27 @@ impl VisionLlm {
 
     /// Read name / set / number from a photo of a single card.
     pub fn read_card(&self, img: &DynamicImage) -> Result<(CardHints, Option<f32>)> {
-        let content = self.ask(READ_PROMPT, img, CARD_IMAGE_DIM, READ_MAX_TOKENS)?;
+        let content = self.ask(Task::Read, READ_PROMPT, img, CARD_IMAGE_DIM)?;
         parse_answer(&content)
     }
 
     /// Find every card in a photo of a table.
     pub fn detect_cards(&self, img: &DynamicImage) -> Result<Vec<NormBox>> {
-        let content = self.ask(DETECT_PROMPT, img, SCENE_IMAGE_DIM, DETECT_MAX_TOKENS)?;
+        let content = self.ask(Task::Detect, DETECT_PROMPT, img, SCENE_IMAGE_DIM)?;
         let aspect = img.width() as f32 / img.height().max(1) as f32;
         Ok(plausible_cards(parse_boxes(&content)?, aspect))
     }
 
-    fn ask(
-        &self,
-        prompt: &str,
-        img: &DynamicImage,
-        max_dim: u32,
-        max_tokens: u32,
-    ) -> Result<String> {
-        let b64 = encode_jpeg(img, max_dim)?;
-        let body = match self.wire {
-            Wire::OllamaNative => json!({
-                "model": self.model,
-                "stream": false,
-                "think": false,
-                "options": {"temperature": 0, "num_predict": max_tokens},
-                "messages": [{"role": "user", "content": prompt, "images": [b64]}]
-            }),
-            Wire::OpenAi => {
-                let mut body = json!({
-                    "model": self.model,
-                    "temperature": 0,
-                    "max_tokens": max_tokens,
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": format!("data:image/jpeg;base64,{b64}")}}
-                        ]
-                    }]
-                });
-                if let Some(effort) = &self.reasoning_effort {
-                    body["reasoning_effort"] = json!(effort);
-                }
-                body
-            }
+    fn ask(&self, task: Task, prompt: &str, img: &DynamicImage, max_dim: u32) -> Result<String> {
+        let jpeg = encode_jpeg(img, max_dim)?;
+        let ask = Ask {
+            task,
+            prompt,
+            jpeg: &jpeg,
         };
-
-        let mut req = self.http.post(&self.url).json(&body);
+        let mut req = self.backend.request(&self.http, &ask);
         match self.user_key.as_ref().or(self.api_key.as_ref()) {
-            Some(key) => req = req.bearer_auth(key),
+            Some(key) => req = self.backend.authorize(req, key),
             None if self.needs_key() => bail!(
                 "no {:?} API key: add yours on the Settings page (or the admin sets one for \
                  the server in .env)",
@@ -185,32 +414,15 @@ impl VisionLlm {
             ),
             None => {}
         }
-        if self.provider == LlmProvider::Openrouter {
-            req = req
-                .header(
-                    "HTTP-Referer",
-                    "https://github.com/johnflarson/scan-capture-card",
-                )
-                .header("X-Title", "mtg-scan");
-        }
         let resp = req
             .send()
-            .with_context(|| format!("LLM request to {} failed", self.url))?;
+            .with_context(|| format!("LLM request to {:?} failed", self.provider))?;
         let status = resp.status();
-        let value: serde_json::Value = resp.json().context("LLM returned non-JSON")?;
+        let value: Value = resp.json().context("LLM returned non-JSON")?;
         if !status.is_success() {
-            bail!("LLM error {status}: {}", value["error"]);
+            bail!("LLM error {status}: {}", error_message(&value));
         }
-        let content = match self.wire {
-            Wire::OllamaNative => value["message"]["content"].as_str(),
-            Wire::OpenAi => value["choices"][0]["message"]["content"].as_str(),
-        };
-        content
-            .filter(|c| !c.trim().is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| {
-                anyhow!("LLM response had no answer (a thinking model may have run out of tokens)")
-            })
+        self.backend.answer(&value)
     }
 }
 
@@ -318,6 +530,120 @@ fn plausible_cards(boxes: Vec<NormBox>, aspect: f32) -> Vec<NormBox> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ASK: Ask = Ask {
+        task: Task::Read,
+        prompt: "read it",
+        jpeg: "AAAA",
+    };
+
+    #[test]
+    fn anthropic_requests_and_answers() {
+        let b = AnthropicMessages {
+            url: "https://api.anthropic.com/v1/messages".into(),
+            model: "claude-opus-5-5".into(),
+        };
+        let body = b.body(&ASK);
+        assert_eq!(body["model"], "claude-opus-5-5");
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert_eq!(body["fallbacks"], "default");
+        assert!(
+            body.get("temperature").is_none(),
+            "refused by this API version"
+        );
+        assert!(body.get("thinking").is_none());
+        let image = &body["messages"][0]["content"][0];
+        assert_eq!(image["source"]["media_type"], "image/jpeg");
+        assert_eq!(image["source"]["data"], "AAAA");
+        assert_eq!(body["messages"][0]["content"][1]["text"], "read it");
+
+        let reply = json!({
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": ""},
+                {"type": "text", "text": "{\"name\": \"Opt\"}"}
+            ]
+        });
+        assert_eq!(b.answer(&reply).unwrap(), "{\"name\": \"Opt\"}");
+        let refused =
+            json!({"stop_reason": "refusal", "stop_details": {"category": "cyber"}, "content": []});
+        assert!(
+            b.answer(&refused)
+                .unwrap_err()
+                .to_string()
+                .contains("cyber")
+        );
+    }
+
+    #[test]
+    fn gemini_requests_and_answers() {
+        let b = Gemini { url: "x".into() };
+        let body = b.body(&ASK);
+        let parts = &body["contents"][0]["parts"];
+        assert_eq!(parts[0]["inline_data"]["mime_type"], "image/jpeg");
+        assert_eq!(parts[1]["text"], "read it");
+        let reply = json!({"candidates": [{"content": {"parts": [
+            {"text": "thinking...", "thought": true},
+            {"text": "[]"}
+        ]}}]});
+        assert_eq!(b.answer(&reply).unwrap(), "[]");
+        let blocked = json!({"promptFeedback": {"blockReason": "SAFETY"}});
+        assert!(
+            b.answer(&blocked)
+                .unwrap_err()
+                .to_string()
+                .contains("SAFETY")
+        );
+    }
+
+    #[test]
+    fn local_models_are_capped_and_answers_read() {
+        let o = OllamaNative {
+            url: "x".into(),
+            model: "qwen3-vl:8b-instruct".into(),
+        };
+        let body = o.body(&ASK);
+        assert_eq!(body["think"], false);
+        assert_eq!(body["options"]["num_predict"], READ_MAX_TOKENS);
+        assert_eq!(body["messages"][0]["images"][0], "AAAA");
+        assert_eq!(
+            o.answer(&json!({"message": {"content": "{}"}})).unwrap(),
+            "{}"
+        );
+        assert!(o.answer(&json!({"message": {"content": " "}})).is_err());
+
+        let c = OpenAiCompatible {
+            url: "x".into(),
+            model: "m".into(),
+            reasoning_effort: Some("none".into()),
+            openrouter: false,
+        };
+        let body = c.body(&Ask {
+            task: Task::Detect,
+            ..ASK
+        });
+        assert_eq!(body["max_tokens"], DETECT_MAX_TOKENS);
+        assert_eq!(body["reasoning_effort"], "none");
+        assert_eq!(
+            c.answer(&json!({"choices": [{"message": {"content": "[]"}}]}))
+                .unwrap(),
+            "[]"
+        );
+    }
+
+    #[test]
+    fn error_messages_are_read_from_any_api() {
+        assert_eq!(
+            error_message(
+                &json!({"error": {"type": "authentication_error", "message": "invalid x-api-key"}})
+            ),
+            "invalid x-api-key"
+        );
+        assert_eq!(
+            error_message(&json!({"error": "model not found"})),
+            "\"model not found\""
+        );
+    }
 
     #[test]
     fn parses_fenced_json() {
