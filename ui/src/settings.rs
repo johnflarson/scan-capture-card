@@ -6,10 +6,11 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    CARD_LANGUAGES, Currency, DatabaseView, DecksView, Finish, InfoRow, Mode, PriceSettings,
+    CARD_LANGUAGES, Currency, DatabaseView, DecksView, Finish, InfoRow, Me, Mode, PriceSettings,
     SettingsChange, SettingsView, Startup,
 };
 
+use crate::account::{AccountCard, UsersCard};
 use crate::api;
 use crate::decks::DeckCache;
 use crate::mana::ManaSymbols;
@@ -23,6 +24,7 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
     let all_decks = RwSignal::new(None::<Result<DecksView, String>>);
     let saving = RwSignal::new(false);
     let currency = use_context::<RwSignal<Currency>>();
+    let me = use_context::<Me>().expect("signed in");
 
     let load_decks =
         move || spawn_local(async move { all_decks.set(Some(api::all_decks().await)) });
@@ -116,12 +118,14 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
         >
             <div class="settings-grid">
                 <div class="settings-column">
+                    <AccountCard me=me.clone() notify />
                     <StartupCard settings save saving />
                     <PricesCard settings save saving />
                     <MoxfieldCard settings save saving />
                     <DeckVisibility settings all_decks save saving />
                 </div>
                 <div class="settings-column">
+                    {me.is_admin.then(|| view! { <UsersCard me=me.clone() notify /> })}
                     <DatabaseCard database reload=Callback::new(move |()| load_database()) />
                     <ConnectCard settings />
                 </div>
@@ -602,42 +606,15 @@ fn ConnectCard(settings: RwSignal<Option<SettingsView>>) -> impl IntoView {
                 <dt>"Access"</dt>
                 <dd>
                     {if c.local_only {
-                        "This computer only"
-                    } else if c.token_required {
-                        "Other computers sign in with the access token (MTG_SCAN_UI_TOKEN in .env)"
+                        "This computer only; everyone signs in"
                     } else {
-                        "Anyone on your network can use it"
+                        "Everyone signs in with their account; admins invite people under Users"
                     }}
                 </dd>
-                {c.sign_in_link.clone().map(|url| {
-                    view! {
-                        <dt>"Sign-in link"</dt>
-                        <dd>
-                            {link(url)}
-                            <div class="muted small">
-                                "Open it once on a phone or another computer; the browser then stays signed in. Shown only on this computer."
-                            </div>
-                        </dd>
-                    }
-                })}
             </dl>
-            <p class="muted small">
-                {if c.token_required {
-                    view! {
-                        <code>"mtg-scan ui-token"</code>
-                        " makes a new token (signing everyone else out); restart mtg-scan ui to use it."
-                    }
-                    .into_any()
-                } else if c.local_only {
-                    view! { "Start without --bind 127.0.0.1 to use it from other computers." }.into_any()
-                } else {
-                    view! {
-                        <code>"mtg-scan ui-token"</code>
-                        " adds an access token so only people you give it to can use the UI; restart mtg-scan ui after."
-                    }
-                    .into_any()
-                }}
-            </p>
+            {c.local_only.then(|| view! {
+                <p class="muted small">"Start without --bind 127.0.0.1 to use it from other computers."</p>
+            })}
         })
     };
     view! {

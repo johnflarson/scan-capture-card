@@ -14,7 +14,7 @@ services:
     build: .
     ports:
       # Only this computer by default. To use it from other computers, set
-      # MTG_SCAN_PUBLISH=0.0.0.0 and MTG_SCAN_UI_TOKEN (they then sign in).
+      # MTG_SCAN_PUBLISH=0.0.0.0 (everyone signs in with their account).
       - "${MTG_SCAN_PUBLISH:-127.0.0.1}:8787:8787"
     volumes:
       - data:/data

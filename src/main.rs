@@ -1,3 +1,4 @@
+mod accounts;
 mod app;
 mod bulk;
 mod cache;
@@ -190,11 +191,10 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         top: usize,
     },
-    /// Create (or show) the access token other computers need for `mtg-scan ui`
-    UiToken {
-        /// Show the current token instead of creating a new one
-        #[arg(long)]
-        show: bool,
+    /// Accounts of the web UI
+    User {
+        #[command(subcommand)]
+        command: UserCommand,
     },
     /// Database management (SQLite or PostgreSQL)
     Db {
@@ -236,6 +236,21 @@ enum Command {
         output: PathBuf,
         #[command(flatten)]
         camera: CameraArgs,
+    },
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
+    /// List the accounts
+    List,
+    /// Print a link that sets a new password for an account (for an admin
+    /// who can't sign in any more)
+    ResetLink {
+        /// The account's sign-in name
+        name: String,
+        /// The address the web UI is reached at
+        #[arg(long, default_value = "http://localhost:8787")]
+        url: String,
     },
 }
 
@@ -489,7 +504,7 @@ fn run() -> Result<()> {
             finish,
         } => history(&cfg, &name, set, number, finish),
         Command::Movers { days, top } => movers(&cfg, days, top),
-        Command::UiToken { show } => ui_token(show),
+        Command::User { command } => user(&cfg, command),
         Command::Db { command } => db(&cfg, command),
         Command::List => list(&cfg),
         Command::Cameras => {
@@ -852,29 +867,52 @@ fn movers(cfg: &Config, days: u32, top: usize) -> Result<()> {
     Ok(())
 }
 
-/// Save a new web UI access token in `.env` (replacing any old one, which
-/// signs other computers out), or show the current one.
-fn ui_token(show: bool) -> Result<()> {
-    const VAR: &str = "MTG_SCAN_UI_TOKEN";
-    let token = if show {
-        std::env::var(VAR)
-            .ok()
-            .filter(|t| !t.trim().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("no {VAR} yet; run `mtg-scan ui-token` to create one"))?
-    } else {
-        let env_file = std::path::Path::new(".env");
-        if !env_file.is_file() {
-            bail!("run this from the folder containing your .env file");
+fn user(cfg: &Config, command: UserCommand) -> Result<()> {
+    let accounts = accounts::Accounts::new(accounts::open_store(cfg)?)?;
+    match command {
+        UserCommand::List => {
+            let users = accounts.users()?;
+            if users.is_empty() {
+                println!("No accounts yet: start `mtg-scan ui` and open the setup link it prints.");
+            }
+            for u in users {
+                let mut notes = Vec::new();
+                if u.is_admin {
+                    notes.push("admin".to_string());
+                }
+                if u.disabled {
+                    notes.push("disabled".to_string());
+                }
+                if !u.has_password {
+                    notes.push("no password yet".to_string());
+                }
+                if let Some(seen) = u.last_seen_at {
+                    notes.push(format!(
+                        "last seen {}",
+                        seen.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
+                    ));
+                }
+                println!("{:<24} {}", u.name, notes.join(", "));
+            }
         }
-        let token = generate_password()?;
-        config::update_env_file(env_file, &[(VAR, Some(&token))])?;
-        println!("Saved a new {VAR} in .env. Restart `mtg-scan ui` to use it.");
-        token
-    };
-    println!("Access token: {token}");
-    println!(
-        "On another computer, open http://<this computer>:8787/?token={token} once, or enter the token on the sign-in page."
-    );
+        UserCommand::ResetLink { name, url } => {
+            let user = accounts
+                .find(&name)?
+                .ok_or_else(|| anyhow::anyhow!("there is no account named {name}"))?;
+            let (code, expires) = accounts.reset_link(user.id, None)?;
+            println!(
+                "Open this to set a new password for {} (works once, until {}):",
+                user.name,
+                expires
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+            );
+            println!("{}/reset?code={code}", url.trim_end_matches('/'));
+            if user.disabled {
+                println!("The account is disabled: an admin must enable it before it can sign in.");
+            }
+        }
+    }
     Ok(())
 }
 

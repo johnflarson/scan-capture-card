@@ -4,6 +4,12 @@
 //!
 //! | Route | |
 //! |---|---|
+//! | `GET /api/auth` | who is signed in, and whether the admin account still needs creating |
+//! | `POST /api/auth/setup`, `/sign-in`, `/sign-out` | create the first (admin) account, sign in, sign out |
+//! | `GET`/`POST /api/auth/link` | an invite or password-reset link: what it is for, then use it |
+//! | `POST /api/account/password` | change one's password (signs out other browsers) |
+//! | `GET`/`POST /api/account/tokens`, `DELETE /api/account/tokens/{id}` | API tokens for scripts |
+//! | `GET /api/users`, `POST /api/users/invite`, `POST /api/users/{id}[/reset]` | admins: users, invite links, reset links, admin and disabled flags |
 //! | `GET /api/session` | scanner state + this session's cards |
 //! | `GET /api/events` | Server-Sent Events: state changes, new cards, messages |
 //! | `GET /api/stream.mjpg` | live camera preview (MJPEG) |
@@ -21,10 +27,10 @@
 //! | `GET /api/settings/database` | where the collection is stored, with live status (no passwords) |
 //! | everything else | the embedded UI |
 //!
-//! With `MTG_SCAN_UI_TOKEN` set, other computers must sign in first (see
-//! [`access`]); this computer never has to.
+//! Everything but the app's files, the health check and signing in needs a
+//! signed-in user (see [`auth`]).
 
-mod access;
+mod auth;
 mod camera;
 mod settings;
 
@@ -39,7 +45,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use futures_util::{Stream, StreamExt};
 use mtg_scan_shared::{
@@ -49,6 +55,7 @@ use mtg_scan_shared::{
 use tokio::sync::watch;
 use tokio_stream::wrappers::BroadcastStream;
 
+use crate::accounts::{self, Accounts};
 use crate::app::{self, App};
 use crate::config::Config;
 use crate::engine::{self, Engine, EngineEvent, EngineOptions};
@@ -74,6 +81,7 @@ struct Assets;
 
 struct AppState {
     engine: Arc<Engine>,
+    accounts: Arc<Accounts>,
     cfg: Config,
     /// What the Settings page changes while running.
     settings: std::sync::Mutex<settings::Settings>,
@@ -87,6 +95,7 @@ pub fn run(cfg: &Config, opts: EngineOptions, web: WebOptions) -> Result<()> {
     if opts.dry_run {
         println!("Dry run: cards are identified and priced but not saved.");
     }
+    let accounts = Arc::new(Accounts::new(accounts::open_store(cfg)?)?);
     let engine = Arc::new(engine::start(cfg, opts)?);
     println!("Camera: {}", engine.view().camera);
     // Keeps the card data and daily prices current while the app runs.
@@ -97,7 +106,7 @@ pub fn run(cfg: &Config, opts: EngineOptions, web: WebOptions) -> Result<()> {
         .enable_all()
         .build()
         .context("failed to start the async runtime")?;
-    let served = runtime.block_on(serve(cfg.clone(), engine.clone(), web));
+    let served = runtime.block_on(serve(cfg.clone(), engine.clone(), accounts, web));
     // Dropping the runtime ends every connection, releasing their engine handles.
     drop(runtime);
 
@@ -107,13 +116,17 @@ pub fn run(cfg: &Config, opts: EngineOptions, web: WebOptions) -> Result<()> {
     served.and(stopped)
 }
 
-async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> {
+async fn serve(
+    cfg: Config,
+    engine: Arc<Engine>,
+    accounts: Arc<Accounts>,
+    web: WebOptions,
+) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(web.addr)
         .await
         .with_context(|| format!("could not listen on {} (port in use?)", web.addr))?;
     let port = web.addr.port();
     let local = format!("http://localhost:{port}");
-    let token = access::configured_token();
     println!("\nWeb UI: {local}");
     if web.addr.ip().is_loopback() {
         println!("   only on this computer (--bind {})", web.addr.ip());
@@ -123,35 +136,50 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         {
             println!("   on other computers: http://{ip}:{port}");
         }
-        if token.is_some() {
-            println!(
-                "   other computers sign in with the access token ({} in .env)",
-                access::TOKEN_VAR
-            );
-        } else {
-            println!(
-                "   anyone on your network can use it; `mtg-scan ui-token` adds an access token,"
-            );
-            println!("   or use --bind 127.0.0.1 to allow only this computer");
-        }
         println!(
             "   (Windows may ask whether to allow mtg-scan on the network: allow Private networks.)"
         );
     }
+    // Without accounts, whoever has this code creates the admin account.
+    let first_page = match accounts.setup_code() {
+        Some(code) => {
+            let link = format!("{local}/setup?code={code}");
+            println!("\nNo accounts yet. Create the admin account here:\n   {link}");
+            println!("   (from another computer, put its address in place of localhost)");
+            link
+        }
+        None => local,
+    };
     println!("Press Ctrl+C to stop.\n");
     if web.open_browser {
-        open_browser(&local);
+        open_browser(&first_page);
     }
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Arc::new(AppState {
         engine: engine.clone(),
+        accounts,
         settings: settings::Settings::new(&cfg, web.overridden),
         cfg,
         addr: web.addr,
         shutdown: shutdown_rx,
     });
     let app = Router::new()
+        .route("/api/auth", get(auth::status))
+        .route("/api/auth/setup", post(auth::set_up))
+        .route("/api/auth/sign-in", post(auth::sign_in))
+        .route("/api/auth/sign-out", post(auth::sign_out))
+        .route("/api/auth/link", get(auth::link_info).post(auth::redeem))
+        .route("/api/account/password", post(auth::change_password))
+        .route(
+            "/api/account/tokens",
+            get(auth::tokens).post(auth::new_token),
+        )
+        .route("/api/account/tokens/{id}", delete(auth::delete_token))
+        .route("/api/users", get(auth::users))
+        .route("/api/users/invite", post(auth::invite))
+        .route("/api/users/{id}", post(auth::change_user))
+        .route("/api/users/{id}/reset", post(auth::reset))
         .route("/api/session", get(session))
         .route("/api/events", get(events))
         .route("/api/stream.mjpg", get(stream))
@@ -168,11 +196,11 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/settings", get(settings::get).post(settings::change))
         .route("/api/settings/database", get(settings::database))
         .fallback(static_file)
-        .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
-            access::Access::new(token),
-            access::guard,
-        ));
+            state.clone(),
+            auth::guard,
+        ))
+        .with_state(state);
 
     let stop = async move {
         let mut check = tokio::time::interval(Duration::from_millis(500));
@@ -192,7 +220,7 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         }
         let _ = shutdown_tx.send(true);
     };
-    // The peer address tells this computer from the others (see `access`).
+    // The peer address counts failed sign-ins per address (see `accounts`).
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

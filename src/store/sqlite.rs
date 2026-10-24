@@ -45,6 +45,11 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "price_sources",
         include_str!("../../migrations/sqlite/0003_price_sources.sql"),
     ),
+    (
+        4,
+        "accounts",
+        include_str!("../../migrations/sqlite/0004_accounts.sql"),
+    ),
 ];
 
 pub fn latest_migration() -> i32 {
@@ -182,6 +187,11 @@ impl SqliteStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The migrated connection, for the account tables (`accounts`).
+    pub(crate) fn into_connection(self) -> Connection {
+        self.conn
     }
 
     /// A write transaction that takes the write lock up front, so it waits

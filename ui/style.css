@@ -697,6 +697,35 @@ dl.info dd { margin: 0; overflow-wrap: anywhere; }
 .visibility-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btn.small { padding: 5px 14px; font-size: 13px; min-width: 64px; }
 
+/* Users and API tokens (Settings). */
+.people-list { list-style: none; margin: 8px 0 12px; padding: 0; display: grid; }
+.person-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
+  padding: 6px 0; border-top: var(--line);
+}
+.person-row.hidden .person-name { opacity: 0.55; }
+.person-name { font-weight: 500; color: var(--md-on-surface); }
+.person-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.person-actions { margin-left: auto; display: flex; flex-wrap: wrap; }
+.person-row > .btn { margin-left: auto; }
+.secret { margin: 8px 0 12px; }
+.secret .text-input { width: 100%; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.secret p { margin: 6px 0 0; }
+.user-name { color: var(--md-on-surface); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Signing in: one card in the middle of the screen. */
+.auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.auth-card {
+  width: min(400px, 100%); padding: 28px; border-radius: var(--radius-l);
+  background: var(--md-surface-container); box-shadow: var(--elevation-1);
+}
+.auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.auth-form { display: grid; gap: 6px; }
+.auth-form h1, .auth-card h1 { margin: 0 0 8px; font-family: var(--font-title); font-size: 24px; font-weight: 400; }
+.auth-form p { margin: 0 0 8px; line-height: 1.45; }
+.auth-form .btn { margin-top: 12px; justify-self: stretch; text-align: center; }
+.auth-label { margin-top: 8px; font-size: 13px; color: var(--md-on-surface-variant); }
+
 @media (max-width: 1000px) {
   .settings-grid { grid-template-columns: minmax(0, 1fr); }
 }

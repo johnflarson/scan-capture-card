@@ -4,11 +4,13 @@ use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    CardOutcome, CardView, ClientCommand, CollectionRow, CollectionView, Currency, EditResult,
-    Finish, Mode, PrintingView, RowEdit, ServerEvent, StateView, Totals, decks_by_card, eur, usd,
+    AuthStatus, CardOutcome, CardView, ClientCommand, CollectionRow, CollectionView, Currency,
+    EditResult, Finish, Me, Mode, PrintingView, RowEdit, ServerEvent, StateView, Totals,
+    decks_by_card, eur, usd,
 };
 
 use crate::add::AddDialog;
+use crate::auth::{AuthPage, Wanted, wanted};
 use crate::camera::BrowserCamera;
 use crate::decks::{DeckCache, DecksPage};
 use crate::filters::{
@@ -102,8 +104,46 @@ impl CollectionCache {
     }
 }
 
+/// The sign-in page until this browser has a session, then the app.
 #[component]
 pub fn App() -> impl IntoView {
+    let status = RwSignal::new(None::<Result<AuthStatus, String>>);
+    spawn_local(async move { status.set(Some(api::auth_status().await)) });
+    move || {
+        match status.get() {
+        None => view! { <div class="auth-screen"><div class="spinner"></div></div> }.into_any(),
+        Some(Err(e)) => view! {
+            <div class="auth-screen">
+                <div class="auth-card">
+                    <h1>"Can't reach the server"</h1>
+                    <p class="error-text">{e}</p>
+                    <button class="btn filled" on:click=move |_| api::signed_out()>"Try again"</button>
+                </div>
+            </div>
+        }
+        .into_any(),
+        // An invite or reset link is for someone else (or a new password),
+        // even in a browser that is signed in.
+        Some(Ok(AuthStatus { user: Some(me), .. })) if !matches!(wanted(), Wanted::Link { .. }) => {
+            view! { <Workspace me /> }.into_any()
+        }
+        Some(Ok(s)) => view! { <AuthPage setup_needed=s.setup_needed /> }.into_any(),
+    }
+    }
+}
+
+/// The app, for a signed-in user.
+#[component]
+fn Workspace(me: Me) -> impl IntoView {
+    // Not the setup or a link page any more.
+    if let Some(window) = web_sys::window()
+        && window.location().pathname().is_ok_and(|p| p != "/")
+        && let Ok(history) = window.history()
+    {
+        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
+    }
+    let user_name = me.name.clone();
+    provide_context(me);
     let state = RwSignal::new(None::<StateView>);
     let cards = RwSignal::new(Vec::<CardView>::new());
     // Cards hidden from the Scan page's top 5 (see `top`), kept across tabs.
@@ -282,6 +322,7 @@ pub fn App() -> impl IntoView {
                 <span class="connection">
                     {move || if connected.get() { "Connected" } else { "Offline" }}
                 </span>
+                <span class="user-name" title="Signed in">{user_name}</span>
                 <button
                     class="icon-btn settings-btn"
                     class:active=move || tab.get() == Tab::Settings

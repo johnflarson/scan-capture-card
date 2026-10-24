@@ -90,7 +90,13 @@ jobs:
           test "$status" = healthy
           curl -fsS http://127.0.0.1:8787/api/health
           curl -fsS -o /dev/null http://127.0.0.1:8787/
-          curl -fsS http://127.0.0.1:8787/api/session | grep -q '"camera_error"'
+          # Signed out: refused. The setup code from the log creates the admin.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/session)" = 401
+          code=$(docker logs tome 2>&1 | grep -o 'setup?code=[A-Za-z0-9_-]*' | head -1 | cut -d= -f2)
+          curl -fsS -c jar -H 'Content-Type: application/json' \
+            -d "{\"code\":\"$code\",\"name\":\"ci\",\"password\":\"ci-password\"}" \
+            http://127.0.0.1:8787/api/auth/setup
+          curl -fsS -b jar http://127.0.0.1:8787/api/session | grep -q '"camera_error"'
           docker exec tome mtg-scan db status
           docker rm -f tome
       - name: OCR runs (ONNX Runtime loads, models are in the image)
