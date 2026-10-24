@@ -3,6 +3,7 @@
 //! desktop window and the web UI's MJPEG stream.
 
 use image::{Rgb, RgbImage};
+use mtg_scan_shared::{OverlayBox, OverlayView};
 
 use crate::pipeline::Rect;
 
@@ -29,6 +30,30 @@ pub struct Overlay {
     pub foil: bool,
     /// Auto-scan indicator (top-left dot) and its colour.
     pub auto_dot: Option<Color>,
+}
+
+/// `overlay` for the web page to draw over a `size` frame.
+pub fn overlay_view((width, height): (u32, u32), overlay: &Overlay) -> OverlayView {
+    let shape = |(r, c): &(Rect, Color)| OverlayBox {
+        x: r.x,
+        y: r.y,
+        w: r.w,
+        h: r.h,
+        color: hex(*c),
+    };
+    OverlayView {
+        width,
+        height,
+        guide: overlay.guide.as_ref().map(shape),
+        boxes: overlay.boxes.iter().map(shape).collect(),
+        foil: overlay.foil,
+        auto_dot: overlay.auto_dot.map(hex),
+    }
+}
+
+/// `#rrggbb`.
+fn hex([r, g, b]: Color) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
 }
 
 /// Integer downscale factor that keeps previews around 1600-1920 px wide.
@@ -180,6 +205,34 @@ mod tests {
         );
         assert_eq!(img.get_pixel(5, 9).0, FAILED);
         assert_eq!(img.get_pixel(9, 5).0, FAILED);
+    }
+
+    #[test]
+    fn overlay_for_the_page_keeps_camera_pixels() {
+        let guide = Rect {
+            x: 10,
+            y: 20,
+            w: 30,
+            h: 40,
+        };
+        let view = overlay_view(
+            (1920, 1080),
+            &Overlay {
+                guide: Some((guide, ADDED)),
+                boxes: vec![(guide, FAILED)],
+                foil: true,
+                auto_dot: Some(IDLE),
+            },
+        );
+        assert_eq!((view.width, view.height), (1920, 1080));
+        let g = view.guide.unwrap();
+        assert_eq!(
+            (g.x, g.y, g.w, g.h, g.color.as_str()),
+            (10, 20, 30, 40, "#4cbfbf")
+        );
+        assert_eq!(view.boxes[0].color, "#e57373");
+        assert_eq!(view.auto_dot.as_deref(), Some("#cdba9a"));
+        assert!(view.foil);
     }
 
     #[test]

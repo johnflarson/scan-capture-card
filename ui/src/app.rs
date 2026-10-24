@@ -15,6 +15,7 @@ use crate::filters::{
 };
 use crate::gallery::CardGrid;
 use crate::home::HomePage;
+use crate::overlay::CameraOverlay;
 use crate::preview::{CardLink, Preview, PreviewLayer};
 use crate::review::ReviewList;
 use crate::settings::SettingsPage;
@@ -335,6 +336,9 @@ fn LivePage(
                         src=move || format!("/api/stream.mjpg?c={}", epoch.get())
                         alt="Live camera preview"
                     />
+                    <CameraOverlay overlay=Signal::derive(move || {
+                        s().map(|s| s.overlay).unwrap_or_default()
+                    }) />
                     {move || {
                         s().and_then(|s| s.camera_error)
                             .map(|why| {

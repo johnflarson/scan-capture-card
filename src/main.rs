@@ -293,6 +293,9 @@ struct CameraArgs {
     /// Capture height
     #[arg(long)]
     height: Option<u32>,
+    /// Show this photo instead of a camera (trying out the UI and table scans)
+    #[arg(long, hide = true)]
+    frames_from: Option<PathBuf>,
 }
 
 #[derive(Args, Clone)]
@@ -362,6 +365,7 @@ fn run() -> Result<()> {
                     // The desktop window has no review list: save as before.
                     review_uncertain: false,
                     wait_for_camera: false,
+                    draw_overlay: true,
                 },
             )
         }
@@ -386,6 +390,7 @@ fn run() -> Result<()> {
                         dry_run,
                         review_uncertain: false,
                         wait_for_camera: false,
+                        draw_overlay: true,
                     },
                 )
             }
@@ -427,6 +432,8 @@ fn run() -> Result<()> {
                     dry_run,
                     review_uncertain: cfg.recognition.review_uncertain,
                     wait_for_camera: true,
+                    // The page draws them (`StateView::overlay`).
+                    draw_overlay: false,
                 },
                 web::WebOptions {
                     addr: std::net::SocketAddr::new(bind, port),
@@ -582,6 +589,9 @@ fn health(port: u16) -> Result<()> {
 fn apply_camera(cfg: &mut Config, args: &CameraArgs, mode: Mode) {
     if args.camera.is_some() {
         cfg.camera.index = args.camera;
+    }
+    if args.frames_from.is_some() {
+        cfg.camera.frames_from = args.frames_from.clone();
     }
     let (w, h) = match mode {
         Mode::Single => (&mut cfg.camera.width, &mut cfg.camera.height),

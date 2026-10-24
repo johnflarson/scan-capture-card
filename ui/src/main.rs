@@ -9,6 +9,7 @@ mod filters;
 mod gallery;
 mod home;
 mod mana;
+mod overlay;
 mod pie;
 mod preview;
 mod review;

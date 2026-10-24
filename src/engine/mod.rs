@@ -11,6 +11,7 @@
 //! [`Preview`] and the [`EngineEvent`] broadcast.
 
 pub mod draw;
+mod source;
 mod watcher;
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -20,10 +21,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use image::{DynamicImage, RgbImage};
-use mtg_scan_shared::{CardOutcome, CardView, Mode, SessionView, StateView};
+use mtg_scan_shared::{CardOutcome, CardView, Mode, OverlayView, SessionView, StateView};
 use tokio::sync::{broadcast, watch};
 
-use crate::camera::{self, Webcam};
 use crate::config::Config;
 use crate::model::Finish;
 use crate::pipeline::{CardResult, Outcome, Pipeline, Rect};
@@ -49,6 +49,9 @@ pub struct EngineOptions {
     /// one (the web UI: the collection, decks and settings don't need it).
     /// Otherwise a missing camera fails [`Engine::start`].
     pub wait_for_camera: bool,
+    /// Draw the guide and boxes into the preview frames (the desktop window).
+    /// The web UI draws them in the page from [`StateView::overlay`] instead.
+    pub draw_overlay: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,8 +107,9 @@ impl From<mtg_scan_shared::ClientCommand> for Command {
     }
 }
 
-/// A display-sized camera frame with overlays. The JPEG encoding is done
-/// once, on first request, and shared by every viewer.
+/// A display-sized camera frame (with overlays when
+/// [`EngineOptions::draw_overlay`]). The JPEG encoding is done once, on first
+/// request, and shared by every viewer.
 pub struct Preview {
     pub id: u64,
     pub image: RgbImage,
@@ -170,11 +174,27 @@ struct State {
     card_kingdom: bool,
     boxes: Vec<(Rect, Color)>,
     guide_color: Color,
+    /// The scan region and the frame size, while a camera is open.
+    frame: Option<(Rect, (u32, u32))>,
     cards: Vec<CardView>,
     next_seq: u64,
 }
 
 impl State {
+    /// What to draw over the camera image (camera pixels).
+    fn overlay(&self) -> Overlay {
+        let busy_or = |c| if self.busy { draw::BUSY } else { c };
+        Overlay {
+            guide: self
+                .frame
+                .filter(|_| self.mode == Mode::Single)
+                .map(|(area, _)| (area, busy_or(self.guide_color))),
+            boxes: self.boxes.clone(),
+            foil: self.finish != Finish::Nonfoil,
+            auto_dot: self.auto.then_some(busy_or(draw::IDLE)),
+        }
+    }
+
     fn view(&self) -> StateView {
         StateView {
             ready: self.ready,
@@ -193,6 +213,10 @@ impl State {
             recognizer: self.recognizer.clone(),
             collection: self.collection.clone(),
             card_kingdom: self.card_kingdom,
+            overlay: match self.frame {
+                Some((_, size)) => draw::overlay_view(size, &self.overlay()),
+                None => OverlayView::default(),
+            },
         }
     }
 }
@@ -280,6 +304,7 @@ impl Engine {
                 card_kingdom: cfg.prices.card_kingdom,
                 boxes: Vec::new(),
                 guide_color: draw::IDLE,
+                frame: None,
                 cards: Vec::new(),
                 next_seq: 1,
             })),
@@ -292,11 +317,10 @@ impl Engine {
 
         let capture = {
             let (cfg, ctx) = (cfg.clone(), ctx.clone());
-            let wait = opts.wait_for_camera;
             thread::Builder::new()
                 .name("capture".into())
                 .spawn(move || {
-                    capture_loop(cfg, ctx, wait, cmd_rx, job_tx, preview_tx, opened_tx)
+                    capture_loop(cfg, ctx, opts, cmd_rx, job_tx, preview_tx, opened_tx)
                 })?
         };
         // Camera problems should fail `start`, not surface later.
@@ -382,32 +406,6 @@ impl Engine {
 
 // ----------------------------------------------------------------- capture --
 
-fn resolution(cfg: &Config, mode: Mode) -> (u32, u32) {
-    match mode {
-        Mode::Single => (cfg.camera.width, cfg.camera.height),
-        Mode::Table => (cfg.camera.table_width, cfg.camera.table_height),
-    }
-}
-
-fn open_camera(cfg: &Config, mode: Mode) -> Result<(Webcam, RgbImage)> {
-    let (w, h) = resolution(cfg, mode);
-    let mut cam = Webcam::open(cfg.camera.index, w, h)?;
-    let frame = camera::warm_frame(&mut cam)?;
-    Ok((cam, frame))
-}
-
-fn describe_camera(cam: &Webcam) -> String {
-    let f = cam.format();
-    format!(
-        "{} ({}x{} {} @ {}fps)",
-        cam.name,
-        f.width(),
-        f.height(),
-        f.format(),
-        f.frame_rate()
-    )
-}
-
 /// The scan region for a mode: the card guide, or the whole frame.
 fn region(cfg: &Config, mode: Mode, (fw, fh): (u32, u32)) -> Rect {
     match mode {
@@ -433,7 +431,7 @@ fn region(cfg: &Config, mode: Mode, (fw, fh): (u32, u32)) -> Rect {
 fn capture_loop(
     cfg: Config,
     ctx: Ctx,
-    wait_for_camera: bool,
+    opts: EngineOptions,
     commands: Receiver<Command>,
     jobs: Sender<Job>,
     preview: watch::Sender<Option<Arc<Preview>>>,
@@ -441,12 +439,12 @@ fn capture_loop(
 ) -> Result<()> {
     let mut mode = ctx.lock().mode;
     // `cam` is `None` while there is no camera (only with `wait_for_camera`).
-    let (mut cam, mut frame) = match open_camera(&cfg, mode) {
+    let (mut cam, mut frame) = match source::open(&cfg, mode) {
         Ok((cam, frame)) => {
-            let _ = opened.send(Ok(describe_camera(&cam)));
+            let _ = opened.send(Ok(cam.describe()));
             (Some(cam), frame)
         }
-        Err(e) if wait_for_camera => {
+        Err(e) if opts.wait_for_camera => {
             let why = format!("{e:#}");
             eprintln!("! No camera ({why}). Everything but scanning works; looking for one.");
             ctx.update(|s| s.camera_error = Some(why));
@@ -551,10 +549,10 @@ fn capture_loop(
                     });
                     // Close it first: a camera opens only once.
                     drop(cam.take());
-                    let (next, msg) = match open_camera(&cfg, m) {
+                    let (next, msg) = match source::open(&cfg, m) {
                         Ok(opened) => (Some((opened, m)), None),
                         // Fall back to the previous mode rather than going dark.
-                        Err(e) => match open_camera(&cfg, mode) {
+                        Err(e) => match source::open(&cfg, mode) {
                             Ok(opened) => (Some((opened, mode)), Some(format!("{e:#}"))),
                             Err(e2) => {
                                 ctx.emit(EngineEvent::Error(format!("camera lost: {e2:#}")));
@@ -563,7 +561,7 @@ fn capture_loop(
                         },
                     };
                     let ((c, f), new_mode) = next.expect("checked above");
-                    let camera = describe_camera(&c);
+                    let camera = c.describe();
                     (cam, frame, mode) = (Some(c), f, new_mode);
                     area = region(&cfg, mode, frame.dimensions());
                     watcher = Watcher::new(area);
@@ -601,8 +599,8 @@ fn capture_loop(
 
         if cam.is_none() && Instant::now() >= retry_at {
             retry_at = Instant::now() + CAMERA_RETRY;
-            if let Ok((c, f)) = open_camera(&cfg, mode) {
-                let camera = describe_camera(&c);
+            if let Ok((c, f)) = source::open(&cfg, mode) {
+                let camera = c.describe();
                 (cam, frame) = (Some(c), f);
                 area = region(&cfg, mode, frame.dimensions());
                 watcher = Watcher::new(area);
@@ -613,13 +611,18 @@ fn capture_loop(
                 ctx.emit(EngineEvent::Info(format!("Camera connected: {camera}")));
             }
         }
-        let Some(webcam) = cam.as_mut() else {
+        // Where the page draws the guide and boxes.
+        let shown = cam.as_ref().map(|_| (area, frame.dimensions()));
+        if ctx.lock().frame != shown {
+            ctx.update(|s| s.frame = shown);
+        }
+        let Some(source) = cam.as_mut() else {
             // Keep handling commands while there is no camera.
             std::thread::sleep(Duration::from_millis(100));
             continue;
         };
-        match webcam.frame() {
-            Ok(f) if f.dimensions() == frame.dimensions() => frame = f,
+        match source.frame() {
+            Ok(Some(f)) if f.dimensions() == frame.dimensions() => frame = f,
             Ok(_) => {}
             Err(e) => {
                 ctx.emit(EngineEvent::Error(format!("camera: {e:#}")));
@@ -670,17 +673,10 @@ fn capture_loop(
             }
         }
 
-        let overlay = {
-            let s = ctx.lock();
-            Overlay {
-                guide: (mode == Mode::Single)
-                    .then_some((area, if s.busy { draw::BUSY } else { s.guide_color })),
-                boxes: s.boxes.clone(),
-                foil: s.finish != Finish::Nonfoil,
-                auto_dot: s
-                    .auto
-                    .then_some(if s.busy { draw::BUSY } else { draw::IDLE }),
-            }
+        let overlay = if opts.draw_overlay {
+            ctx.lock().overlay()
+        } else {
+            Overlay::default()
         };
         frame_id += 1;
         let image = draw::compose(&frame, draw::preview_step(frame.width()), &overlay);

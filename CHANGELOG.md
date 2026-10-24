@@ -13,6 +13,9 @@ section to the new version (see CONTRIBUTING.md, "Releasing").
 The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
 
 ### Changed
+- The Scan page draws the card guide and the detected-card boxes itself, over the camera picture
+  (#72). The server sends their positions and colours instead of drawing them into the video,
+  so they look the same over any camera. The desktop window still draws them into the picture.
 - Prices come from Scryfall (#65): TCGplayer (USD), **Cardmarket (EUR)** and MTGO tix, from the
   daily card data, for scans and for the daily price refresh. The direct lookup on TCGplayer's
   internal price endpoint is gone. The daily refresh records every owned card's prices in one

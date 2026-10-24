@@ -67,6 +67,35 @@ pub struct StateView {
     /// Card Kingdom prices are recorded (`[prices] card_kingdom`).
     #[serde(default)]
     pub card_kingdom: bool,
+    /// The guide and boxes the page draws over the camera image.
+    #[serde(default)]
+    pub overlay: OverlayView,
+}
+
+/// What the Scan page draws over the camera image, in camera pixels of a
+/// `width` x `height` frame (both 0 while there is no camera).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OverlayView {
+    pub width: u32,
+    pub height: u32,
+    /// Single-card mode: the guide the card goes in (outside it is dimmed).
+    pub guide: Option<OverlayBox>,
+    /// Table mode: each card of the last scan, coloured by its outcome.
+    pub boxes: Vec<OverlayBox>,
+    /// Foil or etched is selected for new cards.
+    pub foil: bool,
+    /// Auto-scan is on: the indicator's colour (busy or idle).
+    pub auto_dot: Option<String>,
+}
+
+/// A rectangle in camera pixels and its `#rrggbb` colour.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlayBox {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
