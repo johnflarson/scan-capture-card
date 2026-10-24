@@ -29,6 +29,16 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- **A scan session per account** (#74). Each signed-in account has its own Scan page state (mode,
+  finish, auto-scan, Save switch, the cards scanned, review list, undo), started from its own
+  startup settings, and everyone's scans take turns on one recognizer. Scans go into the account's
+  collection in its card language. The server's camera belongs to the first account's session
+  (opened at startup, as before); other accounts use **Use this device's camera**. The background
+  price refresh pauses only when every session's Save switch is off.
+- **Your own vision-model key** (#74). With a cloud vision model, each account can save its own API
+  key on Settings → Vision model; its scans use it, and the server's key (now optional) covers the
+  rest. Keys are encrypted at rest (XChaCha20-Poly1305) with `secret.key` in the data folder, or
+  `MTG_SCAN_SECRET_KEY`, and never sent back to the browser.
 - **Per-user settings** (#74). Startup options, the Moxfield account, hidden decks, the currency
   and the card language are each account's own (migration 6, `user_settings`), so the Decks page
   shows each person's Moxfield decks. Unset values come from `mtg-scan.toml`; the first account

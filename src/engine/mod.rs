@@ -1,14 +1,20 @@
 //! Scanning engine shared by the desktop window (`live`) and the web UI
-//! (`web`). It runs two threads:
+//! (`web`).
 //!
-//! * **capture**: owns the camera, runs the auto-scan [`Watcher`], turns
-//!   commands into scan jobs and publishes preview frames with overlays.
-//! * **worker**: owns the [`Pipeline`] (recognizer, prices, collection
-//!   store), runs scans one at a time and, when idle, refreshes prices of
-//!   cards not yet priced today.
+//! * One [`Scanner`]: a **worker** thread that owns the [`Pipeline`]
+//!   (recognizer, prices, collection store) and runs scans one at a time,
+//!   for every session, in the order they arrive.
+//! * One [`Engine`] per scan session (the desktop window has one; the web
+//!   UI one per signed-in account): a **capture** thread that owns the
+//!   session's camera, runs the auto-scan [`Watcher`], turns commands into
+//!   scan jobs for the worker and publishes preview frames.
 //!
-//! Front ends send [`Command`]s and read the shared state, the latest
-//! [`Preview`] and the [`EngineEvent`] broadcast.
+//! Each job carries its session's [`ScanSetup`] (whose collection, card
+//! language, the account's own LLM key), and the worker keeps each
+//! session's memory (the last table pass, what Undo removes) apart.
+//!
+//! Front ends send [`Command`]s and read a session's state, its latest
+//! [`Preview`] and its [`EngineEvent`] broadcast.
 
 pub mod draw;
 mod source;
@@ -17,6 +23,8 @@ mod watcher;
 pub use source::BrowserFeed;
 use source::FrameSource;
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -55,7 +63,29 @@ pub struct EngineOptions {
     /// Draw the guide and boxes into the preview frames (the desktop window).
     /// The web UI draws them in the page from [`StateView::overlay`] instead.
     pub draw_overlay: bool,
+    /// Open the camera attached to this computer. One session has it; the
+    /// others scan with their browser's camera.
+    pub server_camera: bool,
 }
+
+/// What a session's scans need from its account, read for every job.
+#[derive(Debug, Clone, Default)]
+pub struct ScanSetup {
+    /// Whose collection scans go into (`None`: the first admin's).
+    pub user: Option<i64>,
+    /// Record printings in this language when Scryfall has them (empty:
+    /// the settings file's).
+    pub card_language: String,
+    /// The account's own vision-LLM key (`None`: the server's).
+    pub llm_key: Option<String>,
+}
+
+/// Reads a session's [`ScanSetup`] (e.g. from its account's settings).
+pub type Setup = Arc<dyn Fn() -> ScanSetup + Send + Sync>;
+
+/// A session without the server's camera, until its browser's camera
+/// connects.
+const NO_SESSION_CAMERA: &str = "No camera in this session yet: use this device's camera, or scan where the server's camera is.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -285,21 +315,106 @@ enum Job {
         finish: Finish,
     },
     Discard(u64),
+    /// The session ended: forget its memory.
+    End,
 }
 
+/// What a job is for, and whose.
+struct Work {
+    session: u64,
+    ctx: Ctx,
+    setup: ScanSetup,
+    job: Job,
+}
+
+/// The worker's progress, read by every session.
+#[derive(Default)]
+struct ScannerStatus {
+    ready: AtomicBool,
+    /// Why the worker couldn't start.
+    failed: Mutex<Option<String>>,
+    recognizer: Mutex<String>,
+    collection: Mutex<String>,
+}
+
+/// The recognition worker every scan session shares.
+pub struct Scanner {
+    jobs: Mutex<Option<Sender<Work>>>,
+    status: Arc<ScannerStatus>,
+    worker: Mutex<Option<JoinHandle<Result<()>>>>,
+    next_session: AtomicU64,
+}
+
+fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Scanner {
+    /// Start the worker; the recognizer loads in the background (sessions
+    /// show "loading…" until it is ready).
+    pub fn start(cfg: &Config, opts: EngineOptions) -> Result<Arc<Self>> {
+        let (tx, rx) = mpsc::channel();
+        let status = Arc::new(ScannerStatus::default());
+        let worker = {
+            let (cfg, status) = (cfg.clone(), status.clone());
+            thread::Builder::new()
+                .name("worker".into())
+                .spawn(move || worker_loop(cfg, opts, status, rx))?
+        };
+        Ok(Arc::new(Self {
+            jobs: Mutex::new(Some(tx)),
+            status,
+            worker: Mutex::new(Some(worker)),
+            next_session: AtomicU64::new(1),
+        }))
+    }
+
+    fn submit(&self, work: Work) -> bool {
+        locked(&self.jobs)
+            .as_ref()
+            .is_some_and(|jobs| jobs.send(work).is_ok())
+    }
+
+    /// False once the worker has stopped.
+    pub fn is_running(&self) -> bool {
+        locked(&self.worker)
+            .as_ref()
+            .is_some_and(|h| !h.is_finished())
+    }
+
+    /// Stop the worker after the jobs already queued (call once every
+    /// session has shut down).
+    pub fn shutdown(&self) -> Result<()> {
+        locked(&self.jobs).take();
+        match locked(&self.worker).take() {
+            Some(handle) => handle
+                .join()
+                .unwrap_or_else(|_| Err(anyhow!("worker thread panicked"))),
+            None => Ok(()),
+        }
+    }
+}
+
+/// One scan session: its camera, state and events. Scans run on the
+/// shared [`Scanner`].
 pub struct Engine {
+    id: u64,
     ctx: Ctx,
     commands: Sender<Command>,
     preview: watch::Receiver<Option<Arc<Preview>>>,
     capture: Option<JoinHandle<Result<()>>>,
-    worker: Option<JoinHandle<Result<()>>>,
+    scanner: Arc<Scanner>,
 }
 
 impl Engine {
-    /// Open the camera and start both threads. Returns once the camera is
-    /// streaming; the recognizer keeps loading in the background (watch for
-    /// [`EngineEvent::Ready`]).
-    pub fn start(cfg: &Config, opts: EngineOptions) -> Result<Self> {
+    /// Open the session's camera (with [`EngineOptions::server_camera`]) and
+    /// start its capture thread. Returns once the camera is streaming.
+    pub fn start(
+        scanner: &Arc<Scanner>,
+        cfg: &Config,
+        opts: EngineOptions,
+        setup: Setup,
+    ) -> Result<Self> {
         let (events, _) = broadcast::channel(512);
         let ctx = Ctx {
             state: Arc::new(Mutex::new(State {
@@ -330,36 +445,33 @@ impl Engine {
             events,
         };
         let (cmd_tx, cmd_rx) = mpsc::channel();
-        let (job_tx, job_rx) = mpsc::channel();
         let (preview_tx, preview_rx) = watch::channel(None);
         let (opened_tx, opened_rx) = mpsc::sync_channel(1);
+        let id = scanner.next_session.fetch_add(1, Ordering::Relaxed);
 
         let capture = {
             let (cfg, ctx) = (cfg.clone(), ctx.clone());
+            let link = Link {
+                scanner: scanner.clone(),
+                session: id,
+                setup,
+            };
             thread::Builder::new()
                 .name("capture".into())
-                .spawn(move || {
-                    capture_loop(cfg, ctx, opts, cmd_rx, job_tx, preview_tx, opened_tx)
-                })?
+                .spawn(move || capture_loop(cfg, ctx, opts, cmd_rx, link, preview_tx, opened_tx))?
         };
         // Camera problems should fail `start`, not surface later.
         let camera = opened_rx
             .recv()
             .map_err(|_| anyhow!("camera thread stopped"))??;
         ctx.update(|s| s.camera = camera);
-
-        let worker = {
-            let (cfg, ctx) = (cfg.clone(), ctx.clone());
-            thread::Builder::new()
-                .name("worker".into())
-                .spawn(move || worker_loop(cfg, ctx, opts, job_rx))?
-        };
         Ok(Self {
+            id,
             ctx,
             commands: cmd_tx,
             preview: preview_rx,
             capture: Some(capture),
-            worker: Some(worker),
+            scanner: scanner.clone(),
         })
     }
 
@@ -388,12 +500,17 @@ impl Engine {
         self.ctx.lock().view()
     }
 
-    /// Whether scans are being saved right now (off in a dry run and while
-    /// the Scan page's Save switch is off), for background work that writes
-    /// to the database and should pause with it.
+    /// Whether this session's scans are being saved (off in a dry run and
+    /// while the Scan page's Save switch is off), for background work that
+    /// writes to the database and should pause with it.
     pub fn saving(&self) -> impl Fn() -> bool + Send + 'static {
         let state = self.ctx.state.clone();
         move || state.lock().is_ok_and(|s| s.save)
+    }
+
+    /// This session's scans are being saved right now.
+    pub fn is_saving(&self) -> bool {
+        self.ctx.lock().save
     }
 
     pub fn session(&self) -> SessionView {
@@ -404,31 +521,78 @@ impl Engine {
         }
     }
 
-    /// False once either thread has stopped (e.g. the camera was unplugged).
+    /// False once the capture thread (e.g. the camera was unplugged) or
+    /// the shared worker has stopped.
     pub fn is_running(&self) -> bool {
-        [&self.capture, &self.worker]
-            .iter()
-            .all(|h| h.as_ref().is_some_and(|h| !h.is_finished()))
+        self.capture.as_ref().is_some_and(|h| !h.is_finished()) && self.scanner.is_running()
     }
 
-    /// Stop both threads, returning the first error either hit.
+    /// Stop the capture thread. Its jobs already queued still run, and the
+    /// worker forgets the session's memory.
     pub fn shutdown(mut self) -> Result<()> {
         let _ = self.commands.send(Command::Shutdown);
-        let mut result = Ok(());
-        // The capture thread owns the job sender; when it exits the worker's
-        // queue closes and the worker finishes its current job, then stops.
-        for handle in [self.capture.take(), self.worker.take()]
-            .into_iter()
-            .flatten()
-        {
-            let outcome = handle
+        let result = match self.capture.take() {
+            Some(handle) => handle
                 .join()
-                .unwrap_or_else(|_| Err(anyhow!("engine thread panicked")));
-            if result.is_ok() {
-                result = outcome;
-            }
-        }
+                .unwrap_or_else(|_| Err(anyhow!("capture thread panicked"))),
+            None => Ok(()),
+        };
+        self.scanner.submit(Work {
+            session: self.id,
+            ctx: self.ctx.clone(),
+            setup: ScanSetup::default(),
+            job: Job::End,
+        });
         result
+    }
+}
+
+/// A session's way to the worker.
+struct Link {
+    scanner: Arc<Scanner>,
+    session: u64,
+    setup: Setup,
+}
+
+impl Link {
+    /// Queue a job with the session's current setup. False if the worker has
+    /// stopped.
+    fn submit(&self, ctx: &Ctx, job: Job) -> bool {
+        self.scanner.submit(Work {
+            session: self.session,
+            ctx: ctx.clone(),
+            setup: (self.setup)(),
+            job,
+        })
+    }
+
+    /// Once the worker is ready (or failed), say so in this session.
+    fn sync_ready(&self, ctx: &Ctx, told_failure: &mut bool) {
+        let status = &self.scanner.status;
+        if status.ready.load(Ordering::Acquire) {
+            let recognizer = locked(&status.recognizer).clone();
+            let collection = locked(&status.collection).clone();
+            ctx.update(|s| {
+                s.ready = true;
+                s.busy = false;
+                s.recognizer = recognizer.clone();
+                s.collection = collection.clone();
+                s.status = if s.auto {
+                    "watching for cards"
+                } else {
+                    "ready"
+                }
+                .into();
+            });
+            ctx.emit(EngineEvent::Ready(format!(
+                "Recognizer ready ({recognizer}).\n\
+                 Lay out cards and hold still — scanning is automatic."
+            )));
+        } else if !*told_failure && let Some(msg) = locked(&status.failed).clone() {
+            *told_failure = true;
+            ctx.update(|s| s.status = format!("failed to start: {msg}"));
+            ctx.emit(EngineEvent::Error(msg));
+        }
     }
 }
 
@@ -461,16 +625,27 @@ fn capture_loop(
     ctx: Ctx,
     opts: EngineOptions,
     commands: Receiver<Command>,
-    jobs: Sender<Job>,
+    link: Link,
     preview: watch::Sender<Option<Arc<Preview>>>,
     opened: mpsc::SyncSender<Result<String>>,
 ) -> Result<()> {
     let mut mode = ctx.lock().mode;
-    // `cam` is `None` while there is no camera (only with `wait_for_camera`).
-    let (mut cam, mut frame) = match source::open(&cfg, mode) {
+    // `cam` is `None` while there is no camera (only with `wait_for_camera`,
+    // or in a session without the server's camera).
+    let opened_now = if opts.server_camera {
+        source::open(&cfg, mode)
+    } else {
+        Err(anyhow!(NO_SESSION_CAMERA))
+    };
+    let (mut cam, mut frame) = match opened_now {
         Ok((cam, frame)) => {
             let _ = opened.send(Ok(cam.describe()));
             (Some(cam), frame)
+        }
+        Err(e) if !opts.server_camera => {
+            ctx.update(|s| s.camera_error = Some(format!("{e:#}")));
+            let _ = opened.send(Ok("no camera".into()));
+            (None, RgbImage::new(1, 1))
         }
         Err(e) if opts.wait_for_camera => {
             let why = format!("{e:#}");
@@ -488,10 +663,15 @@ fn capture_loop(
     let mut area = region(&cfg, mode, frame.dimensions());
     let mut watcher = Watcher::new(area);
     let mut frame_id = 0u64;
+    let mut told_failure = false;
+    let submit = |job: Job| link.submit(&ctx, job);
 
     loop {
         // (force_llm, auto)
         let mut trigger: Option<(bool, bool)> = None;
+        if !ctx.lock().ready {
+            link.sync_ready(&ctx, &mut told_failure);
+        }
         let (ready, busy) = {
             let s = ctx.lock();
             (s.ready, s.busy)
@@ -512,7 +692,7 @@ fn capture_loop(
                         s.busy = true;
                         s.status = "undoing…".into();
                     });
-                    let _ = jobs.send(Job::Undo);
+                    let _ = submit(Job::Undo);
                 }
                 Ok(Command::Reset) if can_scan && mode == Mode::Table => {
                     watcher.forget_scanned();
@@ -520,7 +700,7 @@ fn capture_loop(
                         s.busy = true;
                         s.boxes.clear();
                     });
-                    let _ = jobs.send(Job::Reset);
+                    let _ = submit(Job::Reset);
                 }
                 // Reviews queue behind any running scan.
                 Ok(Command::Accept {
@@ -528,14 +708,14 @@ fn capture_loop(
                     scryfall_id,
                     finish,
                 }) => {
-                    let _ = jobs.send(Job::Accept {
+                    let _ = submit(Job::Accept {
                         seq,
                         scryfall_id,
                         finish,
                     });
                 }
                 Ok(Command::Discard(seq)) => {
-                    let _ = jobs.send(Job::Discard(seq));
+                    let _ = submit(Job::Discard(seq));
                 }
                 Ok(Command::Clear) if can_scan => {
                     watcher.forget_scanned();
@@ -543,7 +723,7 @@ fn capture_loop(
                         s.busy = true;
                         s.boxes.clear();
                     });
-                    let _ = jobs.send(Job::Clear);
+                    let _ = submit(Job::Clear);
                 }
                 // `--dry-run` never saves.
                 Ok(Command::SetSave(save)) if !ctx.lock().dry_run => {
@@ -556,7 +736,7 @@ fn capture_loop(
                         }
                         .into(),
                     ));
-                    let _ = jobs.send(Job::SaveChanged);
+                    let _ = submit(Job::SaveChanged);
                 }
                 Ok(Command::SetFinish(f)) => ctx.update(|s| s.finish = f),
                 Ok(Command::SetAuto(a)) => ctx.update(|s| {
@@ -644,7 +824,7 @@ fn capture_loop(
             }
         }
 
-        if cam.is_none() && Instant::now() >= retry_at {
+        if cam.is_none() && opts.server_camera && Instant::now() >= retry_at {
             retry_at = Instant::now() + CAMERA_RETRY;
             if let Ok((c, f)) = source::open(&cfg, mode) {
                 let camera = c.describe();
@@ -688,9 +868,14 @@ fn capture_loop(
             Err(e) if external => {
                 cam = None;
                 retry_at = Instant::now() + CAMERA_RETRY;
+                let why = if opts.server_camera {
+                    format!("{e:#}")
+                } else {
+                    format!("{e:#}. {NO_SESSION_CAMERA}")
+                };
                 ctx.update(|s| {
                     s.camera = "no camera".into();
-                    s.camera_error = Some(format!("{e:#}"));
+                    s.camera_error = Some(why);
                     s.browser_camera = false;
                     s.boxes.clear();
                 });
@@ -740,7 +925,7 @@ fn capture_loop(
                     }
                 }
             };
-            if jobs.send(job).is_err() {
+            if !submit(job) {
                 return Err(anyhow!("scanner worker stopped"));
             }
         }
@@ -762,14 +947,25 @@ fn capture_loop(
 
 // ------------------------------------------------------------------ worker --
 
-fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) -> Result<()> {
+/// A session's memory between its jobs.
+#[derive(Default)]
+struct SessionMemory {
+    pipeline: crate::pipeline::Memory,
+    /// Session cards added by the most recent scan, for Undo.
+    last_scan: Vec<u64>,
+}
+
+fn worker_loop(
+    cfg: Config,
+    opts: EngineOptions,
+    status: Arc<ScannerStatus>,
+    jobs: Receiver<Work>,
+) -> Result<()> {
     let dry_run = opts.dry_run;
     let mut pipeline = match Pipeline::new(&cfg) {
         Ok(p) => p,
         Err(e) => {
-            let msg = format!("{e:#}");
-            ctx.update(|s| s.status = format!("failed to start: {msg}"));
-            ctx.emit(EngineEvent::Error(msg));
+            *locked(&status.failed) = Some(format!("{e:#}"));
             return Err(e);
         }
     };
@@ -778,28 +974,40 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
     if let Some(ck) = &pipeline.app.prices.cardkingdom {
         let _ = ck.price("", Finish::Nonfoil);
     }
-    let recognizer = pipeline.recognizer.describe();
-    let collection = pipeline.app.store.location();
-    ctx.update(|s| {
-        s.ready = true;
-        s.busy = false;
-        s.recognizer = recognizer.clone();
-        s.collection = collection.clone();
-        s.status = if s.auto {
-            "watching for cards"
-        } else {
-            "ready"
-        }
-        .into();
-    });
-    ctx.emit(EngineEvent::Ready(format!(
-        "Recognizer ready ({recognizer}). Saving to {collection}.\n\
-         Lay out cards and hold still — scanning is automatic."
-    )));
+    let default_language = cfg.recognition.card_language.clone();
+    *locked(&status.recognizer) = pipeline.recognizer.describe();
+    *locked(&status.collection) = pipeline.app.store.location();
+    status.ready.store(true, Ordering::Release);
 
-    // Session cards added by the most recent scan, for Undo.
-    let mut last_scan: Vec<u64> = Vec::new();
-    while let Ok(job) = jobs.recv() {
+    let mut sessions: HashMap<u64, SessionMemory> = HashMap::new();
+    while let Ok(work) = jobs.recv() {
+        if matches!(work.job, Job::End) {
+            sessions.remove(&work.session);
+            continue;
+        }
+        // Switch to the session's account, language, key and memory.
+        if let Some(user) = work.setup.user {
+            pipeline.app.store.set_user(user);
+        }
+        pipeline.set_card_language(if work.setup.card_language.is_empty() {
+            &default_language
+        } else {
+            &work.setup.card_language
+        });
+        pipeline.recognizer.set_llm_key(work.setup.llm_key.clone());
+        let mut memory = sessions.remove(&work.session).unwrap_or_default();
+        pipeline.memory = std::mem::take(&mut memory.pipeline);
+        run_job(&mut pipeline, &work.ctx, &mut memory.last_scan, work.job);
+        memory.pipeline = std::mem::take(&mut pipeline.memory);
+        sessions.insert(work.session, memory);
+    }
+    Ok(())
+}
+
+/// Run one job of a session (`ctx`) on the pipeline set up for it.
+fn run_job(pipeline: &mut Pipeline, ctx: &Ctx, last_scan: &mut Vec<u64>, job: Job) {
+    let ctx = ctx.clone();
+    {
         match job {
             Job::Single {
                 image,
@@ -811,12 +1019,12 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
                 Ok((r, replaced)) => {
                     if replaced {
                         // The retry replaced the previous single-card add.
-                        mark_undone(&ctx, &last_scan);
+                        mark_undone(&ctx, last_scan);
                     }
                     let seq = record_card(&ctx, &r);
                     // A failed retry keeps the previous scan undoable.
                     if !(force_llm && matches!(r.outcome, Outcome::Failed(_))) {
-                        last_scan = seq.into_iter().collect();
+                        *last_scan = seq.into_iter().collect();
                     }
                     finish_scan(&ctx, vec![r], auto, Mode::Single);
                 }
@@ -855,7 +1063,7 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
                     } else {
                         format!("↶ removed {}", undone.join(", "))
                     };
-                    let seqs = std::mem::take(&mut last_scan);
+                    let seqs = std::mem::take(last_scan);
                     mark_undone(&ctx, &seqs);
                     ctx.update(|s| {
                         s.busy = false;
@@ -873,9 +1081,9 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
             } => {
                 let Some(mut view) = held_card(&ctx, seq) else {
                     ctx.emit(EngineEvent::Info("That card was already reviewed.".into()));
-                    continue;
+                    return;
                 };
-                match accept(&mut pipeline, &scryfall_id, finish) {
+                match accept(pipeline, &scryfall_id, finish) {
                     Ok((card, entry)) => {
                         let other = card.scryfall_id != view.scryfall_id;
                         fill_card(&mut view, &card);
@@ -941,9 +1149,9 @@ fn worker_loop(cfg: Config, ctx: Ctx, opts: EngineOptions, jobs: Receiver<Job>) 
                 });
                 ctx.emit(EngineEvent::Info(message.into()));
             }
+            Job::End => {}
         }
     }
-    Ok(())
 }
 
 /// Add an Added/Priced result to the session list; returns its sequence number.
@@ -1164,8 +1372,17 @@ fn fill_card(view: &mut CardView, c: &crate::model::Card) {
         .map(|u| u.replacen("/small/", "/normal/", 1));
 }
 
-/// Start the engine with a friendlier error for the most common problem.
-pub fn start(cfg: &Config, opts: EngineOptions) -> Result<Engine> {
-    Engine::start(cfg, opts)
-        .context("could not start the scanner (is the camera connected and free?)")
+/// A worker and one session for the first admin, as the settings file sets
+/// it up (the desktop window), with a friendlier error for the most common
+/// problem.
+pub fn start(cfg: &Config, opts: EngineOptions) -> Result<(Arc<Scanner>, Engine)> {
+    let scanner = Scanner::start(cfg, opts)?;
+    let setup = ScanSetup {
+        user: None,
+        card_language: cfg.recognition.card_language.clone(),
+        llm_key: None,
+    };
+    let engine = Engine::start(&scanner, cfg, opts, Arc::new(move || setup.clone()))
+        .context("could not start the scanner (is the camera connected and free?)")?;
+    Ok((scanner, engine))
 }

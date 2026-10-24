@@ -148,6 +148,13 @@ impl Recognizer {
         self.llm.is_some()
     }
 
+    /// Call the LLM with this account's key (`None`: the server's).
+    pub fn set_llm_key(&mut self, key: Option<String>) {
+        if let Some(llm) = &mut self.llm {
+            llm.set_user_key(key);
+        }
+    }
+
     /// Locate every card in a photo of several cards (needs the LLM).
     pub fn detect_cards(&self, img: &DynamicImage) -> Result<Vec<crate::llm::NormBox>> {
         match &self.llm {

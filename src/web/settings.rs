@@ -16,14 +16,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use mtg_scan_shared::{
-    CARD_LANGUAGES, Connection, DatabaseView, InfoRow, PriceSettings, SettingsChange, SettingsView,
-    Startup,
+    CARD_LANGUAGES, Connection, DatabaseView, InfoRow, LlmView, PriceSettings, SettingsChange,
+    SettingsView, Startup,
 };
 
 use super::{AppState, blocking, lan_ip};
 use crate::accounts::Signed;
 use crate::app;
-use crate::config::{self, Config, StorageBackend};
+use crate::config::{self, Config, LlmProvider, StorageBackend};
 use crate::moxfield;
 use crate::prefs::Prefs;
 use crate::scryfall::Scryfall;
@@ -76,7 +76,7 @@ pub async fn change(
     Extension(signed): Extension<Signed>,
     Json(change): Json<SettingsChange>,
 ) -> Response {
-    if st.engine.view().dry_run {
+    if st.sessions.dry_run() {
         return (StatusCode::CONFLICT, DRY_RUN).into_response();
     }
     let state = st.clone();
@@ -134,6 +134,23 @@ fn apply(st: &AppState, signed: &Signed, change: SettingsChange) -> Result<()> {
             }
             stored.card_language = Some(code);
         }
+        SettingsChange::LlmKey { key } => {
+            let key = key.trim();
+            stored.llm_key = if key.is_empty() {
+                None
+            } else {
+                if key.len() > 400 || key.chars().any(char::is_whitespace) {
+                    bail!("That doesn't look like an API key (no spaces, at most 400 characters)");
+                }
+                let Some(secrets) = &st.secrets else {
+                    bail!(
+                        "This server can't store keys: it couldn't read or create its \
+                         secret.key (see the server's output)"
+                    );
+                };
+                Some(secrets.seal(key)?)
+            };
+        }
     }
     st.accounts.save_prefs(&signed.user, &stored)
 }
@@ -166,9 +183,26 @@ fn view(st: &AppState, signed: &Signed) -> Result<SettingsView> {
             .unwrap_or_else(|_| settings.file.clone())
             .display()
             .to_string(),
-        locked: st.engine.view().dry_run.then(|| DRY_RUN.to_string()),
+        locked: st.sessions.dry_run().then(|| DRY_RUN.to_string()),
         connection: connection(st.addr),
+        llm: llm_view(st, &prefs),
     })
+}
+
+/// The server's vision model, and whose key it uses for this account.
+fn llm_view(st: &AppState, prefs: &Prefs) -> LlmView {
+    let llm = &st.cfg.llm;
+    let model = (llm.provider != LlmProvider::None)
+        .then(|| format!("{:?} {}", llm.provider, llm.resolved_model()));
+    LlmView {
+        model,
+        needs_key: matches!(llm.provider, LlmProvider::Openrouter | LlmProvider::Openai),
+        server_key: llm.resolved_api_key().is_some(),
+        key_set: prefs.llm_key.is_some(),
+        cannot_save: st.secrets.is_none().then(|| {
+            "This server can't store keys: it couldn't read or create its secret.key.".into()
+        }),
+    }
 }
 
 /// How this computer, other computers and phones reach the UI.

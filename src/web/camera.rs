@@ -9,13 +9,16 @@
 
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use super::AppState;
+use super::{AppState, session_of};
+use crate::accounts::Signed;
+use crate::engine::Engine;
 
 /// A 4K JPEG is a few MB; leave room.
 const MAX_FRAME_BYTES: usize = 24 * 1024 * 1024;
@@ -31,6 +34,7 @@ pub struct CameraQuery {
 
 pub async fn connect(
     State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
     headers: HeaderMap,
     Query(q): Query<CameraQuery>,
     ws: WebSocketUpgrade,
@@ -44,16 +48,21 @@ pub async fn connect(
         )
             .into_response();
     }
+    let engine = match session_of(&st, signed).await {
+        Ok(engine) => engine,
+        Err(e) => return e.into_response(),
+    };
     let label = match q.label.trim() {
         "" => "Browser camera".to_string(),
         l => l.chars().take(80).collect(),
     };
     ws.max_message_size(MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| feed(socket, st, label))
+        .on_upgrade(move |socket| feed(socket, st, engine, label))
 }
 
-async fn feed(mut socket: WebSocket, st: Arc<AppState>, label: String) {
-    let feed = st.engine.attach_browser_camera(label);
+/// Frames from this page into its account's scan session.
+async fn feed(mut socket: WebSocket, st: Arc<AppState>, engine: Arc<Engine>, label: String) {
+    let feed = engine.attach_browser_camera(label);
     let mut shutdown = st.shutdown.clone();
     loop {
         let msg = tokio::select! {

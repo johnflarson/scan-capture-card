@@ -57,7 +57,8 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
                     settings.set(Some(view));
                     match change {
                         SettingsChange::Startup(_) => notify.run((
-                            "Saved. It applies the next time mtg-scan ui starts.".into(),
+                            "Saved. Your scan session starts like this after the server restarts."
+                                .into(),
                             false,
                         )),
                         SettingsChange::Moxfield { .. } => {
@@ -82,8 +83,16 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
                                 false,
                             ));
                         }
-                        SettingsChange::CardLanguage { .. } => notify.run((
-                            "Saved. Scans use it the next time mtg-scan starts.".into(),
+                        SettingsChange::CardLanguage { .. } => {
+                            notify.run(("Saved. Your next scan uses it.".into(), false))
+                        }
+                        SettingsChange::LlmKey { key } => notify.run((
+                            if key.trim().is_empty() {
+                                "Your API key was removed"
+                            } else {
+                                "Saved (encrypted). Your next scan uses it."
+                            }
+                            .into(),
                             false,
                         )),
                     }
@@ -142,6 +151,7 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
                     <AccountCard me=me.clone() notify />
                     <StartupCard settings save saving />
                     <PricesCard settings save saving admin=me.is_admin />
+                    <LlmCard settings save saving />
                     <MoxfieldCard settings save saving />
                     <DeckVisibility settings all_decks save saving />
                 </div>
@@ -276,7 +286,7 @@ fn StartupCard(
     view! {
         <section class="card">
             <div class="card-header">
-                <h2>"When mtg-scan starts"</h2>
+                <h2>"When your scan session starts"</h2>
             </div>
             <div class="card-body">
                 <div class="field">
@@ -335,7 +345,7 @@ fn StartupCard(
                     </div>
                 </div>
                 <p class="muted small">
-                    "These apply the next time mtg-scan ui starts. The Scan page changes them for the running session; "
+                    "Your scan session starts like this each time the server starts. The Scan page changes them while it runs; "
                     <code>"--manual"</code> ", " <code>"--table"</code> " and " <code>"--finish"</code>
                     " override them for one run."
                 </p>
@@ -352,6 +362,106 @@ fn StartupCard(
                         })
                 }}
             </div>
+        </section>
+    }
+}
+
+/// The vision model scans ask when OCR can't read a card, and the
+/// account's own API key for it (saved encrypted, never shown again).
+#[component]
+fn LlmCard(
+    settings: RwSignal<Option<SettingsView>>,
+    save: Callback<SettingsChange>,
+    saving: RwSignal<bool>,
+) -> impl IntoView {
+    let llm = Memo::new(move |_| settings.with(|s| s.as_ref().map(|s| s.llm.clone())));
+    let key = RwSignal::new(String::new());
+    let submit = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        save.run(SettingsChange::LlmKey {
+            key: key.get_untracked(),
+        });
+        key.set(String::new());
+    };
+    let body = move || {
+        let llm = llm.get()?;
+        let Some(model) = llm.model.clone() else {
+            return Some(
+                view! {
+                    <p class="muted small">
+                        "This server reads cards with OCR only; the admin can add a vision model in mtg-scan.toml ([llm])."
+                    </p>
+                }
+                .into_any(),
+            );
+        };
+        if !llm.needs_key {
+            return Some(
+                view! {
+                    <dl class="info">
+                        <dt>"Model"</dt>
+                        <dd>{model}</dd>
+                    </dl>
+                    <p class="muted small">"It runs on the server's own hardware: no key needed."</p>
+                }
+                .into_any(),
+            );
+        }
+        let status = match (llm.key_set, llm.server_key) {
+            (true, _) => "Your own key (saved encrypted)",
+            (false, true) => "The server's key",
+            (false, false) => "None: scans that need the model fail until you add a key",
+        };
+        Some(
+            view! {
+                <dl class="info">
+                    <dt>"Model"</dt>
+                    <dd>{model}</dd>
+                    <dt>"Key used"</dt>
+                    <dd>{status}</dd>
+                </dl>
+                {llm.cannot_save.clone().map(|why| view! { <p class="error-text small">{why}</p> })}
+                <form class="input-row" on:submit=submit>
+                    <input
+                        class="text-input"
+                        type="password"
+                        autocomplete="off"
+                        placeholder="Your API key"
+                        aria-label="Your API key"
+                        required
+                        prop:value=move || key.get()
+                        on:input=move |ev| key.set(event_target_value(&ev))
+                    />
+                    <button
+                        class="btn filled"
+                        type="submit"
+                        disabled=move || saving.get() || llm.cannot_save.is_some()
+                    >
+                        "Save"
+                    </button>
+                </form>
+                {llm.key_set.then(|| view! {
+                    <button
+                        class="btn danger"
+                        disabled=move || saving.get()
+                        on:click=move |_| save.run(SettingsChange::LlmKey { key: String::new() })
+                    >
+                        "Remove my key"
+                    </button>
+                })}
+                <p class="muted small">
+                    "Your key pays for your scans only. It is stored encrypted and never shown again."
+                </p>
+            }
+            .into_any(),
+        )
+    };
+    view! {
+        <section class="card">
+            <div class="card-header">
+                <h2>"Vision model"</h2>
+            </div>
+            <div class="card-body">{body}</div>
         </section>
     }
 }

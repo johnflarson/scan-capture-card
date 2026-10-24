@@ -64,7 +64,10 @@ pub struct VisionLlm {
     wire: Wire,
     url: String,
     model: String,
+    /// The server's key (`.env`), if any.
     api_key: Option<String>,
+    /// The key of the account being scanned for, used before the server's.
+    user_key: Option<String>,
     reasoning_effort: Option<String>,
     provider: LlmProvider,
 }
@@ -84,19 +87,9 @@ impl VisionLlm {
         let Some(base) = cfg.resolved_base_url() else {
             return Ok(None);
         };
+        // A cloud provider without a server key works with each account's
+        // own key (Settings); a scan without either fails with a message.
         let api_key = cfg.resolved_api_key();
-        if matches!(cfg.provider, LlmProvider::Openrouter | LlmProvider::Openai)
-            && api_key.is_none()
-        {
-            bail!(
-                "LLM provider {:?} needs an API key: set the {} environment variable",
-                cfg.provider,
-                cfg.api_key_env.as_deref().unwrap_or(match cfg.provider {
-                    LlmProvider::Openrouter => "OPENROUTER_API_KEY",
-                    _ => "OPENAI_API_KEY",
-                })
-            );
-        }
         let base = base.trim_end_matches('/');
         let (wire, url) = if cfg.provider == LlmProvider::Ollama {
             (Wire::OllamaNative, format!("{base}/api/chat"))
@@ -113,6 +106,7 @@ impl VisionLlm {
             url,
             model: cfg.resolved_model(),
             api_key,
+            user_key: None,
             reasoning_effort: cfg.resolved_reasoning_effort(),
             provider: cfg.provider,
         }))
@@ -120,6 +114,16 @@ impl VisionLlm {
 
     pub fn describe(&self) -> String {
         format!("{:?} {}", self.provider, self.model)
+    }
+
+    /// A cloud service that needs an API key (not a local model server).
+    pub fn needs_key(&self) -> bool {
+        matches!(self.provider, LlmProvider::Openrouter | LlmProvider::Openai)
+    }
+
+    /// Use this account's key, before the server's (`None`: the server's).
+    pub fn set_user_key(&mut self, key: Option<String>) {
+        self.user_key = key;
     }
 
     /// Read name / set / number from a photo of a single card.
@@ -172,8 +176,14 @@ impl VisionLlm {
         };
 
         let mut req = self.http.post(&self.url).json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
+        match self.user_key.as_ref().or(self.api_key.as_ref()) {
+            Some(key) => req = req.bearer_auth(key),
+            None if self.needs_key() => bail!(
+                "no {:?} API key: add yours on the Settings page (or the admin sets one for \
+                 the server in .env)",
+                self.provider
+            ),
+            None => {}
         }
         if self.provider == LlmProvider::Openrouter {
             req = req

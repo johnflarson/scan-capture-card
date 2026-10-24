@@ -160,6 +160,19 @@ struct Seen {
     label: String,
 }
 
+/// What one scan session's next scan builds on: the previous table pass and
+/// what the last scan added. The engine keeps one per session and swaps it
+/// in for each of that session's scans.
+#[derive(Default)]
+pub struct Memory {
+    seen: Vec<Seen>,
+    /// Rows the last scan added a copy to, with the card's name (for undo).
+    last_added: Vec<(RowKey, String)>,
+    /// The most recent scan was a single-card scan, so "Retry with LLM" may
+    /// replace what it added (never a whole table pass).
+    last_was_single: bool,
+}
+
 pub struct Pipeline {
     pub app: App,
     pub recognizer: Recognizer,
@@ -167,13 +180,8 @@ pub struct Pipeline {
     detection: Detection,
     save_dir: Option<PathBuf>,
     save_counter: u32,
-    seen: Vec<Seen>,
-    /// Rows added by the most recent scan, for undo.
-    /// Rows the last scan added a copy to, with the card's name.
-    last_added: Vec<(RowKey, String)>,
-    /// The most recent scan was a single-card scan, so "Retry with LLM" may
-    /// replace what it added (never a whole table pass).
-    last_was_single: bool,
+    /// The session being scanned for (see [`Memory`]).
+    pub memory: Memory,
     /// Hold matches whose printing is uncertain for review instead of saving
     /// them (`[recognition] review_uncertain`; only front ends with a review
     /// list turn it on).
@@ -199,9 +207,7 @@ impl Pipeline {
             detection: cfg.recognition.detection,
             save_dir: cfg.recognition.save_scans.clone(),
             save_counter: 0,
-            seen: Vec::new(),
-            last_added: Vec::new(),
-            last_was_single: false,
+            memory: Memory::default(),
             hold_uncertain: false,
             card_language: cfg.recognition.card_language.clone(),
         })
@@ -287,7 +293,9 @@ impl Pipeline {
         let entry = self
             .app
             .add_card(&id.card, finish, 1, &self.card_language)?;
-        self.last_added.push((entry.key(), entry.name.clone()));
+        self.memory
+            .last_added
+            .push((entry.key(), entry.name.clone()));
         Ok(Outcome::Added {
             id: Box::new(id),
             entry: Box::new(entry),
@@ -321,27 +329,27 @@ impl Pipeline {
             Ok(id) => id,
             Err(e) => {
                 if !force_llm {
-                    self.last_added.clear();
-                    self.last_was_single = true;
+                    self.memory.last_added.clear();
+                    self.memory.last_was_single = true;
                 }
                 let outcome = Outcome::Failed(format!("{e:#}"));
                 return Ok((CardResult { rect, outcome }, false));
             }
         };
         // Not saving: nothing is written, so the previous add stays.
-        let replace = force_llm && self.last_was_single && !dry_run;
-        let previous = std::mem::take(&mut self.last_added);
+        let replace = force_llm && self.memory.last_was_single && !dry_run;
+        let previous = std::mem::take(&mut self.memory.last_added);
         let outcome = match self.record(id, finish, dry_run) {
             Ok(outcome) => outcome,
             Err(e) => {
-                self.last_added = previous;
+                self.memory.last_added = previous;
                 return Err(e);
             }
         };
         if replace {
             self.remove_rows(previous)?;
         }
-        self.last_was_single = true;
+        self.memory.last_was_single = true;
         Ok((CardResult { rect, outcome }, replace))
     }
 
@@ -358,8 +366,8 @@ impl Pipeline {
         let scene = DynamicImage::ImageRgb8(frame.clone());
         self.save_debug(&scene);
         let boxes = self.find_cards(frame, &scene)?;
-        self.last_added.clear();
-        self.last_was_single = false;
+        self.memory.last_added.clear();
+        self.memory.last_was_single = false;
 
         let mut results: Vec<CardResult> = Vec::new();
         let mut seen_now = Vec::new();
@@ -371,7 +379,7 @@ impl Pipeline {
             }
             let crop = rect.crop(frame);
             let sig = signature(&crop);
-            let previous = self.seen.iter().find(|s| {
+            let previous = self.memory.seen.iter().find(|s| {
                 s.rect.iou(&rect) > SAME_CARD_IOU
                     && correlation(&s.signature, &sig) > SAME_CARD_SIMILARITY
             });
@@ -403,30 +411,30 @@ impl Pipeline {
             results.push(CardResult { rect, outcome });
             progress(&results);
         }
-        self.seen = seen_now;
+        self.memory.seen = seen_now;
         Ok(results)
     }
 
     /// Forget the previous table pass so every card is added again.
     pub fn reset_memory(&mut self) {
-        self.seen.clear();
+        self.memory.seen.clear();
     }
 
     /// Start fresh: forget the previous table pass and what the last scan
     /// added, so neither Undo nor "Retry with LLM" touches those cards.
     pub fn clear(&mut self) {
-        self.seen.clear();
-        self.last_added.clear();
-        self.last_was_single = false;
+        self.memory.seen.clear();
+        self.memory.last_added.clear();
+        self.memory.last_was_single = false;
     }
 
     /// Remove the cards added by the most recent scan.
     pub fn undo(&mut self) -> Result<Vec<String>> {
-        let rows = std::mem::take(&mut self.last_added);
-        self.last_was_single = false;
+        let rows = std::mem::take(&mut self.memory.last_added);
+        self.memory.last_was_single = false;
         let undone = self.remove_rows(rows)?;
         // Undone cards should be picked up again on the next pass.
-        self.seen.clear();
+        self.memory.seen.clear();
         Ok(undone)
     }
 
@@ -441,9 +449,15 @@ impl Pipeline {
     }
 
     /// The language scanned cards are recorded in (`[recognition]
-    /// card_language`).
+    /// card_language`, or the account's).
     pub fn card_language(&self) -> &str {
         &self.card_language
+    }
+
+    pub fn set_card_language(&mut self, code: &str) {
+        if self.card_language != code {
+            self.card_language = code.to_string();
+        }
     }
 }
 

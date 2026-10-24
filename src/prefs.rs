@@ -37,6 +37,9 @@ pub struct Stored {
     pub currency: Option<Currency>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub card_language: Option<String>,
+    /// The account's vision-LLM API key, sealed (see `secrets`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_key: Option<String>,
 }
 
 impl Stored {
@@ -69,6 +72,8 @@ pub struct Prefs {
     pub hidden_decks: Vec<String>,
     pub currency: Currency,
     pub card_language: String,
+    /// The account's vision-LLM API key, sealed.
+    pub llm_key: Option<String>,
 }
 
 impl Prefs {
@@ -86,6 +91,7 @@ impl Prefs {
                 .card_language
                 .clone()
                 .unwrap_or_else(|| cfg.recognition.card_language.clone()),
+            llm_key: stored.llm_key.clone(),
         }
     }
 

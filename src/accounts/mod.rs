@@ -455,6 +455,19 @@ impl Accounts {
         self.db().user(id)
     }
 
+    /// The first account: the owner of a collection from before accounts,
+    /// whose scan session has the server's camera.
+    pub fn first_account(&self) -> Result<Option<i64>> {
+        self.db().first_account()
+    }
+
+    pub fn first_account_user(&self) -> Result<Option<User>> {
+        match self.first_account()? {
+            Some(id) => self.user(id),
+            None => Ok(None),
+        }
+    }
+
     /// The account with this sign-in name (any case).
     pub fn find(&self, name: &str) -> Result<Option<User>> {
         Ok(self.db().user_by_name(name.trim())?.map(|(user, _)| user))
