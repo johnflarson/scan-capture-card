@@ -157,6 +157,7 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
                 </div>
                 <div class="settings-column">
                     {me.is_admin.then(|| view! { <UsersCard me=me.clone() notify /> })}
+                    {me.is_admin.then(|| view! { <SetupCard /> })}
                     {me.is_admin.then(|| view! {
                         <DatabaseCard database reload=Callback::new(move |()| load_database()) />
                     })}
@@ -648,6 +649,36 @@ fn DeckVisibility(
                 <h2>"Decks"</h2>
             </div>
             <div class="card-body">{body}</div>
+        </section>
+    }
+}
+
+/// Admins: the setup wizard again (how cards are read, the camera, ...).
+#[component]
+fn SetupCard() -> impl IntoView {
+    let tab = use_context::<RwSignal<crate::app::Tab>>();
+    view! {
+        <section class="card">
+            <div class="card-header">
+                <h2>"Server setup"</h2>
+                <span class="spacer"></span>
+                <button
+                    class="btn tonal"
+                    on:click=move |_| {
+                        if let Some(tab) = tab {
+                            tab.set(crate::app::Tab::Setup);
+                        }
+                    }
+                >
+                    "Open the setup"
+                </button>
+            </div>
+            <div class="card-body">
+                <p class="muted small">
+                    "How cards are read (the printed text, a model on this server or a cloud model), "
+                    "the camera, and usage statistics."
+                </p>
+            </div>
         </section>
     }
 }

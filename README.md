@@ -195,7 +195,10 @@ Hover over any card name to see the card. It works on phones too (open the
 
 **Who can use it.** Everyone signs in, on this computer too. The first time
 `mtg-scan ui` starts it prints (and opens) a setup link that creates the admin
-account. The admin invites others from Settings → Users: an invite link works
+account, then walks the admin through the setup: how cards are read (the printed
+text, a local Ollama model it can download and test, or a cloud model with your
+key), the camera, prices and language, and usage statistics. Settings → Server
+setup opens it again. The admin invites others from Settings → Users: an invite link works
 once, for 7 days. There is no open sign-up.
 
 * Forgot a password? An admin makes a reset link under Users (it works once,

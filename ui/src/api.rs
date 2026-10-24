@@ -5,10 +5,11 @@ use gloo_net::eventsource::futures::EventSource;
 use gloo_net::http::{Request, Response};
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    AddCard, ApiTokenView, AuthStatus, ClientCommand, CollectionView, CreatedApiToken,
-    DatabaseView, DeckView, DecksView, EditResult, LinkInfo, LinkView, NewApiToken, PasswordChange,
-    PrintingView, Redeem, RowEdit, ServerEvent, SessionView, SetUp, SettingsChange, SettingsView,
-    SignIn, UserChange, UserView,
+    AddCard, ApiTokenView, AuthStatus, BenchmarkView, ClientCommand, CollectionView,
+    CreatedApiToken, DatabaseView, DeckView, DecksView, EditResult, LinkInfo, LinkView,
+    NewApiToken, OllamaView, PasswordChange, PrintingView, PullView, RecognitionSetup, Redeem,
+    RowEdit, ServerEvent, SessionView, SetUp, SettingsChange, SettingsView, SetupView, SignIn,
+    UserChange, UserView,
 };
 use serde::de::DeserializeOwned;
 
@@ -157,6 +158,58 @@ pub async fn reset_link(id: i64) -> Result<LinkView, String> {
 
 pub async fn change_user(id: i64, change: &UserChange) -> Result<UserView, String> {
     json_or_message(post(&format!("/api/users/{id}"), change).await?).await
+}
+
+pub async fn setup() -> Result<SetupView, String> {
+    let resp = Request::get("/api/setup").send().await.map_err(err)?;
+    json_or_message(resp).await
+}
+
+/// What the Ollama server at `url` has (empty: the configured one).
+pub async fn setup_ollama(url: &str) -> Result<OllamaView, String> {
+    let resp = Request::get("/api/setup/ollama")
+        .query([("url", url)])
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn setup_recognition(setup: &RecognitionSetup) -> Result<SetupView, String> {
+    json_or_message(post("/api/setup/recognition", setup).await?).await
+}
+
+pub async fn start_pull(model: &str) -> Result<PullView, String> {
+    json_or_message(post("/api/setup/pull", &serde_json::json!({ "model": model })).await?).await
+}
+
+pub async fn pull_progress() -> Result<PullView, String> {
+    let resp = Request::get("/api/setup/pull").send().await.map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn benchmark() -> Result<BenchmarkView, String> {
+    let resp = Request::post("/api/setup/benchmark")
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn setup_telemetry(enabled: bool) -> Result<(), String> {
+    done(
+        post(
+            "/api/setup/telemetry",
+            &serde_json::json!({ "enabled": enabled }),
+        )
+        .await?,
+    )
+    .await
+}
+
+/// Finish the wizard (`false`: show it again).
+pub async fn setup_done(finished: bool) -> Result<(), String> {
+    done(post("/api/setup/done", &serde_json::json!({ "done": finished })).await?).await
 }
 
 pub async fn session() -> Result<SessionView, String> {

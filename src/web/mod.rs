@@ -24,6 +24,7 @@
 //! | `GET /api/decks[?refresh=true][&all=true]` | the signed-in account's Moxfield user's public decks, without hidden ones unless `all` |
 //! | `GET /api/decks/{id}` | one of those decks with its cards |
 //! | `GET`/`POST /api/settings` | Settings page: the account's startup options, Moxfield account, hidden decks, currency, card language; Card Kingdom (admins) (`SettingsChange` JSON) |
+//! | `/api/setup*` | admins: the setup wizard (recognition, Ollama check and download, a one-card test, telemetry, done) |
 //! | `GET /api/settings/database` | admins: where the collection is stored, with live status (no passwords) |
 //! | everything else | the embedded UI |
 //!
@@ -34,6 +35,7 @@ mod auth;
 mod camera;
 mod sessions;
 mod settings;
+mod setup;
 
 pub use sessions::StartFlags;
 
@@ -91,6 +93,8 @@ struct AppState {
     /// be read or created).
     secrets: Option<Arc<SecretBox>>,
     cfg: Config,
+    /// The setup wizard's model download.
+    setup: setup::SetupState,
     /// What the Settings page changes while running.
     settings: std::sync::Mutex<settings::Settings>,
     /// The address the server listens on.
@@ -182,6 +186,7 @@ async fn serve(
         sessions: sessions.clone(),
         accounts,
         secrets,
+        setup: setup::SetupState::default(),
         settings: settings::Settings::new(&cfg, web.flags.describe()),
         cfg,
         addr: web.addr,
@@ -218,6 +223,13 @@ async fn serve(
         .route("/api/decks/{id}", get(deck))
         .route("/api/settings", get(settings::get).post(settings::change))
         .route("/api/settings/database", get(settings::database))
+        .route("/api/setup", get(setup::get))
+        .route("/api/setup/ollama", get(setup::ollama))
+        .route("/api/setup/recognition", post(setup::recognition))
+        .route("/api/setup/pull", get(setup::pull).post(setup::start_pull))
+        .route("/api/setup/benchmark", post(setup::benchmark))
+        .route("/api/setup/telemetry", post(setup::telemetry))
+        .route("/api/setup/done", post(setup::done))
         .fallback(static_file)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

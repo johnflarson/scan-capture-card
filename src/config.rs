@@ -26,6 +26,8 @@ pub struct Config {
     /// How `mtg-scan ui` starts (set on the web UI's Settings page).
     pub ui: UiConfig,
     pub decks: DecksConfig,
+    pub telemetry: TelemetryConfig,
+    pub setup: SetupConfig,
     /// The file these settings came from, if any; the Settings page saves there.
     #[serde(skip)]
     pub file: Option<PathBuf>,
@@ -46,6 +48,8 @@ impl Default for Config {
             llm: LlmConfig::default(),
             ui: UiConfig::default(),
             decks: DecksConfig::default(),
+            telemetry: TelemetryConfig::default(),
+            setup: SetupConfig::default(),
             file: None,
             user: None,
         }
@@ -93,32 +97,99 @@ pub struct DecksConfig {
     pub hidden: Vec<String>,
 }
 
-/// Save the one server setting the Settings page changes, `[prices]
-/// card_kingdom` (admins), into `path`, keeping everything else in the file
-/// (other settings, comments, ordering) as it is. Everything else the page
-/// changes belongs to an account and is saved with it (see `prefs`).
-pub fn save_card_kingdom(path: &Path, on: bool) -> Result<()> {
-    use toml_edit::{DocumentMut, Item, Table, value};
+/// `[telemetry]`: whether anonymous usage pings may be sent (asked by the
+/// setup wizard; `None` until answered). Nothing is sent before Phase 6
+/// adds the sending, and never without `true` here.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    pub enabled: Option<bool>,
+}
 
+/// `[setup]`: the web UI's setup wizard was finished or skipped.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct SetupConfig {
+    pub done: bool,
+}
+
+/// Change `path` with `edit`, keeping everything else in the file (other
+/// settings, comments, ordering) as it is. A missing file is created.
+fn edit_file(
+    path: &Path,
+    edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<()>,
+) -> Result<()> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
     };
-    let mut doc: DocumentMut = text
+    let mut doc: toml_edit::DocumentMut = text
         .parse()
         .with_context(|| format!("invalid config in {}", path.display()))?;
-    let prices = doc
-        .entry("prices")
-        .or_insert(Item::Table(Table::new()))
-        .as_table_mut()
-        .with_context(|| format!("[prices] in {} isn't a table", path.display()))?;
-    prices["card_kingdom"] = value(on);
-
+    edit(&mut doc)?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string())
         .with_context(|| format!("failed to write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("failed to update {}", path.display()))
+}
+
+/// The `[name]` table of a settings file, created if missing.
+fn section<'a>(
+    doc: &'a mut toml_edit::DocumentMut,
+    name: &str,
+) -> Result<&'a mut toml_edit::Table> {
+    doc.entry(name)
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .with_context(|| format!("[{name}] in the settings file isn't a table"))
+}
+
+/// Save `[prices] card_kingdom` (the Settings page, admins). Everything else
+/// that page changes belongs to an account and is saved with it (`prefs`).
+pub fn save_card_kingdom(path: &Path, on: bool) -> Result<()> {
+    edit_file(path, |doc| {
+        section(doc, "prices")?["card_kingdom"] = toml_edit::value(on);
+        Ok(())
+    })
+}
+
+/// Save how cards are recognised (the setup wizard): `[recognition] mode`
+/// and `[llm] provider`, `model` and `base_url` (a default value removes
+/// the key, so the provider's default applies).
+pub fn save_recognition(path: &Path, mode: RecognitionMode, llm: &LlmConfig) -> Result<()> {
+    edit_file(path, |doc| {
+        section(doc, "recognition")?["mode"] = toml_edit::value(match mode {
+            RecognitionMode::Ocr => "ocr",
+            RecognitionMode::Llm => "llm",
+            RecognitionMode::Auto => "auto",
+        });
+        let t = section(doc, "llm")?;
+        t["provider"] = toml_edit::value(llm.provider.as_str());
+        for (key, value) in [("model", &llm.model), ("base_url", &llm.base_url)] {
+            match value {
+                Some(v) => t[key] = toml_edit::value(v.as_str()),
+                None => {
+                    t.remove(key);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+pub fn save_telemetry(path: &Path, enabled: bool) -> Result<()> {
+    edit_file(path, |doc| {
+        section(doc, "telemetry")?["enabled"] = toml_edit::value(enabled);
+        Ok(())
+    })
+}
+
+pub fn save_setup_done(path: &Path, done: bool) -> Result<()> {
+    edit_file(path, |doc| {
+        section(doc, "setup")?["done"] = toml_edit::value(done);
+        Ok(())
+    })
 }
 
 /// Where prices come from besides Scryfall (TCGplayer USD, Cardmarket EUR
@@ -472,6 +543,33 @@ pub enum LlmProvider {
 }
 
 impl LlmProvider {
+    pub const ALL: [LlmProvider; 7] = [
+        LlmProvider::None,
+        LlmProvider::Ollama,
+        LlmProvider::Lmstudio,
+        LlmProvider::Openrouter,
+        LlmProvider::Openai,
+        LlmProvider::Anthropic,
+        LlmProvider::Gemini,
+    ];
+
+    /// As written in the settings file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LlmProvider::None => "none",
+            LlmProvider::Ollama => "ollama",
+            LlmProvider::Lmstudio => "lmstudio",
+            LlmProvider::Openrouter => "openrouter",
+            LlmProvider::Openai => "openai",
+            LlmProvider::Anthropic => "anthropic",
+            LlmProvider::Gemini => "gemini",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == text.trim())
+    }
+
     /// A cloud service that needs an API key (not a local model server).
     pub fn needs_key(self) -> bool {
         matches!(
@@ -833,6 +931,36 @@ mod tests {
         let cfg: Config = toml::from_str("[recognition]\nocr = \"paddle\"\n").unwrap();
         assert_eq!(cfg.recognition.ocr, OcrChoice::Paddle);
         assert!(toml::from_str::<Config>("[recognition]\nocr = \"tesseract\"\n").is_err());
+    }
+
+    #[test]
+    fn saving_the_wizards_choices_keeps_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mtg-scan.toml");
+        std::fs::write(
+            &path,
+            "# mine\n[llm]\nprovider = \"ollama\"\nmodel = \"old\"\ntimeout_secs = 60\n",
+        )
+        .unwrap();
+        let llm = LlmConfig {
+            provider: LlmProvider::Anthropic,
+            ..LlmConfig::default()
+        };
+        save_recognition(&path, RecognitionMode::Auto, &llm).unwrap();
+        save_telemetry(&path, false).unwrap();
+        save_setup_done(&path, true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# mine"));
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.llm.provider, LlmProvider::Anthropic);
+        assert_eq!(cfg.llm.model, None, "the old model is dropped");
+        assert_eq!(cfg.llm.timeout_secs, 60);
+        assert_eq!(cfg.recognition.mode, RecognitionMode::Auto);
+        assert_eq!(cfg.telemetry.enabled, Some(false));
+        assert!(cfg.setup.done);
+        for p in LlmProvider::ALL {
+            assert_eq!(LlmProvider::parse(p.as_str()), Some(p));
+        }
     }
 
     #[test]

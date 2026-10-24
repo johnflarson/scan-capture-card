@@ -29,6 +29,15 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- **Setup wizard** (#75). After the first account is created, admins get a step-by-step setup (and
+  later from Settings → Server setup): where the cards are stored; how cards are read: the printed
+  text only, a model on this server (checks Ollama, downloads the suggested model with a progress
+  bar), or a cloud model with your own key; "Try it" reads one card (Lightning Bolt, from Scryfall)
+  with the choice and reports what it read, how long it took and how much of a local model sat on
+  the GPU; the camera; your currency and card language; and whether anonymous usage statistics may
+  be sent (`[telemetry] enabled`, nothing is sent before Phase 6). The recognition choice is saved
+  in `mtg-scan.toml` (`[recognition] mode`, `[llm]`) and every scan session switches to it without
+  a restart. `[setup] done` remembers that it was finished or skipped.
 - **Claude and Gemini as vision models** (#76): `[llm] provider = "anthropic"` (Messages API,
   default `claude-opus-5-5`, `ANTHROPIC_API_KEY`) and `"gemini"` (`generateContent`, default
   `gemini-2.5-flash`, `GEMINI_API_KEY`), next to the OpenAI-compatible and Ollama ones, behind one

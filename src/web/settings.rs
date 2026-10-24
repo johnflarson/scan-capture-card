@@ -23,7 +23,7 @@ use mtg_scan_shared::{
 use super::{AppState, blocking, lan_ip};
 use crate::accounts::Signed;
 use crate::app;
-use crate::config::{self, Config, LlmProvider, StorageBackend};
+use crate::config::{self, Config, LlmConfig, LlmProvider, RecognitionConfig, StorageBackend};
 use crate::moxfield;
 use crate::prefs::Prefs;
 use crate::scryfall::Scryfall;
@@ -31,12 +31,18 @@ use crate::store::CardCache;
 use crate::store::postgres::{self, PostgresStore};
 use crate::store::sqlite::SqliteStore;
 
-/// The server settings the Settings page changes, as last saved.
+/// The server settings the Settings page and the setup wizard change, as
+/// last saved.
 pub struct Settings {
     card_kingdom: bool,
-    file: PathBuf,
+    pub(super) file: PathBuf,
     /// Command-line flags that overrode a startup setting for this run.
     overridden: Vec<String>,
+    /// How cards are recognised now (the wizard switches it while running).
+    pub(super) recognition: RecognitionConfig,
+    pub(super) llm: LlmConfig,
+    pub(super) telemetry: Option<bool>,
+    pub(super) setup_done: bool,
 }
 
 impl Settings {
@@ -45,6 +51,10 @@ impl Settings {
             card_kingdom: cfg.prices.card_kingdom,
             file: cfg.settings_file(),
             overridden,
+            recognition: cfg.recognition.clone(),
+            llm: cfg.llm.clone(),
+            telemetry: cfg.telemetry.enabled,
+            setup_done: cfg.setup.done,
         })
     }
 }
@@ -185,13 +195,12 @@ fn view(st: &AppState, signed: &Signed) -> Result<SettingsView> {
             .to_string(),
         locked: st.sessions.dry_run().then(|| DRY_RUN.to_string()),
         connection: connection(st.addr),
-        llm: llm_view(st, &prefs),
+        llm: llm_view(st, &settings.llm, &prefs),
     })
 }
 
 /// The server's vision model, and whose key it uses for this account.
-fn llm_view(st: &AppState, prefs: &Prefs) -> LlmView {
-    let llm = &st.cfg.llm;
+fn llm_view(st: &AppState, llm: &LlmConfig, prefs: &Prefs) -> LlmView {
     let model = (llm.provider != LlmProvider::None)
         .then(|| format!("{:?} {}", llm.provider, llm.resolved_model()));
     LlmView {

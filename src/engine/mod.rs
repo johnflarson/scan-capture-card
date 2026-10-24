@@ -35,7 +35,8 @@ use image::{DynamicImage, RgbImage};
 use mtg_scan_shared::{CardOutcome, CardView, Mode, OverlayView, SessionView, StateView};
 use tokio::sync::{broadcast, watch};
 
-use crate::config::Config;
+use crate::config::{Config, LlmConfig, RecognitionConfig};
+use crate::llm::VisionLlm;
 use crate::model::Finish;
 use crate::pipeline::{CardResult, Outcome, Pipeline, Rect};
 use draw::{Color, Overlay};
@@ -335,6 +336,8 @@ struct ScannerStatus {
     failed: Mutex<Option<String>>,
     recognizer: Mutex<String>,
     collection: Mutex<String>,
+    /// A new recognition setup for the worker to switch to.
+    reconfigure: Mutex<Option<(RecognitionConfig, LlmConfig)>>,
 }
 
 /// The recognition worker every scan session shares.
@@ -373,6 +376,12 @@ impl Scanner {
         locked(&self.jobs)
             .as_ref()
             .is_some_and(|jobs| jobs.send(work).is_ok())
+    }
+
+    /// Switch every session's recognition (mode and vision model) before
+    /// the next scan; the sessions show the new description.
+    pub fn reconfigure(&self, recognition: RecognitionConfig, llm: LlmConfig) {
+        *locked(&self.status.reconfigure) = Some((recognition, llm));
     }
 
     /// False once the worker has stopped.
@@ -566,6 +575,15 @@ impl Link {
         })
     }
 
+    /// Show the worker's current recognizer (it changes when the setup
+    /// wizard switches it).
+    fn sync_recognizer(&self, ctx: &Ctx) {
+        let current = locked(&self.scanner.status.recognizer).clone();
+        if ctx.lock().recognizer != current {
+            ctx.update(|s| s.recognizer = current);
+        }
+    }
+
     /// Once the worker is ready (or failed), say so in this session.
     fn sync_ready(&self, ctx: &Ctx, told_failure: &mut bool) {
         let status = &self.scanner.status;
@@ -671,6 +689,8 @@ fn capture_loop(
         let mut trigger: Option<(bool, bool)> = None;
         if !ctx.lock().ready {
             link.sync_ready(&ctx, &mut told_failure);
+        } else {
+            link.sync_recognizer(&ctx);
         }
         let (ready, busy) = {
             let s = ctx.lock();
@@ -980,7 +1000,25 @@ fn worker_loop(
     status.ready.store(true, Ordering::Release);
 
     let mut sessions: HashMap<u64, SessionMemory> = HashMap::new();
-    while let Ok(work) = jobs.recv() {
+    loop {
+        // Wake up now and then to apply a new recognition setup while idle.
+        let work = match jobs.recv_timeout(Duration::from_millis(500)) {
+            Ok(work) => Some(work),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if let Some((recognition, llm)) = locked(&status.reconfigure).take() {
+            let applied = VisionLlm::from_config(&llm).and_then(|vision| {
+                pipeline
+                    .recognizer
+                    .reconfigure(recognition.mode, recognition.ocr, vision)
+            });
+            match applied {
+                Ok(()) => *locked(&status.recognizer) = pipeline.recognizer.describe(),
+                Err(e) => eprintln!("  ! could not switch the recognizer: {e:#}"),
+            }
+        }
+        let Some(work) = work else { continue };
         if matches!(work.job, Job::End) {
             sessions.remove(&work.session);
             continue;

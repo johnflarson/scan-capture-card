@@ -151,6 +151,15 @@ impl Sessions {
         self.opts.dry_run
     }
 
+    /// Switch how every session's cards are recognised (the setup wizard).
+    pub fn reconfigure(
+        &self,
+        recognition: crate::config::RecognitionConfig,
+        llm: crate::config::LlmConfig,
+    ) {
+        self.scanner.reconfigure(recognition, llm);
+    }
+
     /// The recognition worker runs.
     pub fn is_running(&self) -> bool {
         self.scanner.is_running()

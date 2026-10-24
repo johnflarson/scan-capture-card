@@ -148,6 +148,27 @@ impl Recognizer {
         self.llm.is_some()
     }
 
+    /// Switch the recognition mode and vision model (the setup wizard),
+    /// keeping the card name data already loaded.
+    pub fn reconfigure(
+        &mut self,
+        mode: RecognitionMode,
+        ocr_choice: OcrChoice,
+        llm: Option<VisionLlm>,
+    ) -> Result<()> {
+        if mode == RecognitionMode::Llm && llm.is_none() {
+            bail!("recognition mode 'llm' needs an LLM provider");
+        }
+        if mode == RecognitionMode::Llm {
+            self.ocr = None;
+        } else if self.ocr.is_none() {
+            self.ocr = Some(ocr::open(ocr_choice)?);
+        }
+        self.llm = llm;
+        self.mode = mode;
+        Ok(())
+    }
+
     /// Call the LLM with this account's key (`None`: the server's).
     pub fn set_llm_key(&mut self, key: Option<String>) {
         if let Some(llm) = &mut self.llm {
