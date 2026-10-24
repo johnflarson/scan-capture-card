@@ -173,19 +173,22 @@ asks). The pages:
     them for one run, and the page says so.
   - **Prices and cards:** the headline currency (USD from TCGplayer or EUR from
     Cardmarket) for totals, group values and the most valuable cards; Card Kingdom
-    prices on or off; and the language your cards are printed in (scans record
-    that printing when Scryfall has it).
+    prices on or off (admins, for everyone); and the language your cards are
+    printed in (scans record that printing when Scryfall has it).
   - **Moxfield account.**
   - **Decks:** Show / Hide for each deck. Hidden (e.g. retired) decks are left off
     the Decks page and out of the deck statistics.
-  - **Database:** where the collection is stored, with live status (server version,
-    schema version, row counts). Never passwords.
+  - **Database** (admins): where the collection is stored, with live status
+    (server version, schema version, row counts). Never passwords.
   - **Account:** change your password, sign out, and API tokens for scripts.
   - **Users** (admins): invite links, password-reset links, admin and disabled.
   - **Connect:** how to connect from other computers and phones.
 
-  Changes are saved in the `[ui]` and `[decks]` sections of `mtg-scan.toml`, and the
-  rest of that file is kept as it is.
+  Each account's settings are its own and saved with it. What an account hasn't
+  set comes from `mtg-scan.toml` (`[ui]`, `[prices] currency`, `[recognition]
+  card_language`); the first account also starts with the file's Moxfield
+  account and hidden decks. Card Kingdom is saved in `[prices] card_kingdom`, and
+  the rest of that file is kept as it is.
 
 Hover over any card name to see the card. It works on phones too (open the
 "other computers" address). Dark theme, luminaldata colours.

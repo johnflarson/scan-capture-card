@@ -93,17 +93,12 @@ pub struct DecksConfig {
     pub hidden: Vec<String>,
 }
 
-/// Save the Settings page's settings (`[ui]`, `[decks]`, `[prices]` and
-/// `[recognition] card_language`) into `path`, keeping everything else in
-/// the file (other settings, comments, ordering) as it is.
-pub fn save_settings(
-    path: &Path,
-    ui: &UiConfig,
-    decks: &DecksConfig,
-    prices: &PricesConfig,
-    card_language: &str,
-) -> Result<()> {
-    use toml_edit::{Array, DocumentMut, Item, Table, value};
+/// Save the one server setting the Settings page changes, `[prices]
+/// card_kingdom` (admins), into `path`, keeping everything else in the file
+/// (other settings, comments, ordering) as it is. Everything else the page
+/// changes belongs to an account and is saved with it (see `prefs`).
+pub fn save_card_kingdom(path: &Path, on: bool) -> Result<()> {
+    use toml_edit::{DocumentMut, Item, Table, value};
 
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -113,36 +108,12 @@ pub fn save_settings(
     let mut doc: DocumentMut = text
         .parse()
         .with_context(|| format!("invalid config in {}", path.display()))?;
-    fn section<'a>(doc: &'a mut DocumentMut, name: &str, path: &Path) -> Result<&'a mut Table> {
-        doc.entry(name)
-            .or_insert(Item::Table(Table::new()))
-            .as_table_mut()
-            .with_context(|| format!("[{name}] in {} isn't a table", path.display()))
-    }
-
-    let t = section(&mut doc, "ui", path)?;
-    t["auto_scan"] = value(ui.auto_scan);
-    t["table_mode"] = value(ui.table_mode);
-    t["finish"] = value(ui.finish.as_str());
-
-    let t = section(&mut doc, "decks", path)?;
-    match &decks.moxfield_user {
-        Some(user) => t["moxfield_user"] = value(user.as_str()),
-        None => {
-            t.remove("moxfield_user");
-        }
-    }
-    t["hidden"] = value(decks.hidden.iter().map(String::as_str).collect::<Array>());
-
-    let t = section(&mut doc, "prices", path)?;
-    t["currency"] = value(match prices.currency {
-        Currency::Usd => "usd",
-        Currency::Eur => "eur",
-    });
-    t["card_kingdom"] = value(prices.card_kingdom);
-
-    let t = section(&mut doc, "recognition", path)?;
-    t["card_language"] = value(card_language);
+    let prices = doc
+        .entry("prices")
+        .or_insert(Item::Table(Table::new()))
+        .as_table_mut()
+        .with_context(|| format!("[prices] in {} isn't a table", path.display()))?;
+    prices["card_kingdom"] = value(on);
 
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string())
@@ -787,47 +758,32 @@ mod tests {
     }
 
     #[test]
-    fn save_settings_keeps_the_rest_of_the_file() {
+    fn saving_card_kingdom_keeps_the_rest_of_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mtg-scan.toml");
-        let original = "# my settings\ncollection = \"cards.md\"\n\n[llm]\n# local model\nprovider = \"ollama\"\n\n[ui]\nauto_scan = true # was on\n";
+        let original = "# my settings\ncollection = \"cards.md\"\n\n[llm]\n# local model\nprovider = \"ollama\"\n\n[prices]\ncurrency = \"eur\" # euros\n";
         std::fs::write(&path, original).unwrap();
-        let ui = UiConfig {
-            auto_scan: false,
-            table_mode: true,
-            finish: Finish::Etched,
-        };
-        let decks = DecksConfig {
-            moxfield_user: Some("https://moxfield.com/users/Someone".into()),
-            hidden: vec!["abc".into(), "d-e_f".into()],
-        };
-        save_settings(&path, &ui, &decks, &PricesConfig::default(), "en").unwrap();
+        save_card_kingdom(&path, true).unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
         for kept in [
             "# my settings",
             "collection = \"cards.md\"",
             "# local model",
+            "# euros",
         ] {
             assert!(text.contains(kept), "{kept} lost:\n{text}");
         }
         let cfg: Config = toml::from_str(&text).unwrap();
         assert_eq!(cfg.collection, PathBuf::from("cards.md"));
         assert_eq!(cfg.llm.provider, LlmProvider::Ollama);
-        assert_eq!(cfg.ui, ui);
-        assert_eq!(cfg.decks, decks);
-
-        // Clearing the user removes the key, so .env applies again.
-        save_settings(
-            &path,
-            &ui,
-            &DecksConfig::default(),
-            &PricesConfig::default(),
-            "en",
-        )
-        .unwrap();
-        let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(cfg.decks, DecksConfig::default());
+        assert_eq!(
+            cfg.prices,
+            PricesConfig {
+                currency: Currency::Eur,
+                card_kingdom: true
+            }
+        );
     }
 
     #[test]
@@ -849,25 +805,12 @@ mod tests {
     }
 
     #[test]
-    fn save_settings_creates_a_missing_file() {
+    fn saving_card_kingdom_creates_a_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("new.toml");
-        let prices = PricesConfig {
-            currency: Currency::Eur,
-            card_kingdom: true,
-        };
-        save_settings(
-            &path,
-            &UiConfig::default(),
-            &DecksConfig::default(),
-            &prices,
-            "ja",
-        )
-        .unwrap();
+        save_card_kingdom(&path, true).unwrap();
         let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(cfg.ui, UiConfig::default());
-        assert_eq!(cfg.prices, prices);
-        assert_eq!(cfg.recognition.card_language, "ja");
+        assert!(cfg.prices.card_kingdom);
     }
 
     #[test]

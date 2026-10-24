@@ -62,6 +62,7 @@ detection = "auto"
 review_uncertain = true
 # Language your cards are printed in (Scryfall code: en, de, fr, it, es, pt,
 # ja, ko, ru, zhs, zht): scans record that printing when Scryfall has it.
+# The default for accounts that haven't chosen one on the Settings page.
 card_language = "en"
 
 [llm]
@@ -78,10 +79,10 @@ provider = "ollama"
 # api_key_env = "OPENROUTER_API_KEY"
 timeout_secs = 120
 
-# The web UI's Settings page (the cog) saves the two sections below here,
-# keeping the rest of this file as it is.
+# Defaults for accounts' own settings (the web UI's Settings page saves those
+# with each account). The first account also starts with [decks] below.
 [ui]
-# How `mtg-scan ui` starts; --manual, --table and --finish override them.
+# How scanning starts; --manual, --table and --finish override them.
 auto_scan = true
 table_mode = false
 finish = "nonfoil"

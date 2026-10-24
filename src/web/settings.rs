@@ -1,7 +1,9 @@
-//! The Settings page: how `mtg-scan ui` starts, the Moxfield account and
-//! hidden decks (saved in the settings file, `mtg-scan.toml`), plus read-only
-//! database and connection details. Passwords and keys stay in `.env` and
-//! are never sent.
+//! The Settings page. Each account's own settings (how its scan session
+//! starts, its Moxfield account and hidden decks, currency, card language)
+//! are saved with the account (see `prefs`); the one server setting it
+//! changes, Card Kingdom prices, goes into the settings file
+//! (`mtg-scan.toml`) and only admins change it, as only admins see the
+//! database details. Passwords and keys stay in `.env` and are never sent.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -9,30 +11,29 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Result, bail};
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use mtg_scan_shared::{
     CARD_LANGUAGES, Connection, DatabaseView, InfoRow, PriceSettings, SettingsChange, SettingsView,
     Startup,
 };
 
 use super::{AppState, blocking, lan_ip};
+use crate::accounts::Signed;
 use crate::app;
-use crate::config::{self, Config, DecksConfig, PricesConfig, StorageBackend, UiConfig};
+use crate::config::{self, Config, StorageBackend};
 use crate::moxfield;
+use crate::prefs::Prefs;
 use crate::scryfall::Scryfall;
 use crate::store::CardCache;
 use crate::store::postgres::{self, PostgresStore};
 use crate::store::sqlite::SqliteStore;
 
-/// What the Settings page edits, as last saved.
+/// The server settings the Settings page changes, as last saved.
 pub struct Settings {
-    ui: UiConfig,
-    decks: DecksConfig,
-    prices: PricesConfig,
-    card_language: String,
+    card_kingdom: bool,
     file: PathBuf,
     /// Command-line flags that overrode a startup setting for this run.
     overridden: Vec<String>,
@@ -41,21 +42,10 @@ pub struct Settings {
 impl Settings {
     pub fn new(cfg: &Config, overridden: Vec<String>) -> Mutex<Self> {
         Mutex::new(Self {
-            ui: cfg.ui.clone(),
-            decks: cfg.decks.clone(),
-            prices: cfg.prices.clone(),
-            card_language: cfg.recognition.card_language.clone(),
+            card_kingdom: cfg.prices.card_kingdom,
             file: cfg.settings_file(),
             overridden,
         })
-    }
-
-    pub fn moxfield_user(&self) -> Option<String> {
-        moxfield::configured_user(self.decks.moxfield_user.as_deref())
-    }
-
-    pub fn is_hidden(&self, deck_id: &str) -> bool {
-        self.decks.hidden.iter().any(|h| h == deck_id)
     }
 }
 
@@ -70,38 +60,41 @@ pub fn lock(settings: &Mutex<Settings>) -> MutexGuard<'_, Settings> {
 const DRY_RUN: &str =
     "Dry run: settings can't be changed. Restart without --dry-run to change them.";
 
-pub async fn get(State(st): State<Arc<AppState>>) -> Json<SettingsView> {
-    Json(view(&st))
+pub async fn get(
+    State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
+) -> Response {
+    let state = st.clone();
+    blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
+        view(&state, &signed)
+    })
+    .await
 }
 
 pub async fn change(
     State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
     Json(change): Json<SettingsChange>,
 ) -> Response {
     if st.engine.view().dry_run {
         return (StatusCode::CONFLICT, DRY_RUN).into_response();
     }
     let state = st.clone();
-    match tokio::task::spawn_blocking(move || apply(&state, change)).await {
-        Ok(Ok(())) => Json(view(&st)).into_response(),
-        Ok(Err(e)) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+    blocking(StatusCode::BAD_REQUEST, move || {
+        apply(&state, &signed, change)?;
+        view(&state, &signed)
+    })
+    .await
 }
 
-/// Validate and save one change; the settings in memory change only once
-/// the file is written.
-fn apply(st: &AppState, change: SettingsChange) -> Result<()> {
-    let mut settings = lock(&st.settings);
-    let mut ui = settings.ui.clone();
-    let mut decks = settings.decks.clone();
-    let mut prices = settings.prices.clone();
-    let mut card_language = settings.card_language.clone();
+/// Validate and save one change.
+fn apply(st: &AppState, signed: &Signed, change: SettingsChange) -> Result<()> {
+    let (mut stored, prefs) = st.accounts.prefs(&signed.user, &st.cfg)?;
     match change {
         SettingsChange::Startup(s) => {
-            ui.auto_scan = s.auto_scan;
-            ui.table_mode = s.table_mode;
-            ui.finish = s.finish.into();
+            stored.auto_scan = Some(s.auto_scan);
+            stored.table_mode = Some(s.table_mode);
+            stored.finish = Some(s.finish.into());
         }
         SettingsChange::Moxfield { user } => {
             let user = user.trim();
@@ -111,72 +104,71 @@ fn apply(st: &AppState, change: SettingsChange) -> Result<()> {
                      (like https://moxfield.com/users/YourName)"
                 );
             }
-            decks.moxfield_user = Some(user.to_string());
+            stored.moxfield_user = Some(user.to_string());
         }
         SettingsChange::DeckHidden { id, hidden } => {
             if !moxfield::valid_id(&id) {
                 bail!("\"{id}\" isn't a Moxfield deck ID");
             }
-            decks.hidden.retain(|h| *h != id);
+            let mut decks = prefs.hidden_decks;
+            decks.retain(|h| *h != id);
             if hidden {
-                decks.hidden.push(id);
+                decks.push(id);
             }
+            stored.hidden_decks = Some(decks);
         }
         SettingsChange::Prices(p) => {
-            prices.currency = p.currency;
-            prices.card_kingdom = p.card_kingdom;
+            let mut settings = lock(&st.settings);
+            if p.card_kingdom != settings.card_kingdom {
+                if !signed.user.is_admin {
+                    bail!("Only an admin can switch Card Kingdom prices: they are for everyone");
+                }
+                config::save_card_kingdom(&settings.file, p.card_kingdom)?;
+                settings.card_kingdom = p.card_kingdom;
+            }
+            stored.currency = Some(p.currency);
         }
         SettingsChange::CardLanguage { code } => {
             if !CARD_LANGUAGES.iter().any(|(c, _)| *c == code) {
                 bail!("\"{code}\" isn't a card language mtg-scan knows");
             }
-            card_language = code;
+            stored.card_language = Some(code);
         }
     }
-    config::save_settings(&settings.file, &ui, &decks, &prices, &card_language)?;
-    settings.ui = ui;
-    settings.decks = decks;
-    settings.prices = prices;
-    settings.card_language = card_language;
-    Ok(())
+    st.accounts.save_prefs(&signed.user, &stored)
 }
 
-fn view(st: &AppState) -> SettingsView {
+/// The signed-in account's settings with the server's defaults filled in.
+pub fn prefs(st: &AppState, signed: &Signed) -> Result<Prefs> {
+    Ok(st.accounts.prefs(&signed.user, &st.cfg)?.1)
+}
+
+fn view(st: &AppState, signed: &Signed) -> Result<SettingsView> {
+    let prefs = prefs(st, signed)?;
     let settings = lock(&st.settings);
-    let configured = moxfield::configured(settings.decks.moxfield_user.as_deref());
-    let file_name = settings
-        .file
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "the settings file".into());
-    SettingsView {
+    Ok(SettingsView {
         startup: Startup {
-            auto_scan: settings.ui.auto_scan,
-            table_mode: settings.ui.table_mode,
-            finish: settings.ui.finish.into(),
+            auto_scan: prefs.startup.auto_scan,
+            table_mode: prefs.startup.table_mode,
+            finish: prefs.startup.finish.into(),
         },
         overridden: settings.overridden.clone(),
-        moxfield_user: configured
-            .as_ref()
-            .and_then(|(v, _)| moxfield::parse_user(v)),
-        moxfield_source: configured.as_ref().map(|(_, source)| match source {
-            moxfield::Source::Settings => file_name,
-            moxfield::Source::Env => format!("{} in .env", moxfield::USER_VAR),
-        }),
-        moxfield: configured.map(|(v, _)| v).unwrap_or_default(),
-        hidden_decks: settings.decks.hidden.clone(),
+        moxfield_user: prefs.moxfield_user(),
+        moxfield_source: None,
+        moxfield: prefs.moxfield.clone(),
+        hidden_decks: prefs.hidden_decks.clone(),
         prices: PriceSettings {
-            currency: settings.prices.currency,
-            card_kingdom: settings.prices.card_kingdom,
+            currency: prefs.currency,
+            card_kingdom: settings.card_kingdom,
         },
-        card_language: settings.card_language.clone(),
+        card_language: prefs.card_language.clone(),
         file: std::path::absolute(&settings.file)
             .unwrap_or_else(|_| settings.file.clone())
             .display()
             .to_string(),
         locked: st.engine.view().dry_run.then(|| DRY_RUN.to_string()),
         connection: connection(st.addr),
-    }
+    })
 }
 
 /// How this computer, other computers and phones reach the UI.
@@ -197,7 +189,18 @@ fn connection(addr: SocketAddr) -> Connection {
     }
 }
 
-pub async fn database(State(st): State<Arc<AppState>>) -> Response {
+/// Admins only: it names the database server and its login.
+pub async fn database(
+    State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
+) -> Response {
+    if !signed.user.is_admin {
+        return (
+            StatusCode::FORBIDDEN,
+            "Only admins see the database details.",
+        )
+            .into_response();
+    }
     let cfg = st.cfg.clone();
     blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
         Ok(match cfg.storage.backend {

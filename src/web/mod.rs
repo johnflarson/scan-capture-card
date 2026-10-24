@@ -21,10 +21,10 @@
 //! | `GET /api/printings?name=` | every paper printing of a card (review: pick another printing) |
 //! | `POST /api/collection/edit` | `RowEdit` JSON: set quantity, remove, change printing/finish |
 //! | `POST /api/collection/add` | `AddCard` JSON: add copies of a printing by hand |
-//! | `GET /api/decks[?refresh=true][&all=true]` | the configured Moxfield user's public decks, without hidden ones unless `all` |
+//! | `GET /api/decks[?refresh=true][&all=true]` | the signed-in account's Moxfield user's public decks, without hidden ones unless `all` |
 //! | `GET /api/decks/{id}` | one of those decks with its cards |
-//! | `GET`/`POST /api/settings` | Settings page: startup options, Moxfield account, hidden decks (`SettingsChange` JSON) |
-//! | `GET /api/settings/database` | where the collection is stored, with live status (no passwords) |
+//! | `GET`/`POST /api/settings` | Settings page: the account's startup options, Moxfield account, hidden decks, currency, card language; Card Kingdom (admins) (`SettingsChange` JSON) |
+//! | `GET /api/settings/database` | admins: where the collection is stored, with live status (no passwords) |
 //! | everything else | the embedded UI |
 //!
 //! Everything but the app's files, the health check and signing in needs a
@@ -461,11 +461,15 @@ struct DecksQuery {
     all: bool,
 }
 
-async fn decks(State(st): State<Arc<AppState>>, Query(query): Query<DecksQuery>) -> Response {
-    let user = settings::lock(&st.settings).moxfield_user();
+async fn decks(
+    State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
+    Query(query): Query<DecksQuery>,
+) -> Response {
     let state = st.clone();
     blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
-        let Some(user) = user else {
+        let prefs = settings::prefs(&state, &signed)?;
+        let Some(user) = prefs.moxfield_user() else {
             return Ok(DecksView {
                 user: None,
                 profile_url: None,
@@ -475,20 +479,25 @@ async fn decks(State(st): State<Arc<AppState>>, Query(query): Query<DecksQuery>)
         };
         let mut view = Moxfield::new(app::http_client()?).decks(&user, query.refresh);
         if !query.all {
-            let settings = settings::lock(&state.settings);
-            view.decks.retain(|d| !settings.is_hidden(&d.id));
+            view.decks.retain(|d| !prefs.is_hidden(&d.id));
         }
         Ok(view)
     })
     .await
 }
 
-/// Only decks of the configured user are served, so this isn't a general
-/// Moxfield proxy.
-async fn deck(State(st): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let user = settings::lock(&st.settings).moxfield_user();
+/// Only decks of the signed-in account's Moxfield user are served, so this
+/// isn't a general Moxfield proxy.
+async fn deck(
+    State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
+    Path(id): Path<String>,
+) -> Response {
+    let state = st.clone();
     blocking(StatusCode::NOT_FOUND, move || {
-        let user = user.ok_or_else(|| anyhow!("No Moxfield account is set (see Settings)."))?;
+        let user = settings::prefs(&state, &signed)?
+            .moxfield_user()
+            .ok_or_else(|| anyhow!("No Moxfield account is set (see Settings)."))?;
         let client = Moxfield::new(app::http_client()?);
         let summary = client
             .decks(&user, false)

@@ -56,6 +56,11 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "per_user_collection",
         include_str!("../../migrations/sqlite/0005_per_user_collection.sql"),
     ),
+    (
+        6,
+        "user_settings",
+        include_str!("../../migrations/sqlite/0006_user_settings.sql"),
+    ),
 ];
 
 pub fn latest_migration() -> i32 {
