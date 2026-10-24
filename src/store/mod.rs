@@ -1,6 +1,11 @@
 //! Collection persistence behind [`CollectionStore`]: SQLite (the default),
 //! PostgreSQL, or a Markdown file. The two databases keep daily price
 //! history; card details come from Scryfall.
+//!
+//! A database store works on one account's collection at a time
+//! ([`CollectionStore::set_user`]); without one it uses the first admin's,
+//! creating an "admin" account without a password when there is none (the
+//! setup page then claims it). Prices and card data are shared.
 
 pub mod markdown;
 pub mod postgres;
@@ -11,7 +16,7 @@ use std::collections::HashMap;
 use anyhow::{Result, bail};
 use chrono::{DateTime, Local, NaiveDate, Utc};
 
-use crate::model::{Card, CollectionEntry, Finish, PricePoint, Prices};
+use crate::model::{Card, CollectionEntry, Condition, Finish, PricePoint, Prices, RowKey};
 use crate::scryfall::Scryfall;
 
 /// TCGplayer value of the cards owned now, at the prices of `since` and at
@@ -23,8 +28,20 @@ pub struct ValueChange {
     pub rows: u32,
 }
 
-/// A collection row's prices on a past date and now (see
-/// [`CollectionStore::price_moves`]).
+/// An account as copied between databases (`db copy`), password hash
+/// included.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountRow {
+    pub id: i64,
+    pub name: String,
+    pub password_hash: Option<String>,
+    pub is_admin: bool,
+    pub disabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A printing + finish's prices on a past date and now, with the copies of
+/// it the account owns (see [`CollectionStore::price_moves`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PriceMove {
     pub scryfall_id: String,
@@ -37,40 +54,35 @@ pub struct PriceMove {
 }
 
 pub trait CollectionStore {
+    /// Work on this account's collection from now on.
+    fn set_user(&mut self, _user_id: i64) {}
+
+    /// The account whose collection this is (database stores).
+    #[cfg(test)]
+    fn user(&self) -> Result<i64> {
+        bail!("this storage backend has no accounts")
+    }
+
+    /// The account's rows.
     fn entries(&self) -> Result<Vec<CollectionEntry>>;
 
-    /// Add copies of a printing, merging with an existing row for the same
-    /// Scryfall ID + finish. Returns the resulting row.
+    /// Add copies, merging with an existing row with the same key (printing,
+    /// finish, condition, language). Returns the resulting row.
     fn add(&mut self, entry: CollectionEntry) -> Result<CollectionEntry>;
 
     /// Remove up to `quantity` copies. Returns the row as it now stands
     /// (quantity 0 when it was deleted), or `None` if it wasn't present.
-    fn remove(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        quantity: u32,
-    ) -> Result<Option<CollectionEntry>>;
+    fn remove(&mut self, key: &RowKey, quantity: u32) -> Result<Option<CollectionEntry>>;
 
     /// Set the number of copies of a row; 0 deletes it. Returns the row as
     /// it now stands (quantity 0 when deleted), or `None` if it wasn't present.
-    fn set_quantity(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        quantity: u32,
-    ) -> Result<Option<CollectionEntry>>;
+    fn set_quantity(&mut self, key: &RowKey, quantity: u32) -> Result<Option<CollectionEntry>>;
 
-    /// Move a row to another printing and/or finish: the row is replaced by
-    /// `to` (its quantity, prices and card details), merging into an existing
-    /// row for that printing + finish. Returns the resulting row, or `None`
-    /// if the original row wasn't present (then nothing changes).
-    fn relocate(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        to: CollectionEntry,
-    ) -> Result<Option<CollectionEntry>>;
+    /// Change a row's printing, finish, condition or language: the row is
+    /// replaced by `to` (its key, quantity, prices and card details), merging
+    /// into an existing row with that key. Returns the resulting row, or
+    /// `None` if the original row wasn't present (then nothing changes).
+    fn relocate(&mut self, key: &RowKey, to: CollectionEntry) -> Result<Option<CollectionEntry>>;
 
     /// Record current prices for a printing + finish.
     fn update_prices(&mut self, scryfall_id: &str, finish: Finish, prices: Prices) -> Result<()>;
@@ -82,11 +94,34 @@ pub trait CollectionStore {
         bail!("this storage backend can't import; use sqlite or postgres")
     }
 
-    /// Record `date`'s prices for every owned row from the card cache
-    /// (Scryfall's daily TCGplayer, Cardmarket and MTGO prices). Returns the
-    /// rows priced.
+    /// Record `date`'s prices for every printing + finish anyone owns, from
+    /// the card cache (Scryfall's daily TCGplayer, Cardmarket and MTGO
+    /// prices). Returns the printings priced.
     fn record_cached_prices(&mut self, _date: NaiveDate) -> Result<usize> {
         bail!("this storage backend has no card cache")
+    }
+
+    /// Every printing + finish anyone owns (for pricing them all).
+    fn owned_printings(&self) -> Result<Vec<(String, Finish)>> {
+        let mut all: Vec<(String, Finish)> = self
+            .entries()?
+            .into_iter()
+            .map(|e| (e.scryfall_id, e.finish))
+            .collect();
+        all.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.as_str().cmp(b.1.as_str())));
+        all.dedup();
+        Ok(all)
+    }
+
+    /// Every account (for copying a database); none before accounts existed.
+    fn account_rows(&self) -> Result<Vec<AccountRow>> {
+        Ok(Vec::new())
+    }
+
+    /// Copy accounts in, matching existing ones by name (their password and
+    /// flags are kept). Returns each copied account's id here by its id there.
+    fn import_accounts(&mut self, _accounts: &[AccountRow]) -> Result<HashMap<i64, i64>> {
+        bail!("this storage backend has no accounts")
     }
 
     /// Every price point of every printing + finish, owned or not (for
@@ -106,7 +141,8 @@ pub trait CollectionStore {
         bail!("price history is only kept by the sqlite and postgres storage backends")
     }
 
-    /// Rows owned now that were priced on or before `since` and again later.
+    /// Printings + finishes the account owns now that were priced on or
+    /// before `since` and again later.
     fn price_moves(&self, _since: NaiveDate) -> Result<Vec<PriceMove>> {
         bail!("price history is only kept by the sqlite and postgres storage backends")
     }
@@ -236,19 +272,46 @@ pub fn totals(entries: &[CollectionEntry]) -> Totals {
     })
 }
 
-/// Copy a collection and its whole price history from `from` into `to`
-/// (e.g. SQLite to PostgreSQL). Quantities are set, not added, and the card
-/// cache isn't copied: it rebuilds itself. Returns (rows, price points).
-pub fn copy(from: &dyn CollectionStore, to: &mut dyn CollectionStore) -> Result<(usize, usize)> {
-    let rows = to.import(&from.entries()?)?;
-    let points = to.import_price_points(&from.all_price_points()?)?;
-    Ok((rows, points))
+/// What [`copy`] copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Copied {
+    pub accounts: usize,
+    pub rows: usize,
+    pub price_points: usize,
+}
+
+/// Copy the accounts, their collections and the whole price history from
+/// `from` into `to` (e.g. SQLite to PostgreSQL). Accounts are matched by
+/// name; quantities are set, not added. Sessions, links and API tokens
+/// aren't copied (people sign in again), nor is the card cache (it rebuilds
+/// itself). A database from before accounts goes to `to`'s first admin.
+pub fn copy(from: &mut dyn CollectionStore, to: &mut dyn CollectionStore) -> Result<Copied> {
+    let accounts = from.account_rows()?;
+    let mut rows = 0;
+    if accounts.is_empty() {
+        rows += to.import(&from.entries()?)?;
+    } else {
+        let ids = to.import_accounts(&accounts)?;
+        for account in &accounts {
+            from.set_user(account.id);
+            to.set_user(ids[&account.id]);
+            rows += to.import(&from.entries()?)?;
+        }
+    }
+    let price_points = to.import_price_points(&from.all_price_points()?)?;
+    Ok(Copied {
+        accounts: accounts.len(),
+        rows,
+        price_points,
+    })
 }
 
 /// A collection row as the databases store it: no card details.
 pub(crate) struct StoredRow {
     pub scryfall_id: String,
     pub finish: Finish,
+    pub condition: Condition,
+    pub language: String,
     pub quantity: u32,
     pub added: NaiveDate,
     pub prices: Prices,
@@ -290,6 +353,8 @@ pub(crate) fn hydrate(
                 type_line: card.map(|c| c.type_line.clone()).unwrap_or_default(),
                 scryfall_id: r.scryfall_id,
                 finish: r.finish,
+                condition: r.condition,
+                language: r.language,
                 quantity: r.quantity,
                 prices,
                 added: r.added,
@@ -303,6 +368,9 @@ pub(crate) fn hydrate(
             .cmp(&b.name.to_lowercase())
             .then_with(|| a.set_code.cmp(&b.set_code))
             .then_with(|| a.collector_number.cmp(&b.collector_number))
+            .then_with(|| a.finish.as_str().cmp(b.finish.as_str()))
+            .then_with(|| a.condition.cmp(&b.condition))
+            .then_with(|| a.language.cmp(&b.language))
     });
     entries
 }
@@ -311,9 +379,9 @@ pub(crate) fn hydrate(
 pub(crate) fn removed_entry(
     cache: Option<&dyn CardCache>,
     scryfall: Option<&Scryfall>,
-    scryfall_id: &str,
-    finish: Finish,
+    key: &RowKey,
 ) -> CollectionEntry {
+    let scryfall_id = key.scryfall_id.as_str();
     let card = card_details(cache, scryfall, &[scryfall_id.to_string()]).remove(scryfall_id);
     CollectionEntry {
         scryfall_id: scryfall_id.to_string(),
@@ -339,7 +407,9 @@ pub(crate) fn removed_entry(
             .as_ref()
             .map(|c| c.type_line.clone())
             .unwrap_or_default(),
-        finish,
+        finish: key.finish,
+        condition: key.condition,
+        language: key.language.clone(),
         quantity: 0,
         prices: Prices::default(),
         added: Local::now().date_naive(),
@@ -363,6 +433,8 @@ pub(crate) fn conformance(store: &mut dyn CollectionStore) {
         colors: Vec::new(),
         type_line: String::new(),
         finish,
+        condition: Condition::Nm,
+        language: "en".into(),
         quantity: qty,
         prices: Prices {
             tcgplayer: Some(tcg),
@@ -375,6 +447,8 @@ pub(crate) fn conformance(store: &mut dyn CollectionStore) {
         added: today,
         price_updated: Some(today),
     };
+    let key = |id: &str, finish| RowKey::new(id, finish, "en");
+    let owner = store.user().ok();
     // Two printings of Lightning Bolt (M11 #149 and A25 #141) + a foil copy.
     let m11 = "e768c957-3a1f-42f5-853a-96942f645df5";
     let a25 = "e3285e6b-3e79-4d7c-bf96-d920f973b122";
@@ -403,29 +477,32 @@ pub(crate) fn conformance(store: &mut dyn CollectionStore) {
     assert_eq!(m11_row.price_updated, Some(today));
     assert_eq!(store.price_history(m11, Finish::Nonfoil).unwrap().len(), 1);
 
-    let left = store.remove(a25, Finish::Foil, 5).unwrap().unwrap();
+    let left = store.remove(&key(a25, Finish::Foil), 5).unwrap().unwrap();
     assert_eq!(left.quantity, 0);
     assert_eq!(store.entries().unwrap().len(), 2);
     // History survives removal.
     assert_eq!(store.price_history(a25, Finish::Foil).unwrap().len(), 1);
-    assert!(store.remove(a25, Finish::Foil, 1).unwrap().is_none());
-    let partial = store.remove(m11, Finish::Nonfoil, 1).unwrap().unwrap();
+    assert!(store.remove(&key(a25, Finish::Foil), 1).unwrap().is_none());
+    let partial = store
+        .remove(&key(m11, Finish::Nonfoil), 1)
+        .unwrap()
+        .unwrap();
     assert_eq!(partial.quantity, 2);
 
     // Edits: set a quantity, change the finish, then merge into a row that exists.
     let set = store
-        .set_quantity(m11, Finish::Nonfoil, 5)
+        .set_quantity(&key(m11, Finish::Nonfoil), 5)
         .unwrap()
         .unwrap();
     assert_eq!(set.quantity, 5);
     assert!(
         store
-            .set_quantity(a25, Finish::Etched, 2)
+            .set_quantity(&key(a25, Finish::Etched), 2)
             .unwrap()
             .is_none()
     );
     let refinished = store
-        .relocate(a25, Finish::Nonfoil, entry(a25, Finish::Foil, 1, 6.0))
+        .relocate(&key(a25, Finish::Nonfoil), entry(a25, Finish::Foil, 1, 6.0))
         .unwrap()
         .unwrap();
     assert_eq!((refinished.finish, refinished.quantity), (Finish::Foil, 1));
@@ -440,14 +517,14 @@ pub(crate) fn conformance(store: &mut dyn CollectionStore) {
         "the moved row is priced"
     );
     let merged = store
-        .relocate(a25, Finish::Foil, entry(m11, Finish::Nonfoil, 1, 1.5))
+        .relocate(&key(a25, Finish::Foil), entry(m11, Finish::Nonfoil, 1, 1.5))
         .unwrap()
         .unwrap();
     assert_eq!(merged.quantity, 6);
     assert_eq!(store.entries().unwrap().len(), 1);
     assert!(
         store
-            .relocate(a25, Finish::Foil, entry(m11, Finish::Nonfoil, 1, 1.5))
+            .relocate(&key(a25, Finish::Foil), entry(m11, Finish::Nonfoil, 1, 1.5))
             .unwrap()
             .is_none()
     );
@@ -495,6 +572,102 @@ pub(crate) fn conformance(store: &mut dyn CollectionStore) {
         .update_prices(m11, Finish::Nonfoil, Prices::default())
         .unwrap();
     assert_eq!(store.price_history(m11, Finish::Nonfoil).unwrap().len(), 2);
+
+    // Condition and language make their own rows of a printing + finish.
+    let played_ja = CollectionEntry {
+        condition: Condition::Lp,
+        language: "ja".into(),
+        ..entry(m11, Finish::Nonfoil, 2, 1.5)
+    };
+    store.add(played_ja.clone()).unwrap();
+    let rows = store.entries().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .any(|r| r.has_key(&played_ja.key()) && r.quantity == 2)
+    );
+    assert_eq!(
+        store
+            .value_change(today - chrono::Days::new(7))
+            .unwrap()
+            .unwrap()
+            .rows,
+        1,
+        "value and moves count a printing + finish once"
+    );
+    let moves = store.price_moves(today - chrono::Days::new(7)).unwrap();
+    assert_eq!((moves.len(), moves[0].quantity), (1, 8));
+    let near_mint = store
+        .relocate(&played_ja.key(), entry(m11, Finish::Nonfoil, 2, 1.5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (near_mint.condition, near_mint.quantity),
+        (Condition::Nm, 8),
+        "a new condition merges into that row"
+    );
+    assert!(store.remove(&played_ja.key(), 1).unwrap().is_none());
+
+    // Accounts have their own collections; prices stay shared.
+    if let Some(owner) = owner {
+        let ids = store
+            .import_accounts(&[AccountRow {
+                id: 900,
+                name: "Other".into(),
+                password_hash: None,
+                is_admin: false,
+                disabled: false,
+                created_at: Utc::now(),
+            }])
+            .unwrap();
+        let other = ids[&900];
+        assert_ne!(other, owner);
+        store.set_user(other);
+        assert!(store.entries().unwrap().is_empty());
+        assert!(store.value_change(today).unwrap().is_none());
+        store.add(entry(a25, Finish::Nonfoil, 1, 2.0)).unwrap();
+        assert!(
+            store
+                .remove(&key(m11, Finish::Nonfoil), 1)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.entries().unwrap().len(), 1);
+        let mut owned = store.owned_printings().unwrap();
+        owned.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            owned,
+            vec![
+                (a25.to_string(), Finish::Nonfoil),
+                (m11.to_string(), Finish::Nonfoil)
+            ],
+            "everyone's printings"
+        );
+        let names: Vec<String> = store
+            .account_rows()
+            .unwrap()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert!(names.contains(&"Other".to_string()));
+        // Importing the same name again maps onto the existing account.
+        let again = store
+            .import_accounts(&[AccountRow {
+                id: 7,
+                name: "other".into(),
+                password_hash: Some("x".into()),
+                is_admin: true,
+                disabled: false,
+                created_at: Utc::now(),
+            }])
+            .unwrap();
+        assert_eq!(again[&7], other);
+        store.set_user(owner);
+        assert_eq!(store.entries().unwrap().len(), 1);
+        store.set_user(other);
+        store.remove(&key(a25, Finish::Nonfoil), 1).unwrap();
+        store.set_user(owner);
+    }
 
     // Listings take card details from the card cache when it has them.
     if let Some(cache) = store.card_cache() {

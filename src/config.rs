@@ -29,6 +29,10 @@ pub struct Config {
     /// The file these settings came from, if any; the Settings page saves there.
     #[serde(skip)]
     pub file: Option<PathBuf>,
+    /// Command-line commands work on this account's collection (`--user`);
+    /// else the first admin's.
+    #[serde(skip)]
+    pub user: Option<String>,
 }
 
 impl Default for Config {
@@ -43,6 +47,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             decks: DecksConfig::default(),
             file: None,
+            user: None,
         }
     }
 }

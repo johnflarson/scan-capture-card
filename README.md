@@ -222,6 +222,8 @@ mtg-scan reprice                      # refresh every price
 mtg-scan price "Sheoldred, the Apocalypse" --set dmu
 mtg-scan add "Lightning Bolt" --set m11 --number 149 --finish foil --qty 2
 mtg-scan remove "Lightning Bolt" --set m11
+mtg-scan remove "Command Tower" --condition lp --language ja
+mtg-scan --user Bob list              # another account's collection (default: the first admin)
 mtg-scan identify photo1.jpg photo2.jpg --add
 mtg-scan cameras                      # list cameras
 mtg-scan snapshot frame.jpg           # check framing / focus
@@ -295,9 +297,17 @@ picks another file. It is created and upgraded automatically.
 mtg-scan db status                    # file, SQLite version, row counts
 mtg-scan db import collection.md      # copy a Markdown collection in (sets quantities)
 mtg-scan db export backup.md          # Markdown snapshot of the database
-mtg-scan db copy --to postgres        # move the collection and its price history to PostgreSQL
+mtg-scan db copy --to postgres        # move the accounts, collections and price history to PostgreSQL
 mtg-scan --storage postgres db copy --to sqlite --file collection.db   # ...or back
 ```
+
+Every account has its own collection; prices are shared. A collection row is a
+printing in one finish, condition (Near Mint to Damaged) and language, so two
+Lightning Bolts from the same set can be a Near Mint English one and a played
+Japanese one. Scans record Near Mint copies in the card language from Settings;
+the Collection page's edit dialog changes the condition and language. A copy
+(`db copy`) brings the accounts with their passwords; people sign in again and
+make new API tokens there.
 
 Coming from 0.x with PostgreSQL? `db copy --to sqlite` reads the 0.x database
 without upgrading it, so 0.x keeps working while you try 1.0 on the copy.

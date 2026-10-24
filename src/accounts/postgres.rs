@@ -71,10 +71,13 @@ impl PostgresAccounts {
 }
 
 impl AccountStore for PostgresAccounts {
-    fn user_count(&mut self) -> Result<i64> {
+    fn needs_setup(&mut self) -> Result<bool> {
         Ok(self
             .client()?
-            .query_one("select count(*) from app_user", &[])?
+            .query_one(
+                "select not exists (select 1 from app_user where password_hash is not null)",
+                &[],
+            )?
             .get(0))
     }
 
@@ -110,17 +113,34 @@ impl AccountStore for PostgresAccounts {
     fn create_first_admin(&mut self, name: &str, password_hash: &str) -> Result<Option<User>> {
         let mut tx = self.client()?.transaction()?;
         tx.batch_execute("lock table app_user in exclusive mode")?;
-        let count: i64 = tx.query_one("select count(*) from app_user", &[])?.get(0);
-        if count > 0 {
+        let ready: bool = tx
+            .query_one(
+                "select exists (select 1 from app_user where password_hash is not null)",
+                &[],
+            )?
+            .get(0);
+        if ready {
             return Ok(None);
         }
-        let row = tx.query_one(
-            &format!(
-                "insert into app_user as u (name, password_hash, is_admin) values ($1, $2, true)
-                 returning {USER_COLUMNS}"
-            ),
-            &[&name, &password_hash],
-        )?;
+        let waiting: Option<i64> = tx
+            .query_one("select min(id) from app_user where is_admin", &[])?
+            .get(0);
+        let row = match waiting {
+            Some(id) => tx.query_one(
+                &format!(
+                    "update app_user as u set name = $2, password_hash = $3, disabled = false
+                     where id = $1 returning {USER_COLUMNS}"
+                ),
+                &[&id, &name, &password_hash],
+            )?,
+            None => tx.query_one(
+                &format!(
+                    "insert into app_user as u (name, password_hash, is_admin)
+                     values ($1, $2, true) returning {USER_COLUMNS}"
+                ),
+                &[&name, &password_hash],
+            )?,
+        };
         tx.commit()?;
         Ok(Some(user_from(&row, 0)))
     }

@@ -7,6 +7,7 @@ mod api;
 mod app;
 mod auth;
 mod camera;
+mod copies;
 mod decks;
 mod filters;
 mod gallery;

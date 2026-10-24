@@ -140,7 +140,34 @@ pub struct Prices {
     pub cardkingdom_url: Option<String>,
 }
 
-/// One row of the collection: a printing + finish and how many copies.
+pub use mtg_scan_shared::Condition;
+
+/// Which collection row (of one account): the printing, finish, condition
+/// and language of the copies.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RowKey {
+    pub scryfall_id: String,
+    pub finish: Finish,
+    pub condition: Condition,
+    /// Scryfall language code, e.g. `en`.
+    pub language: String,
+}
+
+impl RowKey {
+    /// Near Mint copies in `language`.
+    #[cfg(test)]
+    pub fn new(scryfall_id: &str, finish: Finish, language: &str) -> Self {
+        Self {
+            scryfall_id: scryfall_id.to_string(),
+            finish,
+            condition: Condition::Nm,
+            language: language.to_string(),
+        }
+    }
+}
+
+/// One row of the collection: copies of a printing + finish in one
+/// condition and language.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CollectionEntry {
     pub scryfall_id: String,
@@ -154,6 +181,9 @@ pub struct CollectionEntry {
     pub colors: Vec<String>,
     pub type_line: String,
     pub finish: Finish,
+    pub condition: Condition,
+    /// Scryfall language code of the copies, e.g. `en`.
+    pub language: String,
     pub quantity: u32,
     pub prices: Prices,
     pub added: NaiveDate,
@@ -173,6 +203,8 @@ impl CollectionEntry {
             colors: card.colors.clone(),
             type_line: card.type_line.clone(),
             finish,
+            condition: Condition::Nm,
+            language: card.lang.clone(),
             quantity,
             prices,
             added: today,
@@ -180,8 +212,25 @@ impl CollectionEntry {
         }
     }
 
+    pub fn key(&self) -> RowKey {
+        RowKey {
+            scryfall_id: self.scryfall_id.clone(),
+            finish: self.finish,
+            condition: self.condition,
+            language: self.language.clone(),
+        }
+    }
+
     pub fn same_printing(&self, scryfall_id: &str, finish: Finish) -> bool {
         self.scryfall_id == scryfall_id && self.finish == finish
+    }
+
+    #[cfg(test)]
+    pub fn has_key(&self, key: &RowKey) -> bool {
+        self.scryfall_id == key.scryfall_id
+            && self.finish == key.finish
+            && self.condition == key.condition
+            && self.language == key.language
     }
 
     pub fn scryfall_url(&self) -> String {
@@ -202,6 +251,19 @@ pub struct PricePoint {
     pub tix: Option<f64>,
     pub cardkingdom: Option<f64>,
     pub cardkingdom_buylist: Option<f64>,
+}
+
+/// "foil", "foil, LP, Japanese": the finish, then the condition and
+/// language when they aren't Near Mint and English.
+pub fn copies(finish: Finish, condition: Condition, language: &str) -> String {
+    let mut text = finish.to_string();
+    if condition != Condition::Nm {
+        text += &format!(", {}", condition.short());
+    }
+    if language != "en" {
+        text += &format!(", {}", mtg_scan_shared::language_name(language));
+    }
+    text
 }
 
 pub fn format_usd(v: Option<f64>) -> String {

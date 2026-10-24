@@ -697,6 +697,13 @@ dl.info dd { margin: 0; overflow-wrap: anywhere; }
 .visibility-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btn.small { padding: 5px 14px; font-size: 13px; min-width: 64px; }
 
+/* Condition and language of a Collection row, when not NM / English. */
+.copy-tag {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: var(--radius-s);
+  border: 1px solid var(--md-outline-variant); font-size: 11px; line-height: 18px;
+  color: var(--md-on-surface-variant); vertical-align: 1px;
+}
+
 /* Users and API tokens (Settings). */
 .people-list { list-style: none; margin: 8px 0 12px; padding: 0; display: grid; }
 .person-row {

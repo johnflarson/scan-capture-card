@@ -37,15 +37,16 @@ pub fn refresh(app: &mut App, force: bool) -> Result<Option<Refreshed>> {
     let rows = app.store.record_cached_prices(today)?;
     let mut card_kingdom = 0;
     if let Some(ck) = &app.prices.cardkingdom {
-        for e in app.store.entries()? {
-            if let Some(p) = ck.price(&e.scryfall_id, e.finish) {
+        // Everyone's cards: prices are shared.
+        for (scryfall_id, finish) in app.store.owned_printings()? {
+            if let Some(p) = ck.price(&scryfall_id, finish) {
                 // Only the Card Kingdom columns: Scryfall's prices for today stay.
                 let prices = Prices {
                     cardkingdom: p.retail,
                     cardkingdom_buylist: p.buylist,
                     ..Prices::default()
                 };
-                app.store.update_prices(&e.scryfall_id, e.finish, prices)?;
+                app.store.update_prices(&scryfall_id, finish, prices)?;
                 card_kingdom += 1;
             }
         }
@@ -102,6 +103,8 @@ mod tests {
             colors: Vec::new(),
             type_line: String::new(),
             finish,
+            condition: crate::model::Condition::Nm,
+            language: "en".into(),
             quantity: 1,
             prices: Prices::default(),
             added: Local::now().date_naive(),

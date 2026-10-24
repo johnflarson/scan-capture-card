@@ -16,7 +16,7 @@
 //! | `GET /api/camera` | WebSocket: the page sends its camera's frames (see [`camera`]) |
 //! | `GET /api/health` | "ok" while the scanner runs, else 503 (`mtg-scan health`, container health checks) |
 //! | `POST /api/command` | `ClientCommand` JSON: scan now, undo, set mode, … |
-//! | `GET /api/collection` | the whole collection with prices and totals |
+//! | `GET /api/collection` | the signed-in user's collection with prices and totals |
 //! | `GET /api/printing?q=` | a printing from a Scryfall link or ID (edit dialog) |
 //! | `GET /api/printings?name=` | every paper printing of a card (review: pick another printing) |
 //! | `POST /api/collection/edit` | `RowEdit` JSON: set quantity, remove, change printing/finish |
@@ -46,7 +46,7 @@ use axum::http::{StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use futures_util::{Stream, StreamExt};
 use mtg_scan_shared::{
     AddCard, ClientCommand, CollectionRow, CollectionView, DecksView, EditResult, PrintingView,
@@ -55,12 +55,12 @@ use mtg_scan_shared::{
 use tokio::sync::watch;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::accounts::{self, Accounts};
+use crate::accounts::{self, Accounts, Signed};
 use crate::app::{self, App};
 use crate::config::Config;
 use crate::engine::{self, Engine, EngineEvent, EngineOptions};
 use crate::live;
-use crate::model::{Card, CollectionEntry, Finish};
+use crate::model::{Card, CollectionEntry, Finish, RowKey, copies};
 use crate::moxfield::Moxfield;
 use crate::scryfall::{self, Scryfall};
 
@@ -345,10 +345,13 @@ async fn blocking<T: serde::Serialize + Send + 'static>(
     }
 }
 
-async fn collection(State(st): State<Arc<AppState>>) -> Response {
+async fn collection(
+    State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
+) -> Response {
     let cfg = st.cfg.clone();
     blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
-        collection_view(&cfg)
+        collection_view(&cfg, signed.user.id)
     })
     .await
 }
@@ -365,29 +368,50 @@ async fn printing(Query(query): Query<PrintingQuery>) -> Response {
 const DRY_RUN: &str =
     "Dry run: the collection can't be changed. Restart without --dry-run to edit it.";
 
-async fn edit(State(st): State<Arc<AppState>>, Json(edit): Json<RowEdit>) -> Response {
+async fn edit(
+    State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
+    Json(edit): Json<RowEdit>,
+) -> Response {
     if st.engine.view().dry_run {
         return (StatusCode::CONFLICT, DRY_RUN).into_response();
     }
     let cfg = st.cfg.clone();
-    blocking(StatusCode::BAD_REQUEST, move || edit_row(&cfg, edit)).await
+    blocking(StatusCode::BAD_REQUEST, move || {
+        edit_row(&mut App::for_user(&cfg, signed.user.id)?, edit)
+    })
+    .await
 }
 
-async fn add(State(st): State<Arc<AppState>>, Json(add): Json<AddCard>) -> Response {
+async fn add(
+    State(st): State<Arc<AppState>>,
+    Extension(signed): Extension<Signed>,
+    Json(add): Json<AddCard>,
+) -> Response {
     if st.engine.view().dry_run {
         return (StatusCode::CONFLICT, DRY_RUN).into_response();
     }
     let cfg = st.cfg.clone();
-    blocking(StatusCode::BAD_REQUEST, move || add_card(&cfg, add)).await
+    blocking(StatusCode::BAD_REQUEST, move || {
+        add_card(&mut App::for_user(&cfg, signed.user.id)?, add)
+    })
+    .await
 }
 
-/// Add copies of a printing by hand, priced now; merged into the row for
-/// that printing and finish when there is one.
-fn add_card(cfg: &Config, add: AddCard) -> Result<EditResult> {
+/// A Scryfall language code: 2 or 3 lowercase letters (`en`, `ja`, `zhs`).
+fn check_language(code: &str) -> Result<()> {
+    if !(2..=3).contains(&code.len()) || !code.bytes().all(|b| b.is_ascii_lowercase()) {
+        bail!("\"{code}\" isn't a language code like en or ja");
+    }
+    Ok(())
+}
+
+/// Add copies of a printing by hand, priced now; merged into the row with
+/// that printing, finish, condition and language when there is one.
+fn add_card(app: &mut App, add: AddCard) -> Result<EditResult> {
     if add.quantity == 0 {
         bail!("Add at least one copy");
     }
-    let mut app = App::new(cfg)?;
     let finish: Finish = add.finish.into();
     let card = app
         .scryfall
@@ -401,13 +425,14 @@ fn add_card(cfg: &Config, add: AddCard) -> Result<EditResult> {
             card.collector_number
         );
     }
+    let language = add.language.unwrap_or_else(|| card.lang.clone());
+    check_language(&language)?;
     let prices = app.prices.price(&card, finish);
-    let row = app.store.add(CollectionEntry::from_card(
-        &card,
-        finish,
-        add.quantity,
-        prices,
-    ))?;
+    let row = app.store.add(CollectionEntry {
+        condition: add.condition,
+        language,
+        ..CollectionEntry::from_card(&card, finish, add.quantity, prices)
+    })?;
     let now = if row.quantity > add.quantity {
         format!(" ({} owned now)", row.quantity)
     } else {
@@ -415,10 +440,14 @@ fn add_card(cfg: &Config, add: AddCard) -> Result<EditResult> {
     };
     Ok(EditResult {
         message: format!(
-            "Added {}× {} ({} #{}, {finish}){now}",
-            add.quantity, row.name, row.set_code, row.collector_number
+            "Added {}× {} ({} #{}, {}){now}",
+            add.quantity,
+            row.name,
+            row.set_code,
+            row.collector_number,
+            copies(row.finish, row.condition, &row.language)
         ),
-        row: Some(row_with_details(&app, row)),
+        row: Some(row_with_details(app, row)),
     })
 }
 
@@ -508,6 +537,7 @@ fn printing_view(card: &Card) -> PrintingView {
             card.collector_number
         ),
         scryfall_id: card.scryfall_id.clone(),
+        lang: card.lang.clone(),
         name: card.name.clone(),
         set_code: card.set_code.to_uppercase(),
         set_name: card.set_name.clone(),
@@ -521,33 +551,45 @@ fn printing_view(card: &Card) -> PrintingView {
     }
 }
 
-/// Apply a [`RowEdit`]: remove, set the quantity, or move the row to another
-/// printing / finish (priced afresh, merged into a row that already exists).
-fn edit_row(cfg: &Config, edit: RowEdit) -> Result<EditResult> {
+/// Apply a [`RowEdit`]: remove, set the quantity, or change the row's
+/// printing, finish, condition or language (priced afresh, merged into a row
+/// that already exists).
+fn edit_row(app: &mut App, edit: RowEdit) -> Result<EditResult> {
     const GONE: &str = "That row is no longer in the collection. Refresh the page.";
-    let mut app = App::new(cfg)?;
     let finish: Finish = edit.finish.into();
     let to_finish: Finish = edit.to_finish.into();
+    let key = RowKey {
+        scryfall_id: edit.scryfall_id.clone(),
+        finish,
+        condition: edit.condition,
+        language: edit.language.clone(),
+    };
+    check_language(&edit.to_language)?;
+    let described = copies(finish, edit.condition, &edit.language);
 
     if edit.quantity == 0 {
         let gone = app
             .store
-            .set_quantity(&edit.scryfall_id, finish, 0)?
+            .set_quantity(&key, 0)?
             .ok_or_else(|| anyhow!(GONE))?;
         return Ok(EditResult {
-            message: format!("Removed {} ({finish}) from the collection", gone.name),
+            message: format!("Removed {} ({described}) from the collection", gone.name),
             row: None,
         });
     }
 
-    if edit.to_scryfall_id == edit.scryfall_id && to_finish == finish {
+    if edit.to_scryfall_id == edit.scryfall_id
+        && to_finish == finish
+        && edit.to_condition == edit.condition
+        && edit.to_language == edit.language
+    {
         let row = app
             .store
-            .set_quantity(&edit.scryfall_id, finish, edit.quantity)?
+            .set_quantity(&key, edit.quantity)?
             .ok_or_else(|| anyhow!(GONE))?;
         return Ok(EditResult {
-            message: format!("{} ({finish}): {} owned", row.name, row.quantity),
-            row: Some(row_with_details(&app, row)),
+            message: format!("{} ({described}): {} owned", row.name, row.quantity),
+            row: Some(row_with_details(app, row)),
         });
     }
 
@@ -564,11 +606,12 @@ fn edit_row(cfg: &Config, edit: RowEdit) -> Result<EditResult> {
         );
     }
     let prices = app.prices.price(&card, to_finish);
-    let to = CollectionEntry::from_card(&card, to_finish, edit.quantity, prices);
-    let row = app
-        .store
-        .relocate(&edit.scryfall_id, finish, to)?
-        .ok_or_else(|| anyhow!(GONE))?;
+    let to = CollectionEntry {
+        condition: edit.to_condition,
+        language: edit.to_language.clone(),
+        ..CollectionEntry::from_card(&card, to_finish, edit.quantity, prices)
+    };
+    let row = app.store.relocate(&key, to)?.ok_or_else(|| anyhow!(GONE))?;
     let merged = if row.quantity > edit.quantity {
         format!(
             ", merged with the copies already there ({} owned)",
@@ -579,10 +622,13 @@ fn edit_row(cfg: &Config, edit: RowEdit) -> Result<EditResult> {
     };
     Ok(EditResult {
         message: format!(
-            "Changed to {} ({} #{}, {to_finish}){merged}",
-            row.name, row.set_code, row.collector_number
+            "Changed to {} ({} #{}, {}){merged}",
+            row.name,
+            row.set_code,
+            row.collector_number,
+            copies(row.finish, row.condition, &row.language)
         ),
-        row: Some(row_with_details(&app, row)),
+        row: Some(row_with_details(app, row)),
     })
 }
 
@@ -630,6 +676,8 @@ fn collection_row(e: CollectionEntry) -> CollectionRow {
         colors: e.colors,
         type_line: e.type_line,
         finish: e.finish.into(),
+        condition: e.condition,
+        language: e.language,
         quantity: e.quantity,
         tcgplayer: e.prices.tcgplayer,
         cardmarket: e.prices.cardmarket,
@@ -642,8 +690,8 @@ fn collection_row(e: CollectionEntry) -> CollectionRow {
     }
 }
 
-fn collection_view(cfg: &Config) -> Result<CollectionView> {
-    let app = App::new(cfg)?;
+fn collection_view(cfg: &Config, user_id: i64) -> Result<CollectionView> {
+    let app = App::for_user(cfg, user_id)?;
     let mut entries = app.store.entries()?;
     fill_details(&app, &mut entries);
     let t = crate::store::totals(&entries);

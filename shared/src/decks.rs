@@ -547,6 +547,8 @@ mod tests {
             colors: vec![],
             type_line: String::new(),
             finish: Finish::Nonfoil,
+            condition: crate::Condition::Nm,
+            language: "en".into(),
             quantity,
             tcgplayer: None,
             cardmarket: None,

@@ -101,13 +101,16 @@ pub struct ApiToken {
 /// The account tables, in SQLite or PostgreSQL. Every method that checks
 /// and then changes runs in one transaction.
 pub trait AccountStore: Send {
-    fn user_count(&mut self) -> Result<i64>;
+    /// No account can sign in yet: none has a password.
+    fn needs_setup(&mut self) -> Result<bool>;
     fn users(&mut self) -> Result<Vec<User>>;
     fn user(&mut self, id: i64) -> Result<Option<User>>;
     /// The user and their password hash.
     fn user_by_name(&mut self, name: &str) -> Result<Option<(User, Option<String>)>>;
-    /// Create the first account, an admin, unless one exists. `None` if
-    /// there already is an account.
+    /// Create the first account, an admin, while no account has a password.
+    /// An admin without a password (made for a collection from before
+    /// accounts) is claimed: named and given the password. `None` once an
+    /// account has a password.
     fn create_first_admin(&mut self, name: &str, password_hash: &str) -> Result<Option<User>>;
     /// Use an invite link to create an account. `None` if the link is
     /// unknown, used or expired.
@@ -271,7 +274,7 @@ impl Accounts {
             failures: Mutex::new(HashMap::new()),
             setup_code: Mutex::new(None),
         };
-        if accounts.db().user_count()? == 0 {
+        if accounts.db().needs_setup()? {
             *lock(&accounts.setup_code) = Some(new_secret()?);
         }
         Ok(accounts)
@@ -670,8 +673,9 @@ pub(crate) fn conformance(store: Box<dyn AccountStore>) {
     );
     accounts.set_flags(bob.id, true, false).unwrap();
     accounts.set_flags(ada.id, false, false).unwrap();
+    // (The database may hold other accounts, e.g. from the store tests.)
     let users = accounts.users().unwrap();
-    assert_eq!(users.len(), 2);
+    assert!(users.iter().any(|u| u.id == ada.id && !u.is_admin));
     assert!(users.iter().any(|u| u.id == bob.id && u.is_admin));
 
     // Sign out.
@@ -682,6 +686,20 @@ pub(crate) fn conformance(store: Box<dyn AccountStore>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_claims_the_admin_made_for_an_old_collection() {
+        let store = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
+        // A collection from before accounts: its rows belong to a password-less admin.
+        use crate::store::CollectionStore;
+        let owner = store.user().unwrap();
+        let accounts = Accounts::new(Box::new(sqlite::SqliteAccounts::from_store(store))).unwrap();
+        let code = accounts.setup_code().expect("nobody can sign in yet");
+        let ada = accounts.set_up(&code, "Ada", "correct horse").unwrap();
+        assert_eq!(ada.id, owner, "the collection's owner is now Ada");
+        assert!(ada.is_admin && ada.has_password);
+        assert_eq!(accounts.users().unwrap().len(), 1);
+    }
 
     #[test]
     fn passwords_hash_with_argon2id_and_verify() {

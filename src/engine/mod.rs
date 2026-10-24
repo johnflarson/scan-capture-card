@@ -991,7 +991,8 @@ fn accept(
         .scryfall
         .by_id(scryfall_id)?
         .ok_or_else(|| anyhow!("Scryfall doesn't know the printing {scryfall_id}"))?;
-    let entry = pipeline.app.add_card(&card, finish, 1)?;
+    let language = pipeline.card_language().to_string();
+    let entry = pipeline.app.add_card(&card, finish, 1, &language)?;
     Ok((card, entry))
 }
 

@@ -9,7 +9,7 @@ use image::{DynamicImage, RgbImage};
 use crate::app::{App, describe_card, describe_prices};
 use crate::config::{Config, Detection};
 use crate::llm::{NormBox, VisionLlm};
-use crate::model::{Card, CollectionEntry, Finish, Prices};
+use crate::model::{Card, CollectionEntry, Finish, Prices, RowKey};
 use crate::printing::{correlation, signature};
 use crate::recognize::{Identification, Recognizer};
 use crate::scryfall::CardRef;
@@ -169,7 +169,8 @@ pub struct Pipeline {
     save_counter: u32,
     seen: Vec<Seen>,
     /// Rows added by the most recent scan, for undo.
-    last_added: Vec<(String, Finish, String)>,
+    /// Rows the last scan added a copy to, with the card's name.
+    last_added: Vec<(RowKey, String)>,
     /// The most recent scan was a single-card scan, so "Retry with LLM" may
     /// replace what it added (never a whole table pass).
     last_was_single: bool,
@@ -283,9 +284,10 @@ impl Pipeline {
                 prices,
             });
         }
-        let entry = self.app.add_card(&id.card, finish, 1)?;
-        self.last_added
-            .push((entry.scryfall_id.clone(), entry.finish, entry.name.clone()));
+        let entry = self
+            .app
+            .add_card(&id.card, finish, 1, &self.card_language)?;
+        self.last_added.push((entry.key(), entry.name.clone()));
         Ok(Outcome::Added {
             id: Box::new(id),
             entry: Box::new(entry),
@@ -428,14 +430,20 @@ impl Pipeline {
         Ok(undone)
     }
 
-    fn remove_rows(&mut self, rows: Vec<(String, Finish, String)>) -> Result<Vec<String>> {
+    fn remove_rows(&mut self, rows: Vec<(RowKey, String)>) -> Result<Vec<String>> {
         let mut removed = Vec::new();
-        for (id, finish, name) in rows {
-            if self.app.store.remove(&id, finish, 1)?.is_some() {
-                removed.push(format!("{name} ({finish})"));
+        for (key, name) in rows {
+            if self.app.store.remove(&key, 1)?.is_some() {
+                removed.push(format!("{name} ({})", key.finish));
             }
         }
         Ok(removed)
+    }
+
+    /// The language scanned cards are recorded in (`[recognition]
+    /// card_language`).
+    pub fn card_language(&self) -> &str {
+        &self.card_language
     }
 }
 

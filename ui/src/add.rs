@@ -1,11 +1,12 @@
 //! "Add card" dialog on the Collection page: paste a Scryfall link, pick the
-//! quantity and finish, add.
+//! quantity, finish, condition and language, add.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use mtg_scan_shared::{AddCard, CollectionRow, EditResult, Finish, PrintingView};
+use mtg_scan_shared::{AddCard, CollectionRow, Condition, EditResult, Finish, PrintingView};
 
 use crate::api;
+use crate::copies::CopiesFields;
 
 #[component]
 pub fn AddDialog(
@@ -17,6 +18,9 @@ pub fn AddDialog(
     let printing = RwSignal::new(None::<PrintingView>);
     let quantity = RwSignal::new(1u32);
     let finish = RwSignal::new(Finish::Nonfoil);
+    let condition = RwSignal::new(Condition::Nm);
+    // The printing's language until changed.
+    let language = RwSignal::new("en".to_string());
     let looking_up = RwSignal::new(false);
     let saving = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
@@ -51,6 +55,7 @@ pub fn AddDialog(
                     if !p.finishes.is_empty() && !p.finishes.contains(&finish.get_untracked()) {
                         let _ = finish.try_set(p.finishes[0]);
                     }
+                    let _ = language.try_set(p.lang.clone());
                     let _ = printing.try_set(Some(p));
                 }
                 Err(e) => {
@@ -70,6 +75,8 @@ pub fn AddDialog(
             scryfall_id: p.scryfall_id,
             finish: finish.get_untracked(),
             quantity: quantity.get_untracked(),
+            condition: condition.get_untracked(),
+            language: Some(language.get_untracked()),
         };
         saving.set(true);
         error.set(None);
@@ -212,6 +219,7 @@ pub fn AddDialog(
                             .collect_view()}
                     </div>
                 </div>
+                <CopiesFields condition language />
 
                 {move || error.get().map(|e| view! { <p class="error-text">{e}</p> })}
 

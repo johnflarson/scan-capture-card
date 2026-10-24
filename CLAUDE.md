@@ -99,8 +99,13 @@ the ring provider and the OS certificate store (`tls.rs`), so no OpenSSL.
   (`bulk::spawn_daily` checks hourly inside the app; `db sync-cards` runs it now) and, for
   printings not synced yet, from `/cards/collection`. Nothing references the cache. When adding
   a column to an owned table, ask first whether Scryfall already has it.
-- `collection`: unique `(scryfall_id, finish)`. A Scryfall ID is one printing, so every printing
-  and every finish is its own row. Quantity is always > 0; a row is deleted when it reaches 0.
+- `collection`: unique `(user_id, scryfall_id, finish, condition, language)` (since migration 5).
+  Every account has its own rows; a Scryfall ID is one printing, so every printing, finish,
+  condition (`nm`/`lp`/`mp`/`hp`/`dmg`) and language is its own row. Quantity is always > 0; a row
+  is deleted when it reaches 0. Stores work on one account (`CollectionStore::set_user`, web:
+  `App::for_user`); without one they take the first admin, creating a password-less "admin" that
+  the setup page claims (migration 5 does the same for a collection from before accounts).
+  Prices, the card cache and `record_cached_prices` / `owned_printings` are shared by everyone.
 - `price_history`: unique `(scryfall_id, finish, price_date)`, so one point per day (same-day
   observations upsert). No FK to `collection`, so history survives removing a card.
 - `collection_value` view: latest price per row via `LATERAL`; use it for reporting.

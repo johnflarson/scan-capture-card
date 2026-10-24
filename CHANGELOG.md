@@ -29,6 +29,16 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- **Per-user collections, condition and language** (#74). Every account has its own collection;
+  prices and card data stay shared. A row is now a printing + finish + condition (Near Mint,
+  Lightly / Moderately / Heavily Played, Damaged) + language: the Collection page shows LP / JA
+  style tags, and the edit and Add card dialogs set both. Scans record Near Mint copies in the
+  card language from Settings. Migration 5 gives existing rows to the first admin, or to a new
+  password-less "admin" account that the setup page then names (so a 0.x collection becomes the
+  first account's). Command-line commands take `--user NAME` (or `MTG_SCAN_USER`; default: the
+  first admin), and `remove` takes `--condition` / `--language`. `db copy` copies the accounts
+  (matched by name) with their collections. The scanner still saves into the first admin's
+  collection until scan sessions are per user.
 - **Accounts** (#73). Everyone signs in, on this computer too: the 0.x access token
   (`MTG_SCAN_UI_TOKEN`, `mtg-scan ui-token`) and the "this computer never signs in" exemption are
   gone. The first start prints and opens a setup link (with a one-time code) that creates the admin

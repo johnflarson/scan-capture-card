@@ -7,7 +7,7 @@
 //! `migrations/*.sql`, applied by `mtg-scan db migrate` with the admin
 //! (schema owner) account; the app itself runs as a least-privilege role.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -17,10 +17,10 @@ use postgres::types::ToSql;
 use postgres::{Client, GenericClient, Row};
 
 use super::{
-    CardCache, CollectionStore, Job, PriceMove, StoredRow, ValueChange, colors_from_text,
-    colors_text, finishes_from_text, finishes_text, hydrate, removed_entry,
+    AccountRow, CardCache, CollectionStore, Job, PriceMove, StoredRow, ValueChange,
+    colors_from_text, colors_text, finishes_from_text, finishes_text, hydrate, removed_entry,
 };
-use crate::model::{Card, CollectionEntry, Finish, PricePoint, Prices};
+use crate::model::{Card, CollectionEntry, Condition, Finish, PricePoint, Prices, RowKey};
 use crate::scryfall::Scryfall;
 
 pub fn latest_migration() -> i32 {
@@ -49,7 +49,15 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "accounts",
         include_str!("../../migrations/postgres/0004_accounts.sql"),
     ),
+    (
+        5,
+        "per_user_collection",
+        include_str!("../../migrations/postgres/0005_per_user_collection.sql"),
+    ),
 ];
+
+/// The schema version that gave rows an account, condition and language.
+const PER_USER: i32 = 5;
 
 pub struct PostgresStore {
     client: RefCell<Client>,
@@ -60,6 +68,8 @@ pub struct PostgresStore {
     /// schemas (e.g. a 0.x database, to copy it without upgrading it); reads
     /// then leave out what that version doesn't have.
     version: i32,
+    /// Whose collection; looked up (see [`Self::owner`]) until set.
+    user: Cell<Option<i64>>,
 }
 
 /// Result of [`PostgresStore::setup_app_role`].
@@ -114,13 +124,14 @@ impl PostgresStore {
         schema: &str,
         scryfall: Rc<Scryfall>,
     ) -> Result<(Self, Vec<i32>)> {
-        let store = Self::open(config, schema, scryfall)?;
+        let mut store = Self::open(config, schema, scryfall)?;
         store
             .client
             .borrow_mut()
             .batch_execute(&format!("create schema if not exists {schema}"))
             .context("could not create the schema (is this the schema owner account?)")?;
         let applied = store.migrate()?;
+        store.version = store.schema_version()?;
         Ok((store, applied))
     }
 
@@ -139,9 +150,37 @@ impl PostgresStore {
             schema: schema.to_string(),
             location,
             version: 0,
+            user: Cell::new(None),
         };
         let version = store.schema_version()?;
         Ok(Self { version, ..store })
+    }
+
+    /// The first admin, created (without a password, for the setup page to
+    /// claim) when there is no account yet.
+    fn owner(&self) -> Result<i64> {
+        if let Some(id) = self.user.get() {
+            return Ok(id);
+        }
+        if self.version < PER_USER {
+            bail!("this database is from before accounts: run `mtg-scan db migrate`");
+        }
+        let mut client = self.client.borrow_mut();
+        let id: i64 = match client
+            .query_one("select min(id) from app_user where is_admin", &[])?
+            .get::<_, Option<i64>>(0)
+        {
+            Some(id) => id,
+            None => client
+                .query_one(
+                    "insert into app_user (name, password_hash, is_admin)
+                     values ('admin', null, true) returning id",
+                    &[],
+                )?
+                .get(0),
+        };
+        self.user.set(Some(id));
+        Ok(id)
     }
 
     /// The connection, for the account tables (`accounts`).
@@ -282,26 +321,66 @@ impl PostgresStore {
         })
     }
 
-    fn stored_rows(&self, filter: Option<(&str, Finish)>) -> Result<Vec<StoredRow>> {
+    fn stored_rows(&self, filter: Option<&RowKey>) -> Result<Vec<StoredRow>> {
+        // A database from before accounts (read only, to copy it) has one
+        // collection of Near Mint English copies.
+        if self.version < PER_USER {
+            let select = format!(
+                "select scryfall_id::text, finish, 'nm', 'en', quantity, added_at,
+                        price_tcg::float8, {}, price_ck::float8, price_ck_buylist::float8,
+                        price_date
+                 from collection_value",
+                self.newer_prices("")
+            );
+            let rows = self.client.borrow_mut().query(&select, &[])?;
+            return rows.iter().map(stored_row).collect();
+        }
+        let user = self.owner()?;
         let select = format!(
-            "select scryfall_id::text, finish, quantity, added_at, price_tcg::float8, {},
-                    price_ck::float8, price_ck_buylist::float8, price_date
-             from collection_value",
+            "select scryfall_id::text, finish, condition, language, quantity, added_at,
+                    price_tcg::float8, {}, price_ck::float8, price_ck_buylist::float8, price_date
+             from collection_value
+             where user_id = $1",
             self.newer_prices("")
         );
         let mut client = self.client.borrow_mut();
         let rows = match filter {
-            Some((id, finish)) => client.query(
-                &format!("{select} where scryfall_id = $1::text::uuid and finish = $2"),
-                &[&id, &finish.as_str()],
+            Some(key) => client.query(
+                &format!(
+                    "{select} and scryfall_id = $2::text::uuid and finish = $3 and condition = $4
+                       and language = $5"
+                ),
+                &[
+                    &user,
+                    &key.scryfall_id,
+                    &key.finish.as_str(),
+                    &key.condition.code(),
+                    &key.language,
+                ],
             )?,
-            None => client.query(&select, &[])?,
+            None => client.query(&select, &[&user])?,
         };
         rows.iter().map(stored_row).collect()
+    }
+
+    fn one(&self, key: &RowKey) -> Result<Option<CollectionEntry>> {
+        let rows = self.stored_rows(Some(key))?;
+        Ok(hydrate(Some(self), Some(&self.scryfall), rows)
+            .into_iter()
+            .next())
     }
 }
 
 impl CollectionStore for PostgresStore {
+    fn set_user(&mut self, user_id: i64) {
+        self.user.set(Some(user_id));
+    }
+
+    #[cfg(test)]
+    fn user(&self) -> Result<i64> {
+        self.owner()
+    }
+
     fn entries(&self) -> Result<Vec<CollectionEntry>> {
         Ok(hydrate(
             Some(self),
@@ -311,17 +390,21 @@ impl CollectionStore for PostgresStore {
     }
 
     fn add(&mut self, entry: CollectionEntry) -> Result<CollectionEntry> {
+        let user = self.owner()?;
         let mut client = self.client.borrow_mut();
         let mut tx = client.transaction()?;
         let row = tx.query_one(
-            "insert into collection (scryfall_id, finish, quantity)
-             values ($1::text::uuid, $2, $3)
-             on conflict (scryfall_id, finish)
+            "insert into collection (user_id, scryfall_id, finish, condition, language, quantity)
+             values ($1, $2::text::uuid, $3, $4, $5, $6)
+             on conflict (user_id, scryfall_id, finish, condition, language)
              do update set quantity = collection.quantity + excluded.quantity, updated_at = now()
              returning quantity, added_at",
             &[
+                &user,
                 &entry.scryfall_id,
                 &entry.finish.as_str(),
+                &entry.condition.code(),
+                &entry.language,
                 &(entry.quantity as i32),
             ],
         )?;
@@ -345,94 +428,93 @@ impl CollectionStore for PostgresStore {
         })
     }
 
-    fn remove(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        quantity: u32,
-    ) -> Result<Option<CollectionEntry>> {
+    fn remove(&mut self, key: &RowKey, quantity: u32) -> Result<Option<CollectionEntry>> {
+        let user = self.owner()?;
         let remaining = {
             let mut client = self.client.borrow_mut();
             let mut tx = client.transaction()?;
             let Some(row) = tx.query_opt(
-                "select quantity from collection
-                 where scryfall_id = $1::text::uuid and finish = $2
+                "select id, quantity from collection
+                 where user_id = $1 and scryfall_id = $2::text::uuid and finish = $3
+                   and condition = $4 and language = $5
                  for update",
-                &[&scryfall_id, &finish.as_str()],
+                &[
+                    &user,
+                    &key.scryfall_id,
+                    &key.finish.as_str(),
+                    &key.condition.code(),
+                    &key.language,
+                ],
             )?
             else {
                 return Ok(None);
             };
-            let have: i32 = row.get(0);
-            let left = have.saturating_sub(quantity as i32).max(0);
+            let id: i64 = row.get(0);
+            let have: i32 = row.get(1);
+            let left = have
+                .saturating_sub(quantity.min(i32::MAX as u32) as i32)
+                .max(0);
             if left == 0 {
-                tx.execute(
-                    "delete from collection where scryfall_id = $1::text::uuid and finish = $2",
-                    &[&scryfall_id, &finish.as_str()],
-                )?;
+                tx.execute("delete from collection where id = $1", &[&id])?;
             } else {
                 tx.execute(
-                    "update collection set quantity = $3, updated_at = now()
-                     where scryfall_id = $1::text::uuid and finish = $2",
-                    &[&scryfall_id, &finish.as_str(), &left],
+                    "update collection set quantity = $2, updated_at = now() where id = $1",
+                    &[&id, &left],
                 )?;
             }
             tx.commit()?;
             left as u32
         };
         if remaining > 0 {
-            let rows = self.stored_rows(Some((scryfall_id, finish)))?;
-            return Ok(hydrate(Some(self), Some(&self.scryfall), rows)
-                .into_iter()
-                .next());
+            return self.one(key);
         }
         // Row is gone; describe it from Scryfall alone.
-        Ok(Some(removed_entry(
-            Some(self),
-            Some(&self.scryfall),
-            scryfall_id,
-            finish,
-        )))
+        Ok(Some(removed_entry(Some(self), Some(&self.scryfall), key)))
     }
 
-    fn set_quantity(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        quantity: u32,
-    ) -> Result<Option<CollectionEntry>> {
+    fn set_quantity(&mut self, key: &RowKey, quantity: u32) -> Result<Option<CollectionEntry>> {
         if quantity == 0 {
-            return self.remove(scryfall_id, finish, i32::MAX as u32);
+            return self.remove(key, u32::MAX);
         }
+        let user = self.owner()?;
         let updated = self.client.borrow_mut().execute(
-            "update collection set quantity = $3, updated_at = now()
-             where scryfall_id = $1::text::uuid and finish = $2",
-            &[&scryfall_id, &finish.as_str(), &(quantity as i32)],
+            "update collection set quantity = $6, updated_at = now()
+             where user_id = $1 and scryfall_id = $2::text::uuid and finish = $3
+               and condition = $4 and language = $5",
+            &[
+                &user,
+                &key.scryfall_id,
+                &key.finish.as_str(),
+                &key.condition.code(),
+                &key.language,
+                &(quantity.min(i32::MAX as u32) as i32),
+            ],
         )?;
         if updated == 0 {
             return Ok(None);
         }
-        let rows = self.stored_rows(Some((scryfall_id, finish)))?;
-        Ok(hydrate(Some(self), Some(&self.scryfall), rows)
-            .into_iter()
-            .next())
+        self.one(key)
     }
 
-    fn relocate(
-        &mut self,
-        scryfall_id: &str,
-        finish: Finish,
-        to: CollectionEntry,
-    ) -> Result<Option<CollectionEntry>> {
+    fn relocate(&mut self, key: &RowKey, to: CollectionEntry) -> Result<Option<CollectionEntry>> {
         if to.quantity == 0 {
             bail!("a moved row needs at least one copy");
         }
+        let user = self.owner()?;
         let mut client = self.client.borrow_mut();
         let mut tx = client.transaction()?;
         let Some(old) = tx.query_opt(
-            "delete from collection where scryfall_id = $1::text::uuid and finish = $2
+            "delete from collection
+             where user_id = $1 and scryfall_id = $2::text::uuid and finish = $3
+               and condition = $4 and language = $5
              returning added_at",
-            &[&scryfall_id, &finish.as_str()],
+            &[
+                &user,
+                &key.scryfall_id,
+                &key.finish.as_str(),
+                &key.condition.code(),
+                &key.language,
+            ],
         )?
         else {
             return Ok(None);
@@ -440,16 +522,20 @@ impl CollectionStore for PostgresStore {
         let first_added: DateTime<Utc> = old.get(0);
         // Merge into the target row if it exists, keeping the earliest add date.
         let row = tx.query_one(
-            "insert into collection (scryfall_id, finish, quantity, added_at)
-             values ($1::text::uuid, $2, $3, $4)
-             on conflict (scryfall_id, finish)
+            "insert into collection (user_id, scryfall_id, finish, condition, language, quantity,
+               added_at)
+             values ($1, $2::text::uuid, $3, $4, $5, $6, $7)
+             on conflict (user_id, scryfall_id, finish, condition, language)
              do update set quantity = collection.quantity + excluded.quantity,
                            added_at = least(collection.added_at, excluded.added_at),
                            updated_at = now()
              returning quantity, added_at",
             &[
+                &user,
                 &to.scryfall_id,
                 &to.finish.as_str(),
+                &to.condition.code(),
+                &to.language,
                 &(to.quantity as i32),
                 &first_added,
             ],
@@ -469,17 +555,22 @@ impl CollectionStore for PostgresStore {
     }
 
     fn import(&mut self, entries: &[CollectionEntry]) -> Result<usize> {
+        let user = self.owner()?;
         let mut client = self.client.borrow_mut();
         let mut tx = client.transaction()?;
         for e in entries {
             tx.execute(
-                "insert into collection (scryfall_id, finish, quantity, added_at)
-                 values ($1::text::uuid, $2, $3, $4::date)
-                 on conflict (scryfall_id, finish)
+                "insert into collection (user_id, scryfall_id, finish, condition, language,
+                   quantity, added_at)
+                 values ($1, $2::text::uuid, $3, $4, $5, $6, $7::date)
+                 on conflict (user_id, scryfall_id, finish, condition, language)
                  do update set quantity = excluded.quantity, updated_at = now()",
                 &[
+                    &user,
                     &e.scryfall_id,
                     &e.finish.as_str(),
+                    &e.condition.code(),
+                    &e.language,
                     &(e.quantity as i32),
                     &e.added,
                 ],
@@ -554,13 +645,15 @@ impl CollectionStore for PostgresStore {
     }
 
     fn price_moves(&self, since: NaiveDate) -> Result<Vec<PriceMove>> {
+        let user = self.owner()?;
         let rows = self.client.borrow_mut().query(
             "select c.scryfall_id::text, c.finish, c.quantity,
                     old.price_date, old.price_tcg::float8, old.price_cardmarket::float8,
                     old.price_tix::float8, old.price_ck::float8, old.price_ck_buylist::float8,
                     cur.price_date, cur.price_tcg::float8, cur.price_cardmarket::float8,
                     cur.price_tix::float8, cur.price_ck::float8, cur.price_ck_buylist::float8
-             from collection c
+             from (select scryfall_id, finish, sum(quantity)::int as quantity from collection
+                   where user_id = $2 group by scryfall_id, finish) c
              join lateral (
                select * from price_history ph
                where ph.scryfall_id = c.scryfall_id and ph.finish = c.finish
@@ -573,7 +666,7 @@ impl CollectionStore for PostgresStore {
                order by ph.price_date desc limit 1
              ) cur on true
              where cur.price_date > old.price_date",
-            &[&since],
+            &[&since, &user],
         )?;
         rows.iter()
             .map(|r| {
@@ -591,11 +684,13 @@ impl CollectionStore for PostgresStore {
     }
 
     fn value_change(&self, since: NaiveDate) -> Result<Option<ValueChange>> {
+        let user = self.owner()?;
         let row = self.client.borrow_mut().query_one(
             "select coalesce(sum(c.quantity * old.price_tcg), 0)::float8,
                     coalesce(sum(c.quantity * cur.price_tcg), 0)::float8,
                     count(*)
-             from collection c
+             from (select scryfall_id, finish, sum(quantity) as quantity from collection
+                   where user_id = $2 group by scryfall_id, finish) c
              join lateral (
                select ph.price_tcg from price_history ph
                where ph.scryfall_id = c.scryfall_id and ph.finish = c.finish
@@ -608,7 +703,7 @@ impl CollectionStore for PostgresStore {
                  and ph.price_tcg is not null
                order by ph.price_date desc limit 1
              ) cur on true",
-            &[&since],
+            &[&since, &user],
         )?;
         let rows: i64 = row.get(2);
         Ok((rows > 0).then(|| ValueChange {
@@ -628,7 +723,7 @@ impl CollectionStore for PostgresStore {
                     case c.finish when 'foil' then p.eur_foil
                                   when 'etched' then null else p.eur end,
                     p.tix
-             from collection c
+             from (select distinct scryfall_id, finish from collection) c
              join card_printing p on p.scryfall_id = c.scryfall_id
              where coalesce(p.usd, p.usd_foil, p.usd_etched, p.eur, p.eur_foil, p.tix) is not null
              on conflict (scryfall_id, finish, price_date) do update set
@@ -639,6 +734,77 @@ impl CollectionStore for PostgresStore {
             &[&date],
         )?;
         Ok(n as usize)
+    }
+
+    fn owned_printings(&self) -> Result<Vec<(String, Finish)>> {
+        self.client
+            .borrow_mut()
+            .query(
+                "select distinct scryfall_id::text, finish from collection order by 1, 2",
+                &[],
+            )?
+            .iter()
+            .map(|r| {
+                let finish: String = r.get(1);
+                Ok((r.get(0), finish.parse()?))
+            })
+            .collect()
+    }
+
+    fn account_rows(&self) -> Result<Vec<AccountRow>> {
+        // Accounts arrived with migration 4.
+        if self.version < 4 {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .client
+            .borrow_mut()
+            .query(
+                "select id, name, password_hash, is_admin, disabled, created_at from app_user
+                 order by id",
+                &[],
+            )?
+            .iter()
+            .map(|r| AccountRow {
+                id: r.get(0),
+                name: r.get(1),
+                password_hash: r.get(2),
+                is_admin: r.get(3),
+                disabled: r.get(4),
+                created_at: r.get(5),
+            })
+            .collect())
+    }
+
+    fn import_accounts(&mut self, accounts: &[AccountRow]) -> Result<HashMap<i64, i64>> {
+        let mut client = self.client.borrow_mut();
+        let mut tx = client.transaction()?;
+        let mut ids = HashMap::new();
+        for a in accounts {
+            let existing = tx.query_opt(
+                "select id from app_user where lower(name) = lower($1)",
+                &[&a.name],
+            )?;
+            let id: i64 = match existing {
+                Some(row) => row.get(0),
+                None => tx
+                    .query_one(
+                        "insert into app_user (name, password_hash, is_admin, disabled, created_at)
+                         values ($1, $2, $3, $4, $5) returning id",
+                        &[
+                            &a.name,
+                            &a.password_hash,
+                            &a.is_admin,
+                            &a.disabled,
+                            &a.created_at,
+                        ],
+                    )?
+                    .get(0),
+            };
+            ids.insert(a.id, id);
+        }
+        tx.commit()?;
+        Ok(ids)
     }
 
     fn location(&self) -> String {
@@ -888,22 +1054,26 @@ fn point_at(r: &Row, at: usize) -> PricePoint {
 
 fn stored_row(r: &Row) -> Result<StoredRow> {
     let finish: String = r.get(1);
-    let quantity: i32 = r.get(2);
-    let added: DateTime<Utc> = r.get(3);
+    let condition: String = r.get(2);
+    let quantity: i32 = r.get(4);
+    let added: DateTime<Utc> = r.get(5);
     Ok(StoredRow {
         scryfall_id: r.get(0),
         finish: finish.parse()?,
+        condition: Condition::from_code(&condition)
+            .with_context(|| format!("unknown condition {condition:?}"))?,
+        language: r.get(3),
         quantity: quantity as u32,
         added: added.with_timezone(&Local).date_naive(),
         prices: Prices {
-            tcgplayer: r.get(4),
-            cardmarket: r.get(5),
-            tix: r.get(6),
-            cardkingdom: r.get(7),
-            cardkingdom_buylist: r.get(8),
+            tcgplayer: r.get(6),
+            cardmarket: r.get(7),
+            tix: r.get(8),
+            cardkingdom: r.get(9),
+            cardkingdom_buylist: r.get(10),
             ..Prices::default()
         },
-        price_date: r.get(9),
+        price_date: r.get(11),
     })
 }
 
@@ -1025,11 +1195,14 @@ mod tests {
         let rows = store.entries().unwrap();
         assert_eq!(rows[0].name, "Lightning Bolt", "details come from Scryfall");
 
-        // Copying into SQLite keeps every row and price point.
+        // Copying into SQLite keeps every account, row and price point.
         let mut lite = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
-        let (copied, points) = crate::store::copy(&store, &mut lite).unwrap();
-        assert_eq!(copied, rows.len());
-        assert_eq!(points, store.all_price_points().unwrap().len());
+        let owner = store.user().unwrap();
+        let copied = crate::store::copy(&mut store, &mut lite).unwrap();
+        store.set_user(owner);
+        assert_eq!(copied.accounts, store.account_rows().unwrap().len());
+        assert_eq!(copied.rows, rows.len());
+        assert_eq!(copied.price_points, store.all_price_points().unwrap().len());
         assert_eq!(
             store.all_price_points().unwrap(),
             lite.all_price_points().unwrap()
@@ -1068,7 +1241,12 @@ mod tests {
             "no card cache before migration 2"
         );
         let mut lite = crate::store::sqlite::SqliteStore::open_in_memory().unwrap();
-        assert_eq!(crate::store::copy(&old, &mut lite).unwrap(), (1, 1));
+        let mut old = old;
+        let copied = crate::store::copy(&mut old, &mut lite).unwrap();
+        assert_eq!(
+            (copied.accounts, copied.rows, copied.price_points),
+            (0, 1, 1)
+        );
         let row = &lite.entries().unwrap()[0];
         assert_eq!((row.finish, row.quantity), (Finish::Foil, 2));
         let point = &lite.all_price_points().unwrap()[0].2;
@@ -1082,12 +1260,29 @@ mod tests {
             "the old database is left as it was"
         );
         drop(old);
+        // Migrating it gives its rows to a password-less admin (claimed at setup).
+        let (mut upgraded, _) = PostgresStore::connect_admin(
+            config.clone(),
+            &legacy,
+            Rc::new(Scryfall::new(crate::app::http_client().unwrap())),
+        )
+        .unwrap();
+        let accounts = upgraded.account_rows().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert!(accounts[0].is_admin && accounts[0].password_hash.is_none());
+        upgraded.set_user(accounts[0].id);
+        let row = &upgraded.entries().unwrap()[0];
+        assert_eq!(
+            (row.quantity, row.condition, row.language.as_str()),
+            (2, Condition::Nm, "en")
+        );
+        drop(upgraded);
         admin
             .client
             .borrow_mut()
             .batch_execute(&format!("drop schema {legacy} cascade"))
             .unwrap();
-        assert_eq!(status.cards, 6);
+        assert_eq!(status.cards, 8);
 
         drop(store);
         admin

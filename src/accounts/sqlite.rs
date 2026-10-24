@@ -59,9 +59,14 @@ impl SqliteAccounts {
 
     #[cfg(test)]
     pub fn in_memory() -> Result<Self> {
-        Ok(Self {
-            conn: SqliteStore::open_in_memory()?.into_connection(),
-        })
+        Ok(Self::from_store(SqliteStore::open_in_memory()?))
+    }
+
+    #[cfg(test)]
+    pub fn from_store(store: SqliteStore) -> Self {
+        Self {
+            conn: store.into_connection(),
+        }
     }
 
     fn one_user(&self, sql_where: &str, param: &dyn rusqlite::ToSql) -> Result<Option<User>> {
@@ -78,10 +83,12 @@ impl SqliteAccounts {
 }
 
 impl AccountStore for SqliteAccounts {
-    fn user_count(&mut self) -> Result<i64> {
-        Ok(self
-            .conn
-            .query_row("select count(*) from app_user", [], |r| r.get(0))?)
+    fn needs_setup(&mut self) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "select not exists (select 1 from app_user where password_hash is not null)",
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     fn users(&mut self) -> Result<Vec<User>> {
@@ -114,16 +121,35 @@ impl AccountStore for SqliteAccounts {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let count: i64 = tx.query_row("select count(*) from app_user", [], |r| r.get(0))?;
-        if count > 0 {
+        let ready: bool = tx.query_row(
+            "select exists (select 1 from app_user where password_hash is not null)",
+            [],
+            |r| r.get(0),
+        )?;
+        if ready {
             return Ok(None);
         }
-        tx.execute(
-            "insert into app_user (name, password_hash, is_admin, created_at)
-             values (?1, ?2, 1, ?3)",
-            params![name, password_hash, now()],
-        )?;
-        let id = tx.last_insert_rowid();
+        let waiting: Option<i64> =
+            tx.query_row("select min(id) from app_user where is_admin", [], |r| {
+                r.get(0)
+            })?;
+        let id = match waiting {
+            Some(id) => {
+                tx.execute(
+                    "update app_user set name = ?2, password_hash = ?3, disabled = 0 where id = ?1",
+                    params![id, name, password_hash],
+                )?;
+                id
+            }
+            None => {
+                tx.execute(
+                    "insert into app_user (name, password_hash, is_admin, created_at)
+                     values (?1, ?2, 1, ?3)",
+                    params![name, password_hash, now()],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
         tx.commit()?;
         self.user(id)
     }

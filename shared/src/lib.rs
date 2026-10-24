@@ -41,6 +41,81 @@ impl Finish {
     }
 }
 
+/// The condition of the copies in a collection row (TCGplayer's grades).
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Condition {
+    #[default]
+    Nm,
+    Lp,
+    Mp,
+    Hp,
+    Dmg,
+}
+
+impl Condition {
+    pub const ALL: [Condition; 5] = [
+        Condition::Nm,
+        Condition::Lp,
+        Condition::Mp,
+        Condition::Hp,
+        Condition::Dmg,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Condition::Nm => "Near Mint",
+            Condition::Lp => "Lightly Played",
+            Condition::Mp => "Moderately Played",
+            Condition::Hp => "Heavily Played",
+            Condition::Dmg => "Damaged",
+        }
+    }
+
+    /// `NM`, `LP`, ...
+    pub fn short(self) -> &'static str {
+        match self {
+            Condition::Nm => "NM",
+            Condition::Lp => "LP",
+            Condition::Mp => "MP",
+            Condition::Hp => "HP",
+            Condition::Dmg => "DMG",
+        }
+    }
+
+    /// As stored: `nm`, `lp`, ...
+    pub fn code(self) -> &'static str {
+        match self {
+            Condition::Nm => "nm",
+            Condition::Lp => "lp",
+            Condition::Mp => "mp",
+            Condition::Hp => "hp",
+            Condition::Dmg => "dmg",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Condition> {
+        Condition::ALL
+            .into_iter()
+            .find(|c| c.code().eq_ignore_ascii_case(code.trim()))
+    }
+}
+
+/// A Scryfall language code as people read it: `ja` is "Japanese". Codes
+/// outside [`CARD_LANGUAGES`] are shown as they are.
+pub fn language_name(code: &str) -> &str {
+    CARD_LANGUAGES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map_or(code, |(_, name)| name)
+}
+
+fn english() -> String {
+    "en".into()
+}
+
 /// Scanner status, sent on connect and whenever it changes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateView {
@@ -295,6 +370,11 @@ pub struct CollectionRow {
     /// e.g. "Legendary Creature — Phyrexian Praetor"; empty if unknown.
     pub type_line: String,
     pub finish: Finish,
+    #[serde(default)]
+    pub condition: Condition,
+    /// Scryfall language code of the copies.
+    #[serde(default = "english")]
+    pub language: String,
     pub quantity: u32,
     pub tcgplayer: Option<f64>,
     /// Cardmarket price in euros.
@@ -327,6 +407,20 @@ impl Totals {
 }
 
 impl CollectionRow {
+    /// Whether this row has this key (printing, finish, condition, language).
+    pub fn is_row(
+        &self,
+        scryfall_id: &str,
+        finish: Finish,
+        condition: Condition,
+        language: &str,
+    ) -> bool {
+        self.scryfall_id == scryfall_id
+            && self.finish == finish
+            && self.condition == condition
+            && self.language == language
+    }
+
     /// Whether Scryfall's card details (type line, colors) were loaded. Every
     /// card has a type line, so an empty one means they are missing (e.g.
     /// Scryfall was unreachable), and empty colors then mean "unknown", not
@@ -770,6 +864,9 @@ impl Stats {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrintingView {
     pub scryfall_id: String,
+    /// Scryfall language code of the printing.
+    #[serde(default = "english")]
+    pub lang: String,
     pub name: String,
     pub set_code: String,
     pub set_name: String,
@@ -789,6 +886,11 @@ pub struct AddCard {
     pub scryfall_id: String,
     pub finish: Finish,
     pub quantity: u32,
+    #[serde(default)]
+    pub condition: Condition,
+    /// The copies' language; the printing's when not given.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 /// `POST /api/collection/edit`: what one row should become.
@@ -797,9 +899,17 @@ pub struct RowEdit {
     /// The row being edited.
     pub scryfall_id: String,
     pub finish: Finish,
-    /// The printing and finish it should have (unchanged to keep them).
+    #[serde(default)]
+    pub condition: Condition,
+    #[serde(default = "english")]
+    pub language: String,
+    /// What it should be (the same values to keep them).
     pub to_scryfall_id: String,
     pub to_finish: Finish,
+    #[serde(default)]
+    pub to_condition: Condition,
+    #[serde(default = "english")]
+    pub to_language: String,
     /// Copies; 0 removes the row.
     pub quantity: u32,
 }
@@ -1020,6 +1130,8 @@ mod tests {
             colors: Vec::new(),
             type_line: String::new(),
             finish: Finish::Nonfoil,
+            condition: Condition::Nm,
+            language: "en".into(),
             quantity,
             tcgplayer: tcg,
             cardmarket: None,
