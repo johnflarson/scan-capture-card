@@ -404,6 +404,9 @@ pub struct CameraConfig {
     pub table_height: u32,
     /// Card guide height as a fraction of the frame height.
     pub guide_height: f32,
+    /// Use this photo instead of a camera (`--frames-from`, for testing).
+    #[serde(skip)]
+    pub frames_from: Option<PathBuf>,
 }
 
 impl Default for CameraConfig {
@@ -415,6 +418,7 @@ impl Default for CameraConfig {
             table_width: 3840,
             table_height: 2160,
             guide_height: 0.85,
+            frames_from: None,
         }
     }
 }
