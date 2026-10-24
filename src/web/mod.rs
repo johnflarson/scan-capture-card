@@ -7,6 +7,7 @@
 //! | `GET /api/session` | scanner state + this session's cards |
 //! | `GET /api/events` | Server-Sent Events: state changes, new cards, messages |
 //! | `GET /api/stream.mjpg` | live camera preview (MJPEG) |
+//! | `GET /api/camera` | WebSocket: the page sends its camera's frames (see [`camera`]) |
 //! | `GET /api/health` | "ok" while the scanner runs, else 503 (`mtg-scan health`, container health checks) |
 //! | `POST /api/command` | `ClientCommand` JSON: scan now, undo, set mode, … |
 //! | `GET /api/collection` | the whole collection with prices and totals |
@@ -24,6 +25,7 @@
 //! [`access`]); this computer never has to.
 
 mod access;
+mod camera;
 mod settings;
 
 use std::convert::Infallible;
@@ -153,6 +155,7 @@ async fn serve(cfg: Config, engine: Arc<Engine>, web: WebOptions) -> Result<()> 
         .route("/api/session", get(session))
         .route("/api/events", get(events))
         .route("/api/stream.mjpg", get(stream))
+        .route("/api/camera", get(camera::connect))
         .route("/api/health", get(health))
         .route("/api/command", post(command))
         .route("/api/collection", get(collection))
