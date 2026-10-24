@@ -86,8 +86,11 @@ impl Sessions {
             if engine.is_running() {
                 return Ok(engine.clone());
             }
-            // Its camera thread stopped (e.g. the camera was unplugged): start over.
-            sessions.remove(&user.id);
+            // Its camera thread stopped (e.g. the camera was unplugged): start
+            // over, and let the worker forget it once nothing uses it.
+            if let Some(Ok(dead)) = sessions.remove(&user.id).map(Arc::try_unwrap) {
+                let _ = dead.shutdown();
+            }
         }
         let (_, prefs) = self.accounts.prefs(user, &self.cfg)?;
         let owner = self.accounts.first_account()? == Some(user.id);
