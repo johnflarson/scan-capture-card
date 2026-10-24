@@ -23,6 +23,7 @@ use crate::overlay::CameraOverlay;
 use crate::preview::{CardLink, Preview, PreviewLayer};
 use crate::review::ReviewList;
 use crate::settings::SettingsPage;
+use crate::setup::SetupPage;
 use crate::top::TopCards;
 
 use crate::api;
@@ -39,6 +40,8 @@ pub enum Tab {
     Decks,
     /// Opened with the cog at the right of the top bar, not a tab.
     Settings,
+    /// The setup wizard: after the first account, and from Settings.
+    Setup,
 }
 
 impl Tab {
@@ -51,6 +54,7 @@ impl Tab {
             Tab::Collection => "Collection",
             Tab::Decks => "Decks",
             Tab::Settings => "Settings",
+            Tab::Setup => "Setup",
         }
     }
 }
@@ -144,6 +148,7 @@ fn Workspace(me: Me) -> impl IntoView {
         let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some("/"));
     }
     let user_name = me.name.clone();
+    let admin = me.is_admin;
     provide_context(me);
     let state = RwSignal::new(None::<StateView>);
     let cards = RwSignal::new(Vec::<CardView>::new());
@@ -155,6 +160,16 @@ fn Workspace(me: Me) -> impl IntoView {
     let tab = RwSignal::new(Tab::Home);
     // Pages can send the user elsewhere (e.g. Decks to Settings).
     provide_context(tab);
+    // An admin who hasn't finished the setup starts there.
+    if admin {
+        spawn_local(async move {
+            if let Ok(view) = api::setup().await
+                && !view.done
+            {
+                tab.set(Tab::Setup);
+            }
+        });
+    }
     let cache = CollectionCache::new();
     let preview = Preview::new();
     provide_context(preview);
@@ -347,6 +362,10 @@ fn Workspace(me: Me) -> impl IntoView {
                 }
                 Tab::Decks => view! { <DecksPage decks cache notify /> }.into_any(),
                 Tab::Settings => view! { <SettingsPage decks notify /> }.into_any(),
+                Tab::Setup => {
+                    let finish = Callback::new(move |()| tab.set(Tab::Home));
+                    view! { <SetupPage state notify finish /> }.into_any()
+                }
             }}
         </main>
         <AboutLine />
@@ -592,7 +611,7 @@ fn LivePage(
 /// Use this device's camera as the scanner's camera, or stop using it;
 /// with several cameras, pick one.
 #[component]
-fn CameraChoice(state: RwSignal<Option<StateView>>) -> impl IntoView {
+pub fn CameraChoice(state: RwSignal<Option<StateView>>) -> impl IntoView {
     let camera = expect_context::<BrowserCamera>();
     let size = move || {
         state

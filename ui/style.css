@@ -720,6 +720,40 @@ dl.info dd { margin: 0; overflow-wrap: anywhere; }
 .secret p { margin: 6px 0 0; }
 .user-name { color: var(--md-on-surface); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* The setup wizard: steps on the left, one step at a time on the right. */
+.wizard { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 20px; align-items: start; max-width: 1100px; }
+.wizard-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; counter-reset: step; }
+.wizard-steps li { counter-increment: step; }
+.wizard-step {
+  width: 100%; text-align: left; padding: 10px 14px; border: none; border-radius: var(--radius-full);
+  background: transparent; color: var(--md-on-surface-variant); cursor: pointer; font: inherit;
+}
+.wizard-step::before { content: counter(step) "  "; opacity: 0.7; }
+.wizard-steps li.past .wizard-step { color: var(--md-on-surface); }
+.wizard-steps li.current .wizard-step { background: var(--md-primary-container); color: var(--md-on-primary-container); }
+.wizard-title { margin: 0 0 12px; font-family: var(--font-title); font-size: 22px; font-weight: 400; }
+.wizard-nav { padding: 12px 18px 18px; }
+.wizard-actions { margin: 12px 0; }
+.wizard-preview { display: block; width: 100%; max-width: 640px; border-radius: var(--radius-s); margin: 8px 0 12px; }
+.options { display: grid; gap: 8px; margin: 12px 0 16px; }
+.option {
+  display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: var(--line);
+  border-radius: var(--radius-s); cursor: pointer;
+}
+.option.selected { border-color: var(--md-primary); background: rgb(76 191 191 / 0.06); }
+.option > span { display: grid; gap: 2px; }
+.option input { margin-top: 3px; }
+.pull { display: grid; gap: 6px; margin: 10px 0; }
+.progress { height: 8px; border-radius: var(--radius-full); background: var(--md-surface-container-highest); overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--md-primary); transition: width 0.4s; }
+.ok-text { color: var(--md-success); }
+.benchmark { margin-top: 12px; }
+@media (max-width: 1000px) {
+  .wizard { grid-template-columns: 1fr; }
+  .wizard-steps { grid-auto-flow: column; overflow-x: auto; }
+  .wizard-step { white-space: nowrap; }
+}
+
 /* Signing in: one card in the middle of the screen. */
 .auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .auth-card {

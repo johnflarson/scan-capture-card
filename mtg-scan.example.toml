@@ -97,3 +97,14 @@ finish = "nonfoil"
 # moxfield_user = "https://moxfield.com/users/YourName"
 # Moxfield deck IDs left off the Decks page and out of deck statistics.
 hidden = []
+
+# Set by the web UI's setup wizard.
+[telemetry]
+# Whether anonymous usage statistics may be sent (version, platform, setup
+# choices, rough scan counts, kinds of errors; never cards, images or keys).
+# Unset until answered.
+# enabled = false
+
+[setup]
+# The setup wizard was finished or skipped (false shows it to admins again).
+done = false

@@ -68,6 +68,9 @@ pub async fn guard(State(st): State<Arc<AppState>>, mut req: Request, next: Next
         Some(s) if path.starts_with("/api/users") && !s.user.is_admin => {
             (StatusCode::FORBIDDEN, "Only admins can manage users.").into_response()
         }
+        Some(s) if path.starts_with("/api/setup") && !s.user.is_admin => {
+            (StatusCode::FORBIDDEN, "Only admins set up the server.").into_response()
+        }
         Some(_) => next.run(req).await,
     }
 }

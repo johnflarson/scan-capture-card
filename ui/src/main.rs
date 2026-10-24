@@ -18,6 +18,7 @@ mod pie;
 mod preview;
 mod review;
 mod settings;
+mod setup;
 mod top;
 
 fn main() {
