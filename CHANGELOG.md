@@ -29,6 +29,19 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- **Accounts** (#73). Everyone signs in, on this computer too: the 0.x access token
+  (`MTG_SCAN_UI_TOKEN`, `mtg-scan ui-token`) and the "this computer never signs in" exemption are
+  gone. The first start prints and opens a setup link (with a one-time code) that creates the admin
+  account; the admin invites others with one-time links (7 days) and makes password-reset links
+  (24 hours); `mtg-scan user reset-link <name>` does that on the server for a locked-out admin, and
+  `mtg-scan user list` lists the accounts. Passwords are argon2id hashes; sessions are server-side
+  (30 days from the last visit, an `HttpOnly`, `SameSite=Lax` cookie, `Secure` behind an HTTPS
+  proxy); 5 wrong passwords for a name or 20 from one address wait 15 minutes. Settings has an
+  Account box (change password, which signs out other browsers; sign out; API tokens for scripts,
+  `Authorization: Bearer tome_...`) and, for admins, a Users box (invite, reset link, make or
+  remove admin, disable, which signs out and revokes tokens; the last admin can't be removed).
+  Requests that change something are refused when the browser says they come from another site.
+  Migration 4 adds the account tables. Collections are still shared until per-user data (#74).
 - Use this device's camera (#72): the Scan page can send the camera of the computer the browser
   runs on to mtg-scan, for a server without a camera of its own (Docker Desktop on Windows and
   macOS can't pass cameras into containers). It needs `http://localhost` or HTTPS, as browsers

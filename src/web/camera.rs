@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
@@ -37,7 +37,7 @@ pub async fn connect(
 ) -> Response {
     // Only this app's own pages may become the camera: a page from another
     // site could otherwise open the socket from the user's browser.
-    if !same_origin(&headers) {
+    if !super::auth::same_origin(&headers) {
         return (
             StatusCode::FORBIDDEN,
             "camera frames only from this app's pages",
@@ -89,50 +89,4 @@ async fn feed(mut socket: WebSocket, st: Arc<AppState>, label: String) {
         }
     }
     feed.close();
-}
-
-/// The `Origin` header names the host the request went to.
-fn same_origin(headers: &HeaderMap) -> bool {
-    let get = |name| headers.get(name).and_then(|v| v.to_str().ok());
-    match (get(header::ORIGIN), get(header::HOST)) {
-        (Some(origin), Some(host)) => origin
-            .split_once("://")
-            .is_some_and(|(_, rest)| rest.eq_ignore_ascii_case(host)),
-        _ => false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn headers(origin: Option<&str>, host: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(header::HOST, host.parse().unwrap());
-        if let Some(o) = origin {
-            h.insert(header::ORIGIN, o.parse().unwrap());
-        }
-        h
-    }
-
-    #[test]
-    fn frames_only_from_this_apps_pages() {
-        assert!(same_origin(&headers(
-            Some("http://localhost:8787"),
-            "localhost:8787"
-        )));
-        assert!(same_origin(&headers(
-            Some("https://tome.example.com"),
-            "tome.example.com"
-        )));
-        assert!(!same_origin(&headers(
-            Some("https://evil.example"),
-            "localhost:8787"
-        )));
-        assert!(!same_origin(&headers(
-            Some("http://localhost:9999"),
-            "localhost:8787"
-        )));
-        assert!(!same_origin(&headers(None, "localhost:8787")));
-    }
 }

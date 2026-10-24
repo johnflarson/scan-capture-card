@@ -1,7 +1,7 @@
 //! The Settings page: how `mtg-scan ui` starts, the Moxfield account and
 //! hidden decks (saved in the settings file, `mtg-scan.toml`), plus read-only
-//! database and connection details. Passwords and tokens stay in `.env`; the
-//! only secret ever sent is the sign-in link, and only to this computer.
+//! database and connection details. Passwords and keys stay in `.env` and
+//! are never sent.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Result, bail};
 use axum::Json;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use mtg_scan_shared::{
@@ -18,7 +18,7 @@ use mtg_scan_shared::{
     Startup,
 };
 
-use super::{AppState, access, blocking, lan_ip};
+use super::{AppState, blocking, lan_ip};
 use crate::app;
 use crate::config::{self, Config, DecksConfig, PricesConfig, StorageBackend, UiConfig};
 use crate::moxfield;
@@ -70,16 +70,12 @@ pub fn lock(settings: &Mutex<Settings>) -> MutexGuard<'_, Settings> {
 const DRY_RUN: &str =
     "Dry run: settings can't be changed. Restart without --dry-run to change them.";
 
-pub async fn get(
-    State(st): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-) -> Json<SettingsView> {
-    Json(view(&st, peer))
+pub async fn get(State(st): State<Arc<AppState>>) -> Json<SettingsView> {
+    Json(view(&st))
 }
 
 pub async fn change(
     State(st): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(change): Json<SettingsChange>,
 ) -> Response {
     if st.engine.view().dry_run {
@@ -87,7 +83,7 @@ pub async fn change(
     }
     let state = st.clone();
     match tokio::task::spawn_blocking(move || apply(&state, change)).await {
-        Ok(Ok(())) => Json(view(&st, peer)).into_response(),
+        Ok(Ok(())) => Json(view(&st)).into_response(),
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -145,7 +141,7 @@ fn apply(st: &AppState, change: SettingsChange) -> Result<()> {
     Ok(())
 }
 
-fn view(st: &AppState, peer: SocketAddr) -> SettingsView {
+fn view(st: &AppState) -> SettingsView {
     let settings = lock(&st.settings);
     let configured = moxfield::configured(settings.decks.moxfield_user.as_deref());
     let file_name = settings
@@ -179,12 +175,12 @@ fn view(st: &AppState, peer: SocketAddr) -> SettingsView {
             .display()
             .to_string(),
         locked: st.engine.view().dry_run.then(|| DRY_RUN.to_string()),
-        connection: connection(st.addr, peer),
+        connection: connection(st.addr),
     }
 }
 
 /// How this computer, other computers and phones reach the UI.
-fn connection(addr: SocketAddr, peer: SocketAddr) -> Connection {
+fn connection(addr: SocketAddr) -> Connection {
     let port = addr.port();
     let local_only = addr.ip().is_loopback();
     let network = if local_only {
@@ -194,19 +190,10 @@ fn connection(addr: SocketAddr, peer: SocketAddr) -> Connection {
     } else {
         Some(format!("http://{addr}"))
     };
-    let token = access::configured_token().filter(|_| !local_only);
-    let sign_in_link = match (&network, &token) {
-        (Some(network), Some(token)) if access::is_local(peer.ip()) => {
-            Some(format!("{network}/?token={token}"))
-        }
-        _ => None,
-    };
     Connection {
         this_computer: format!("http://localhost:{port}"),
         network,
         local_only,
-        token_required: token.is_some(),
-        sign_in_link,
     }
 }
 
@@ -387,20 +374,16 @@ mod tests {
 
     #[test]
     fn local_only_ui_has_no_network_address() {
-        let c = connection(addr("127.0.0.1:8787"), addr("127.0.0.1:50000"));
+        let c = connection(addr("127.0.0.1:8787"));
         assert!(c.local_only);
         assert_eq!(c.network, None);
         assert_eq!(c.this_computer, "http://localhost:8787");
-        assert!(!c.token_required);
-        assert_eq!(c.sign_in_link, None);
     }
 
     #[test]
     fn a_specific_address_is_the_network_address() {
-        let c = connection(addr("192.168.1.20:9000"), addr("192.168.1.30:50000"));
+        let c = connection(addr("192.168.1.20:9000"));
         assert!(!c.local_only);
         assert_eq!(c.network.as_deref(), Some("http://192.168.1.20:9000"));
-        // Never sent to another computer.
-        assert_eq!(c.sign_in_link, None);
     }
 }

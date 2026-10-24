@@ -5,8 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
+mod auth;
 mod decks;
 mod settings;
+pub use auth::*;
 pub use decks::*;
 pub use settings::*;
 

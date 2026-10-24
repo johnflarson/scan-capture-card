@@ -89,11 +89,6 @@ pub struct Connection {
     /// listens on this computer.
     pub network: Option<String>,
     pub local_only: bool,
-    /// Other computers must sign in with the access token.
-    pub token_required: bool,
-    /// The network address with the token, for opening on a phone. Only
-    /// sent to a browser on this computer.
-    pub sign_in_link: Option<String>,
 }
 
 /// A label and a value, e.g. ("Host", "db.example.com").

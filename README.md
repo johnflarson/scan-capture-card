@@ -103,9 +103,10 @@ then create the tables once with
 `MTG_SCAN_LLM_BASE_URL=http://ollama:11434`, and download the model with
 `docker compose --profile ollama exec ollama ollama pull qwen3-vl:8b-instruct`.
 
+* **First start.** The log has a setup link (`docker compose logs mtg-scan`):
+  open it to create the admin account.
 * **Other computers.** The UI is published on this computer only. Set
-  `MTG_SCAN_PUBLISH=0.0.0.0` and `MTG_SCAN_UI_TOKEN` (anyone who can reach the port
-  can use the UI otherwise) to open it to your network.
+  `MTG_SCAN_PUBLISH=0.0.0.0` to open it to your network; everyone signs in.
 * **Camera.** Docker Desktop on Windows and macOS can't pass cameras to
   containers: open the UI at `http://localhost:8787` on the computer the camera is
   plugged into and press **Use this device's camera** on the Scan page. On Linux
@@ -179,8 +180,9 @@ asks). The pages:
     the Decks page and out of the deck statistics.
   - **Database:** where the collection is stored, with live status (server version,
     schema version, row counts). Never passwords.
-  - **Connect:** how to connect from other computers and phones. On this computer it
-    also shows the sign-in link when an access token is set.
+  - **Account:** change your password, sign out, and API tokens for scripts.
+  - **Users** (admins): invite links, password-reset links, admin and disabled.
+  - **Connect:** how to connect from other computers and phones.
 
   Changes are saved in the `[ui]` and `[decks]` sections of `mtg-scan.toml`, and the
   rest of that file is kept as it is.
@@ -188,17 +190,20 @@ asks). The pages:
 Hover over any card name to see the card. It works on phones too (open the
 "other computers" address). Dark theme, luminaldata colours.
 
-**Who can use it.** This computer always can. By default so can anyone on your
-network. To require a token from other computers:
+**Who can use it.** Everyone signs in, on this computer too. The first time
+`mtg-scan ui` starts it prints (and opens) a setup link that creates the admin
+account. The admin invites others from Settings → Users: an invite link works
+once, for 7 days. There is no open sign-up.
 
-```powershell
-mtg-scan ui-token          # saves MTG_SCAN_UI_TOKEN in .env and prints a sign-in link
-mtg-scan ui-token --show   # print it again
-```
-
-Other computers then get a sign-in page (or open the printed `?token=` link
-once; the browser remembers it). To keep the UI on this computer only, run
-`mtg-scan ui --bind 127.0.0.1`.
+* Forgot a password? An admin makes a reset link under Users (it works once,
+  for 24 hours). An admin who can't sign in runs
+  `mtg-scan user reset-link <name>` on the server.
+* Scripts use an API token from Settings → Account:
+  `Authorization: Bearer tome_...`.
+* Sessions last 30 days from the last visit. After 5 wrong passwords for a name
+  (or 20 from one address) sign-in waits 15 minutes.
+* `mtg-scan user list` lists the accounts. `mtg-scan ui --bind 127.0.0.1` keeps
+  the UI on this computer only.
 
 ### Desktop window and command line
 

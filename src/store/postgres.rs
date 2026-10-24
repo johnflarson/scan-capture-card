@@ -44,6 +44,11 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
         "price_sources",
         include_str!("../../migrations/postgres/0003_price_sources.sql"),
     ),
+    (
+        4,
+        "accounts",
+        include_str!("../../migrations/postgres/0004_accounts.sql"),
+    ),
 ];
 
 pub struct PostgresStore {
@@ -137,6 +142,11 @@ impl PostgresStore {
         };
         let version = store.schema_version()?;
         Ok(Self { version, ..store })
+    }
+
+    /// The connection, for the account tables (`accounts`).
+    pub(crate) fn into_client(self) -> Client {
+        self.client.into_inner()
     }
 
     /// The Cardmarket and tix price columns (migration 3), or nulls in an
@@ -997,7 +1007,8 @@ mod tests {
         ));
         let mut app_config = config.clone();
         app_config.user(&role).password(password);
-        let mut store = PostgresStore::connect(app_config, &schema, scryfall).unwrap();
+        let mut store =
+            PostgresStore::connect(app_config.clone(), &schema, scryfall.clone()).unwrap();
         let ddl = store
             .client
             .borrow_mut()
@@ -1005,6 +1016,12 @@ mod tests {
         assert!(ddl.is_err(), "app role must not be able to drop tables");
 
         crate::store::conformance(&mut store);
+        // The app role can run the accounts, too.
+        crate::accounts::conformance(
+            PostgresStore::connect(app_config, &schema, scryfall)
+                .unwrap()
+                .accounts(&crate::config::Config::default()),
+        );
         let rows = store.entries().unwrap();
         assert_eq!(rows[0].name, "Lightning Bolt", "details come from Scryfall");
 

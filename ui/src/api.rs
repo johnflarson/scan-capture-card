@@ -5,8 +5,10 @@ use gloo_net::eventsource::futures::EventSource;
 use gloo_net::http::{Request, Response};
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
-    AddCard, ClientCommand, CollectionView, DatabaseView, DeckView, DecksView, EditResult,
-    PrintingView, RowEdit, ServerEvent, SessionView, SettingsChange, SettingsView,
+    AddCard, ApiTokenView, AuthStatus, ClientCommand, CollectionView, CreatedApiToken,
+    DatabaseView, DeckView, DecksView, EditResult, LinkInfo, LinkView, NewApiToken, PasswordChange,
+    PrintingView, Redeem, RowEdit, ServerEvent, SessionView, SetUp, SettingsChange, SettingsView,
+    SignIn, UserChange, UserView,
 };
 use serde::de::DeserializeOwned;
 
@@ -14,25 +16,152 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-/// The JSON body, or the server's plain-text error message.
+/// The server's plain-text error message.
+async fn message(resp: Response) -> String {
+    resp.text()
+        .await
+        .ok()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| format!("HTTP {}", resp.status()))
+}
+
+/// The JSON body, or the server's plain-text error message. A request
+/// refused because the session ended reloads the page, which then asks to
+/// sign in again.
 async fn json_or_message<T: DeserializeOwned>(resp: Response) -> Result<T, String> {
+    if resp.status() == 401 {
+        signed_out();
+    }
     if !resp.ok() {
-        return Err(resp
-            .text()
-            .await
-            .ok()
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| format!("HTTP {}", resp.status())));
+        return Err(message(resp).await);
     }
     resp.json().await.map_err(err)
 }
 
-pub async fn session() -> Result<SessionView, String> {
-    let resp = Request::get("/api/session").send().await.map_err(err)?;
+/// Show the sign-in page (the session ended or was revoked).
+pub fn signed_out() {
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().reload();
+    }
+}
+
+/// An empty answer, or the server's message.
+async fn done(resp: Response) -> Result<(), String> {
+    if resp.status() == 401 {
+        signed_out();
+    }
+    if resp.ok() {
+        Ok(())
+    } else {
+        Err(message(resp).await)
+    }
+}
+
+/// JSON for the sign-in requests: a 401 there is a wrong password, not an
+/// ended session.
+async fn auth_json<T: DeserializeOwned>(resp: Response) -> Result<T, String> {
     if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
+        return Err(message(resp).await);
     }
     resp.json().await.map_err(err)
+}
+
+async fn post<B: serde::Serialize>(url: &str, body: &B) -> Result<Response, String> {
+    Request::post(url)
+        .json(body)
+        .map_err(err)?
+        .send()
+        .await
+        .map_err(err)
+}
+
+pub async fn auth_status() -> Result<AuthStatus, String> {
+    let resp = Request::get("/api/auth").send().await.map_err(err)?;
+    auth_json(resp).await
+}
+
+pub async fn set_up(form: &SetUp) -> Result<AuthStatus, String> {
+    auth_json(post("/api/auth/setup", form).await?).await
+}
+
+pub async fn sign_in(form: &SignIn) -> Result<AuthStatus, String> {
+    auth_json(post("/api/auth/sign-in", form).await?).await
+}
+
+pub async fn sign_out() -> Result<(), String> {
+    let resp = Request::post("/api/auth/sign-out")
+        .send()
+        .await
+        .map_err(err)?;
+    done(resp).await
+}
+
+pub async fn link_info(code: &str) -> Result<LinkInfo, String> {
+    let resp = Request::get("/api/auth/link")
+        .query([("code", code)])
+        .send()
+        .await
+        .map_err(err)?;
+    auth_json(resp).await
+}
+
+pub async fn redeem(form: &Redeem) -> Result<AuthStatus, String> {
+    auth_json(post("/api/auth/link", form).await?).await
+}
+
+pub async fn change_password(change: &PasswordChange) -> Result<(), String> {
+    done(post("/api/account/password", change).await?).await
+}
+
+pub async fn api_tokens() -> Result<Vec<ApiTokenView>, String> {
+    let resp = Request::get("/api/account/tokens")
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn new_api_token(name: &str) -> Result<CreatedApiToken, String> {
+    let body = NewApiToken { name: name.into() };
+    json_or_message(post("/api/account/tokens", &body).await?).await
+}
+
+pub async fn delete_api_token(id: i64) -> Result<(), String> {
+    let resp = Request::delete(&format!("/api/account/tokens/{id}"))
+        .send()
+        .await
+        .map_err(err)?;
+    done(resp).await
+}
+
+pub async fn users() -> Result<Vec<UserView>, String> {
+    let resp = Request::get("/api/users").send().await.map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn invite() -> Result<LinkView, String> {
+    let resp = Request::post("/api/users/invite")
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn reset_link(id: i64) -> Result<LinkView, String> {
+    let resp = Request::post(&format!("/api/users/{id}/reset"))
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
+pub async fn change_user(id: i64, change: &UserChange) -> Result<UserView, String> {
+    json_or_message(post(&format!("/api/users/{id}"), change).await?).await
+}
+
+pub async fn session() -> Result<SessionView, String> {
+    let resp = Request::get("/api/session").send().await.map_err(err)?;
+    json_or_message(resp).await
 }
 
 pub async fn collection() -> Result<CollectionView, String> {
@@ -134,17 +263,7 @@ pub async fn deck(id: &str) -> Result<DeckView, String> {
 }
 
 pub async fn send(cmd: ClientCommand) -> Result<(), String> {
-    let resp = Request::post("/api/command")
-        .json(&cmd)
-        .map_err(err)?
-        .send()
-        .await
-        .map_err(err)?;
-    if resp.ok() {
-        Ok(())
-    } else {
-        Err(format!("HTTP {}", resp.status()))
-    }
+    done(post("/api/command", &cmd).await?).await
 }
 
 /// Listen to `/api/events` for the life of the page. `on_connection(false)`
