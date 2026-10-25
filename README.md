@@ -330,7 +330,8 @@ keep IP addresses either.
 * Change your mind: the same card, or `mtg-scan telemetry on` / `off`
   (`[telemetry] enabled` in `mtg-scan.toml`).
 * `DO_NOT_TRACK=1` in the environment or `.env` turns it off whatever the file says.
-* `MTG_SCAN_TELEMETRY_URL` sends to your own collector instead.
+* `MTG_SCAN_TELEMETRY_URL` sends to your own collector instead. The collector is
+  in this repository: [`collector/`](collector/README.md).
 
 ## Storage
 

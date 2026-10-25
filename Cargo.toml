@@ -6,10 +6,10 @@ description = "The Shuffling Tome: scan Magic: The Gathering cards with an overh
 license = "AGPL-3.0-or-later"
 
 [workspace]
-members = [".", "shared", "ui"]
+members = [".", "shared", "ui", "collector"]
 # `cargo build/test/clippy` at the root skip the WebAssembly UI; it is built
 # with `trunk build` (see ui/README.md) and checked separately in CI.
-default-members = [".", "shared"]
+default-members = [".", "shared", "collector"]
 resolver = "3"
 
 [features]

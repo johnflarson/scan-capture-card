@@ -8,3 +8,6 @@ scans/
 *.md.tmp
 *.md.lock
 ui/dist/
+
+# tome-collector settings on a server (collector/collector.env.example)
+collector/collector.env

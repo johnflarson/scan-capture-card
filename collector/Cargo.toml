@@ -1,0 +1,24 @@
+[package]
+name = "tome-collector"
+version = "1.0.0-alpha.0"
+edition = "2024"
+description = "Receives The Shuffling Tome's opt-in usage statistics and shows them with the project's GitHub numbers"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+base64 = "0.23"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+mtg-scan-shared = { version = "1.0.0-alpha.0", path = "../shared" }
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "query"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
