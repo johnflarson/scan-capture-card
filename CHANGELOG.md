@@ -29,13 +29,22 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- **Anonymous usage statistics, only when allowed** (#77). With `[telemetry] enabled = true`
+  (the setup wizard asks; Settings → Usage statistics, or `mtg-scan telemetry on|off`), a running
+  `mtg-scan ui` sends one small ping a day: the version, the platform and how it was installed
+  (Docker, Windows release, source), the storage and recognition choices, the number of accounts,
+  cards scanned and errors by kind, every count rounded into a range, plus a random id for the
+  server (`telemetry.json` in the data folder). Never cards, collections, decks, images, names,
+  addresses, messages or keys. Settings, the wizard and `mtg-scan telemetry show` print exactly
+  what the next ping sends. `DO_NOT_TRACK=1` turns it off whatever the file says, and
+  `MTG_SCAN_TELEMETRY_URL` / `[telemetry] url` send to your own collector instead.
 - **Setup wizard** (#75). After the first account is created, admins get a step-by-step setup (and
   later from Settings → Server setup): where the cards are stored; how cards are read: the printed
   text only, a model on this server (checks Ollama, downloads the suggested model with a progress
   bar), or a cloud model with your own key; "Try it" reads one card (Lightning Bolt, from Scryfall)
   with the choice and reports what it read, how long it took and how much of a local model sat on
   the GPU; the camera; your currency and card language; and whether anonymous usage statistics may
-  be sent (`[telemetry] enabled`, nothing is sent before Phase 6). The recognition choice is saved
+  be sent (`[telemetry] enabled`). The recognition choice is saved
   in `mtg-scan.toml` (`[recognition] mode`, `[llm]`) and every scan session switches to it without
   a restart. `[setup] done` remembers that it was finished or skipped.
 - **Claude and Gemini as vision models** (#76): `[llm] provider = "anthropic"` (Messages API,

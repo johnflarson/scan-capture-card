@@ -9,10 +9,12 @@ mod auth;
 mod decks;
 mod settings;
 mod setup;
+mod telemetry;
 pub use auth::*;
 pub use decks::*;
 pub use settings::*;
 pub use setup::*;
+pub use telemetry::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

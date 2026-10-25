@@ -57,6 +57,9 @@ jobs:
         run: trunk build --release
 
       - name: Build
+        # Usage statistics report this copy as the Windows release.
+        env:
+          MTG_SCAN_BUILD: windows-release
         run: cargo build --release --locked
 
       - name: Package

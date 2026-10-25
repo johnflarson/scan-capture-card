@@ -43,7 +43,8 @@ ENV MTG_SCAN_DATA_DIR=/data \
     MTG_SCAN_CONFIG=/data/mtg-scan.toml \
     MTG_SCAN_CACHE_DIR=/data/cache \
     MTG_SCAN_MODELS_DIR=/opt/mtg-scan/models \
-    MTG_SCAN_PORT=8787
+    MTG_SCAN_PORT=8787 \
+    MTG_SCAN_INSTALL=docker
 
 # The working folder, so a /data/.env is read too.
 WORKDIR /data

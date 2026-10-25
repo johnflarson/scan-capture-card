@@ -97,13 +97,15 @@ pub struct DecksConfig {
     pub hidden: Vec<String>,
 }
 
-/// `[telemetry]`: whether anonymous usage pings may be sent (asked by the
-/// setup wizard; `None` until answered). Nothing is sent before Phase 6
-/// adds the sending, and never without `true` here.
+/// `[telemetry]`: whether anonymous usage statistics may be sent (asked by
+/// the setup wizard; `None` until answered, and nothing is sent without
+/// `true`), and where to (see `telemetry`).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct TelemetryConfig {
     pub enabled: Option<bool>,
+    /// The collector; `MTG_SCAN_TELEMETRY_URL` wins, the author's by default.
+    pub url: Option<String>,
 }
 
 /// `[setup]`: the web UI's setup wizard was finished or skipped.

@@ -9,4 +9,6 @@ fn main() {
     }
     // Re-embed when the UI is rebuilt.
     println!("cargo:rerun-if-changed=ui/dist");
+    // How the build was made, for the usage statistics (`telemetry`).
+    println!("cargo:rerun-if-env-changed=MTG_SCAN_BUILD");
 }

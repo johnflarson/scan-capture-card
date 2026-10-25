@@ -196,6 +196,15 @@ pub async fn benchmark() -> Result<BenchmarkView, String> {
     json_or_message(resp).await
 }
 
+/// Whether usage statistics are sent, and exactly what the next ping sends.
+pub async fn telemetry() -> Result<mtg_scan_shared::TelemetryView, String> {
+    let resp = Request::get("/api/setup/telemetry")
+        .send()
+        .await
+        .map_err(err)?;
+    json_or_message(resp).await
+}
+
 pub async fn setup_telemetry(enabled: bool) -> Result<(), String> {
     done(
         post(

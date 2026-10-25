@@ -34,7 +34,7 @@ use crate::store::sqlite::SqliteStore;
 /// The server settings the Settings page and the setup wizard change, as
 /// last saved.
 pub struct Settings {
-    card_kingdom: bool,
+    pub(super) card_kingdom: bool,
     pub(super) file: PathBuf,
     /// Command-line flags that overrode a startup setting for this run.
     overridden: Vec<String>,

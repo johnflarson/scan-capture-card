@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use mtg_scan_shared::{
     BenchmarkView, CARD_LANGUAGES, Currency, OllamaView, PullView, RecognitionChoice,
-    RecognitionSetup, SettingsChange, SettingsView, SetupView, StateView,
+    RecognitionSetup, SettingsChange, SettingsView, SetupView, StateView, TelemetryView,
 };
 
 use crate::api;
@@ -629,28 +629,94 @@ fn TelemetryStep(
     notify: Notify,
 ) -> impl IntoView {
     let _ = view;
-    let chosen = move || setup.with(|s| s.as_ref().and_then(|s| s.telemetry));
-    let choose = move |enabled: bool| {
-        spawn_local(async move {
-            match api::setup_telemetry(enabled).await {
-                Ok(()) => setup.update(|s| {
-                    if let Some(s) = s {
-                        s.telemetry = Some(enabled);
-                    }
-                }),
-                Err(e) => notify.run((e, true)),
+    let changed = Callback::new(move |enabled: bool| {
+        setup.update(|s| {
+            if let Some(s) = s {
+                s.telemetry = Some(enabled);
             }
         })
-    };
+    });
     view! {
         <h2 class="wizard-title">"Usage statistics"</h2>
         <p>
             "May this server tell the author, anonymously, that it runs? That helps decide what to "
             "work on next."
         </p>
+        <UsageStatistics notify changed />
+    }
+}
+
+/// Usage statistics: what is and isn't sent, the choice, and exactly what
+/// the next ping sends (the wizard and the Settings page).
+#[component]
+pub fn UsageStatistics(
+    notify: Notify,
+    /// Told the new choice once it is saved.
+    #[prop(optional)]
+    changed: Option<Callback<bool>>,
+) -> impl IntoView {
+    let telemetry = RwSignal::new(None::<Result<TelemetryView, String>>);
+    let load = move || {
+        spawn_local(async move {
+            telemetry.set(Some(api::telemetry().await));
+        })
+    };
+    load();
+    let chosen = move || {
+        telemetry.with(|t| {
+            t.as_ref()
+                .and_then(|t| t.as_ref().ok())
+                .and_then(|t| t.enabled)
+        })
+    };
+    let choose = move |enabled: bool| {
+        spawn_local(async move {
+            match api::setup_telemetry(enabled).await {
+                Ok(()) => {
+                    if let Some(changed) = changed {
+                        changed.run(enabled);
+                    }
+                    load();
+                }
+                Err(e) => notify.run((e, true)),
+            }
+        })
+    };
+    let status = move || {
+        telemetry.get().map(|t| match t {
+            Ok(t) => {
+                let status = match (t.do_not_track, t.enabled) {
+                    (true, _) => {
+                        "DO_NOT_TRACK is set on the server, so nothing is sent.".to_string()
+                    }
+                    (false, Some(true)) => format!(
+                        "Sent once a day while the server runs, to {}. {}",
+                        t.url,
+                        match &t.last_sent {
+                            Some(day) => format!("Last sent on {day}."),
+                            None => "Nothing sent yet.".to_string(),
+                        }
+                    ),
+                    (false, Some(false)) => "Off: nothing is sent.".to_string(),
+                    (false, None) => "Not chosen yet: nothing is sent.".to_string(),
+                };
+                let next = serde_json::to_string_pretty(&t.next).unwrap_or_default();
+                view! {
+                    <p class="muted small">{status}</p>
+                    <details class="ping">
+                        <summary>"Exactly what the next ping sends"</summary>
+                        <pre class="code">{next}</pre>
+                    </details>
+                }
+                .into_any()
+            }
+            Err(e) => view! { <p class="muted small">{e}</p> }.into_any(),
+        })
+    };
+    view! {
         <ul class="muted small">
-            <li>"Sent: the version, the platform (Windows, Linux, Docker), the choices made here, rough scan counts and kinds of errors."</li>
-            <li>"Never sent: cards, collections, decks, images, names, addresses or keys."</li>
+            <li>"Sent, once a day: the version, the platform (Windows, Linux, Docker), the choices made in the setup, rough scan counts and kinds of errors, with a random id for this server."</li>
+            <li>"Never sent: cards, collections, decks, images, names, addresses, messages or keys."</li>
         </ul>
         <div class="segmented">
             <button class:selected=move || chosen() == Some(true) on:click=move |_| choose(true)>
@@ -660,7 +726,7 @@ fn TelemetryStep(
                 "No"
             </button>
         </div>
-        <p class="muted small">"Nothing is sent before you choose; you can change it in mtg-scan.toml ([telemetry])."</p>
+        {status}
     }
 }
 

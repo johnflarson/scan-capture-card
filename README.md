@@ -308,6 +308,30 @@ Folders can also be set with environment variables (handy for a Docker volume):
 | `MTG_SCAN_DATA_DIR` | the SQLite database's folder: `%LOCALAPPDATA%\mtg-scan` (`~/.local/share/mtg-scan`) |
 | `MTG_SCAN_CACHE_DIR` | the caches: `%LOCALAPPDATA%\mtg-scan` (`~/.cache/mtg-scan`) |
 
+## Usage statistics
+
+The setup wizard asks whether the server may send anonymous usage statistics;
+nothing is sent until an admin says yes. Then a running `mtg-scan ui` sends one
+small ping a day to the author's collector:
+
+| Sent | Example |
+|---|---|
+| A random id for this server (`telemetry.json` in the data folder; delete it for a new one) | `3f9c...` |
+| Version, operating system, processor, how it was installed | `1.0.0-alpha.1`, `linux`, `x86_64`, `docker` |
+| Storage, how cards are read, the vision model's provider, the OCR engine, Card Kingdom on/off, setup finished | `sqlite`, `auto`, `ollama`, `paddle` |
+| Accounts, cards scanned and not recognised since the last ping, errors by kind, each rounded into a range | `2-5`, `100-999`, `1-9`, `camera: 1-9` |
+
+Never sent: cards, collections, decks, images, names, e-mail or IP addresses,
+error messages, settings values such as addresses or keys. The collector doesn't
+keep IP addresses either.
+
+* See exactly what the next ping sends: Settings → Usage statistics, or
+  `mtg-scan telemetry show`.
+* Change your mind: the same card, or `mtg-scan telemetry on` / `off`
+  (`[telemetry] enabled` in `mtg-scan.toml`).
+* `DO_NOT_TRACK=1` in the environment or `.env` turns it off whatever the file says.
+* `MTG_SCAN_TELEMETRY_URL` sends to your own collector instead.
+
 ## Storage
 
 ### SQLite (default)
