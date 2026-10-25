@@ -24,7 +24,7 @@
 //! | `GET /api/decks[?refresh=true][&all=true]` | the signed-in account's Moxfield user's public decks, without hidden ones unless `all` |
 //! | `GET /api/decks/{id}` | one of those decks with its cards |
 //! | `GET`/`POST /api/settings` | Settings page: the account's startup options, Moxfield account, hidden decks, currency, card language; Card Kingdom (admins) (`SettingsChange` JSON) |
-//! | `/api/setup*` | admins: the setup wizard (recognition, Ollama check and download, a one-card test, telemetry, done) |
+//! | `/api/setup*` | admins: the setup wizard (recognition, Ollama check and download, a one-card test, usage statistics and exactly what they send, done) |
 //! | `GET /api/settings/database` | admins: where the collection is stored, with live status (no passwords) |
 //! | everything else | the embedded UI |
 //!
@@ -192,6 +192,13 @@ async fn serve(
         addr: web.addr,
         shutdown: shutdown_rx,
     });
+    // Usage statistics, once a day while allowed (see `telemetry`).
+    let st = state.clone();
+    crate::telemetry::spawn(
+        crate::telemetry::state_file(),
+        crate::telemetry::url(&st.cfg.telemetry),
+        move || setup::telemetry_facts(&st, true),
+    );
     let app = Router::new()
         .route("/api/auth", get(auth::status))
         .route("/api/auth/setup", post(auth::set_up))
@@ -228,7 +235,10 @@ async fn serve(
         .route("/api/setup/recognition", post(setup::recognition))
         .route("/api/setup/pull", get(setup::pull).post(setup::start_pull))
         .route("/api/setup/benchmark", post(setup::benchmark))
-        .route("/api/setup/telemetry", post(setup::telemetry))
+        .route(
+            "/api/setup/telemetry",
+            get(setup::telemetry_view).post(setup::telemetry),
+        )
         .route("/api/setup/done", post(setup::done))
         .fallback(static_file)
         .layer(axum::middleware::from_fn_with_state(

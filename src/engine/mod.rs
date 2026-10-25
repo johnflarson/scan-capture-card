@@ -286,6 +286,9 @@ impl Ctx {
     }
 
     fn emit(&self, e: EngineEvent) {
+        if let EngineEvent::Error(msg) = &e {
+            crate::telemetry::count_error(msg);
+        }
         // No subscribers is fine.
         let _ = self.events.send(e);
     }
@@ -1250,6 +1253,11 @@ fn mark_undone(ctx: &Ctx, seqs: &[u64]) {
 }
 
 fn finish_scan(ctx: &Ctx, results: Vec<CardResult>, auto: bool, mode: Mode) {
+    let failed = results
+        .iter()
+        .filter(|r| matches!(r.outcome, Outcome::Failed(_)))
+        .count();
+    crate::telemetry::count_scans((results.len() - failed) as u64, failed as u64);
     let status = summarize(&results, mode, auto);
     let boxes = if mode == Mode::Table {
         boxes_for(&results)

@@ -22,6 +22,7 @@ mod reprice;
 mod scryfall;
 mod secrets;
 mod store;
+mod telemetry;
 mod tls;
 mod web;
 
@@ -214,6 +215,11 @@ enum Command {
         #[command(subcommand)]
         command: LlmCommand,
     },
+    /// Anonymous usage statistics ([telemetry] in the settings file)
+    Telemetry {
+        #[command(subcommand)]
+        command: TelemetryCommand,
+    },
     /// Database management (SQLite or PostgreSQL)
     Db {
         #[command(subcommand)]
@@ -264,6 +270,18 @@ enum LlmCommand {
     Check,
     /// Ollama: download the model (default: the configured one)
     Pull { model: Option<String> },
+}
+
+#[derive(Subcommand)]
+enum TelemetryCommand {
+    /// Whether usage statistics are sent, and exactly what the next ping sends
+    Show,
+    /// Allow sending them (applies when `mtg-scan ui` next starts)
+    On,
+    /// Stop sending them (applies when `mtg-scan ui` next starts)
+    Off,
+    /// Send today's ping now (only when allowed)
+    Send,
 }
 
 #[derive(Subcommand)]
@@ -550,6 +568,7 @@ fn run() -> Result<()> {
         Command::Movers { days, top } => movers(&cfg, days, top),
         Command::User { command } => user(&cfg, command),
         Command::Llm { command } => llm(&cfg, command),
+        Command::Telemetry { command } => telemetry_command(&cfg, command),
         Command::Db { command } => db(&cfg, command),
         Command::List => list(&cfg),
         Command::Cameras => {
@@ -1027,6 +1046,79 @@ fn llm(cfg: &Config, command: LlmCommand) -> Result<()> {
             })?;
             println!("✓ {model} is ready");
         }
+    }
+    Ok(())
+}
+
+fn telemetry_command(cfg: &Config, command: TelemetryCommand) -> Result<()> {
+    let file = cfg.settings_file();
+    let enabled = cfg.telemetry.enabled;
+    match command {
+        TelemetryCommand::On | TelemetryCommand::Off => {
+            let on = matches!(command, TelemetryCommand::On);
+            config::save_telemetry(&file, on)?;
+            println!(
+                "Usage statistics {} in {} (applies when `mtg-scan ui` next starts).",
+                if on { "allowed" } else { "turned off" },
+                file.display()
+            );
+            if on && telemetry::do_not_track() {
+                println!("DO_NOT_TRACK is set, so nothing is sent anyway.");
+            }
+            return Ok(());
+        }
+        TelemetryCommand::Show | TelemetryCommand::Send => {}
+    }
+    let accounts = accounts::Accounts::new(accounts::open_store(cfg)?)?
+        .users()?
+        .iter()
+        .filter(|u| u.has_password)
+        .count() as u64;
+    let facts = telemetry::Facts::new(
+        cfg.storage.backend,
+        &cfg.recognition,
+        &cfg.llm,
+        cfg.prices.card_kingdom,
+        cfg.setup.done,
+        accounts,
+    );
+    let path = telemetry::state_file();
+    let url = telemetry::url(&cfg.telemetry);
+    match command {
+        TelemetryCommand::Show => {
+            let status = match enabled {
+                _ if telemetry::do_not_track() => "not sent: DO_NOT_TRACK is set",
+                Some(true) => "sent once a day while `mtg-scan ui` runs",
+                Some(false) => "not sent (turned off)",
+                None => "not sent (not chosen yet; `mtg-scan telemetry on` allows it)",
+            };
+            let mut log = telemetry::Log::load(&path);
+            let next = log.preview(&facts)?;
+            log.save()?;
+            println!("Usage statistics: {status}");
+            println!("  to: {url}");
+            if let Some(day) = log.last_sent() {
+                println!("  last sent: {day}");
+            }
+            println!(
+                "  (counts come from the running server and are kept in {})",
+                path.display()
+            );
+            println!(
+                "\nThe next ping, in full:\n{}",
+                serde_json::to_string_pretty(&next)?
+            );
+        }
+        TelemetryCommand::Send => {
+            if !telemetry::allowed(enabled) {
+                bail!(
+                    "usage statistics aren't allowed here (`mtg-scan telemetry on` allows them; DO_NOT_TRACK must be unset)"
+                );
+            }
+            let ping = telemetry::send_now(&path, &url, &facts)?;
+            println!("Sent to {url}:\n{}", serde_json::to_string_pretty(&ping)?);
+        }
+        TelemetryCommand::On | TelemetryCommand::Off => unreachable!(),
     }
     Ok(())
 }

@@ -614,6 +614,9 @@ tr.group-head.collapsed td { border-bottom-color: var(--md-outline-variant); }
 .chip.partial { border-color: #e8a33c; color: #e8a33c; }
 .chip.missing { border-color: var(--md-error); color: var(--md-error); }
 .btn.back { padding-left: 4px; }
+details.ping { margin-top: 8px; font-size: 13px; }
+details.ping summary { cursor: pointer; color: var(--md-primary); }
+details.ping pre.code { display: block; max-height: 360px; overflow: auto; word-break: normal; }
 code, pre.code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 pre.code {
   display: inline-block; margin: 8px 0 0; padding: 10px 14px; text-align: left;

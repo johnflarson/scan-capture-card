@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use mtg_scan_shared::{
     BenchmarkView, CloudProvider, OllamaModelView, OllamaView, PullView, RecognitionChoice,
-    RecognitionSetup, RecognitionView, SetupView,
+    RecognitionSetup, RecognitionView, SetupView, TelemetryView,
 };
 use serde::Deserialize;
 
@@ -24,6 +24,7 @@ use crate::config::{self, LlmConfig, LlmProvider, RecognitionMode, StorageBacken
 use crate::llm::VisionLlm;
 use crate::ollama::{self, Ollama};
 use crate::scryfall::Scryfall;
+use crate::telemetry::{self, Facts};
 
 /// The model suggested for Ollama (see CLAUDE.md: the instruct tag, not
 /// the thinking one).
@@ -399,6 +400,51 @@ fn run_benchmark(st: &AppState, signed: &Signed) -> Result<BenchmarkView> {
 #[derive(Deserialize)]
 pub struct TelemetryChoice {
     enabled: bool,
+}
+
+/// How the server is set up, for the usage statistics. With `when_allowed`,
+/// `None` while sending isn't allowed.
+pub fn telemetry_facts(st: &AppState, when_allowed: bool) -> Option<Facts> {
+    let facts = {
+        let settings = lock(&st.settings);
+        if when_allowed && !telemetry::allowed(settings.telemetry) {
+            return None;
+        }
+        Facts::new(
+            st.cfg.storage.backend,
+            &settings.recognition,
+            &settings.llm,
+            settings.card_kingdom,
+            settings.setup_done,
+            0,
+        )
+    };
+    let accounts = st
+        .accounts
+        .users()
+        .map(|users| users.iter().filter(|u| u.has_password).count() as u64)
+        .unwrap_or(1);
+    Some(Facts { accounts, ..facts })
+}
+
+/// The choice, and exactly what the next ping sends.
+pub async fn telemetry_view(State(st): State<Arc<AppState>>) -> Response {
+    let state = st.clone();
+    blocking(StatusCode::INTERNAL_SERVER_ERROR, move || {
+        let facts = telemetry_facts(&state, false).context("no settings")?;
+        let mut log = telemetry::Log::load(&telemetry::state_file());
+        let next = log.preview(&facts)?;
+        // Keeps the id it showed.
+        log.save()?;
+        Ok(TelemetryView {
+            enabled: lock(&state.settings).telemetry,
+            do_not_track: telemetry::do_not_track(),
+            url: telemetry::url(&state.cfg.telemetry),
+            last_sent: log.last_sent().map(str::to_string),
+            next,
+        })
+    })
+    .await
 }
 
 pub async fn telemetry(

@@ -100,10 +100,14 @@ hidden = []
 
 # Set by the web UI's setup wizard.
 [telemetry]
-# Whether anonymous usage statistics may be sent (version, platform, setup
-# choices, rough scan counts, kinds of errors; never cards, images or keys).
-# Unset until answered.
+# Whether anonymous usage statistics may be sent: once a day while `mtg-scan ui`
+# runs, the version, platform, setup choices, rounded scan counts and kinds of
+# errors, with a random id for this server; never cards, images, names or keys.
+# Unset until answered (nothing is sent). `mtg-scan telemetry show` prints the
+# next ping in full. DO_NOT_TRACK=1 in the environment turns it off.
 # enabled = false
+# Send them to your own collector instead (MTG_SCAN_TELEMETRY_URL wins).
+# url = "https://www.luminaldata.com/app/shufflingtome/v1/ping"
 
 [setup]
 # The setup wizard was finished or skipped (false shows it to admins again).

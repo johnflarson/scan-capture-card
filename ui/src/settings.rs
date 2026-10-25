@@ -158,6 +158,7 @@ pub fn SettingsPage(decks: DeckCache, notify: Notify) -> impl IntoView {
                 <div class="settings-column">
                     {me.is_admin.then(|| view! { <UsersCard me=me.clone() notify /> })}
                     {me.is_admin.then(|| view! { <SetupCard /> })}
+                    {me.is_admin.then(|| view! { <UsageCard notify /> })}
                     {me.is_admin.then(|| view! {
                         <DatabaseCard database reload=Callback::new(move |()| load_database()) />
                     })}
@@ -678,6 +679,21 @@ fn SetupCard() -> impl IntoView {
                     "How cards are read (the printed text, a model on this server or a cloud model), "
                     "the camera, and usage statistics."
                 </p>
+            </div>
+        </section>
+    }
+}
+
+/// Usage statistics (admins): the choice and what is sent.
+#[component]
+fn UsageCard(notify: Notify) -> impl IntoView {
+    view! {
+        <section class="card">
+            <div class="card-header">
+                <h2>"Usage statistics"</h2>
+            </div>
+            <div class="card-body">
+                <crate::setup::UsageStatistics notify />
             </div>
         </section>
     }
