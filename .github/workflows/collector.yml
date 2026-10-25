@@ -1,0 +1,62 @@
+# The usage statistics collector's image (collector/). Pull requests that
+# touch it build the image and check that it runs; merges into v1 or main
+# publish it as ghcr.io/johnflarson/tome-collector:latest (and :<commit>).
+name: Collector image
+
+on:
+  pull_request:
+    paths: ['collector/**', 'shared/**', 'Cargo.lock', '.github/workflows/collector.yml']
+  push:
+    branches: [v1, main]
+    paths: ['collector/**', 'shared/**', 'Cargo.lock', '.github/workflows/collector.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/johnflarson/tome-collector
+
+jobs:
+  image:
+    name: Build, check, publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: collector/Dockerfile
+          load: true
+          tags: ${{ env.IMAGE }}:ci
+          cache-from: type=gha,scope=collector
+          cache-to: type=gha,mode=max,scope=collector
+      - name: Runs, takes a ping, shows the page
+        run: |
+          docker run -d --name collector -p 127.0.0.1:8790:8790 \
+            -e TOME_COLLECTOR_PASSWORD=ci-password -e TOME_COLLECTOR_BASE_PATH=/app/shufflingtome \
+            "$IMAGE:ci"
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' collector)
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          docker logs collector
+          test "$status" = healthy
+          ping='{"schema":1,"install_id":"0123456789abcdef0123456789abcdef","version":"1.0.0","os":"linux","arch":"x86_64","install":"docker","storage":"sqlite","recognition":"auto","llm_provider":"ollama","ocr":"paddle","card_kingdom":false,"setup_done":true,"accounts":"1","scans":"10-99","unrecognised":"0","errors":{}}'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$ping" http://127.0.0.1:8790/app/shufflingtome/v1/ping)" = 204
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8790/app/shufflingtome/)" = 401
+          curl -fsS -u me:ci-password http://127.0.0.1:8790/app/shufflingtome/api/metrics | grep -q '"last_30_days":1'
+          docker rm -f collector
+      - name: Publish
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$IMAGE:ci" "$IMAGE:latest"
+          docker tag "$IMAGE:ci" "$IMAGE:${GITHUB_SHA::7}"
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${GITHUB_SHA::7}"

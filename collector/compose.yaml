@@ -1,0 +1,25 @@
+# tome-collector on a server, behind its web server (see README.md).
+# Put the settings in collector.env next to this file, then:
+#   docker compose up -d
+# Updates: docker compose pull && docker compose up -d
+
+services:
+  collector:
+    image: ghcr.io/johnflarson/tome-collector:latest
+    # Or build it here from the repository: docker compose up -d --build
+    build:
+      context: ..
+      dockerfile: collector/Dockerfile
+    restart: unless-stopped
+    env_file: collector.env
+    environment:
+      # The path the web server passes on unchanged.
+      TOME_COLLECTOR_BASE_PATH: ${TOME_COLLECTOR_BASE_PATH:-/app/shufflingtome}
+    # Only the web server on this machine reaches it.
+    ports:
+      - "127.0.0.1:8790:8790"
+    volumes:
+      - collector-data:/data
+
+volumes:
+  collector-data:

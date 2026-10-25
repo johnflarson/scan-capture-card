@@ -29,6 +29,19 @@ The Shuffling Tome 1.0 (`v1` branch), see `docs/v1-plan.md`.
   `db export` writes one.
 
 ### Added
+- **The usage statistics collector** (#77), `tome-collector` in `collector/`: a small server for
+  the author's VPS (Docker image `ghcr.io/johnflarson/tome-collector`, behind the web server at
+  `/app/shufflingtome`). It checks each ping against the listed fields and keeps one per server
+  and day for 400 days. It stores no IP addresses: per-address rate limits are held in memory
+  only. A password-protected metrics page (and `api/metrics` JSON) shows:
+  * servers today, in the last 7 and 30 days, and ever; servers per day and new servers per week;
+  * how servers are set up (version, install type, OS, storage, card reading, vision model, OCR,
+    accounts);
+  * cards scanned and errors by kind;
+  * the project on GitHub, fetched every six hours: stars with the month's change, forks,
+    watchers, open issues, sponsors, release downloads, container image pulls, and page views,
+    unique visitors and clones per day, kept beyond GitHub's 14 days.
+  `collector/README.md` covers installing it with nginx or Caddy.
 - **Anonymous usage statistics, only when allowed** (#77). With `[telemetry] enabled = true`
   (the setup wizard asks; Settings → Usage statistics, or `mtg-scan telemetry on|off`), a running
   `mtg-scan ui` sends one small ping a day: the version, the platform and how it was installed
